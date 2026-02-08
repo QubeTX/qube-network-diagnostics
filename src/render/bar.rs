@@ -1,0 +1,18 @@
+use crate::config::Config;
+
+pub fn render_bar(value: f64, max: f64, width: usize, config: &Config) -> String {
+    let (filled_char, empty_char) = config.bar_chars();
+    let ratio = (value / max).min(1.0).max(0.0);
+    let filled = (ratio * width as f64) as usize;
+    let empty = width - filled;
+
+    format!(
+        "{}{}",
+        std::iter::repeat(filled_char).take(filled).collect::<String>(),
+        std::iter::repeat(empty_char).take(empty).collect::<String>()
+    )
+}
+
+pub fn render_percentage_bar(percentage: f64, width: usize, config: &Config) -> String {
+    render_bar(percentage, 100.0, width, config)
+}

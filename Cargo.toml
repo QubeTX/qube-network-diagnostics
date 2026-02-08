@@ -1,0 +1,51 @@
+[package]
+name = "nd-300"
+version = "0.1.0"
+edition = "2021"
+authors = ["Emmett S <hey@emmetts.dev>"]
+description = "Cross-platform network diagnostic tool"
+readme = "README.md"
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/QubeTX/qube-network-diagnostics"
+keywords = ["cli", "network", "diagnostic", "cross-platform"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "nd300"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossterm = "0.28"
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+indicatif = "0.17"
+owo-colors = "4"
+sysinfo = "0.32"
+default-net = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+wmi = "0.14"
+winapi = { version = "0.3", features = ["consoleapi", "wincon", "iphlpapi", "tcpmib", "udpmib", "ifdef", "winsock2", "ws2def", "ws2tcpip", "netioapi", "iptypes"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["net", "socket"] }
+libc = "0.2"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[workspace.metadata.dist]
+cargo-dist-version = "0.30.3"
+ci = "github"
+installers = ["shell", "powershell", "msi"]
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+pr-run-mode = "plan"
+install-updater = false
+install-path = "CARGO_HOME"
+publish-prereleases = false
