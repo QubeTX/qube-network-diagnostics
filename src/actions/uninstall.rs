@@ -22,7 +22,7 @@ pub async fn run(config: &Config) -> i32 {
                     "success": false,
                     "message": format!("Could not determine binary location: {}", e),
                 });
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
             } else {
                 println!(
                     "  {} {}",
@@ -135,7 +135,7 @@ async fn run_json(exe_path: &Path, config: &Config) -> i32 {
         "notes": report.notes,
         "path": exe_path.display().to_string(),
     });
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
 
     if report.binary_removed { 0 } else { 2 }
 }
@@ -303,24 +303,21 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
         .map_err(|e| format!("Failed to query registry: {}", e))?;
 
     let text = String::from_utf8_lossy(&output.stdout);
-    // Parse the PATH value from reg query output
+    // Parse the PATH value and its registry type from reg query output
     // Format: "    PATH    REG_EXPAND_SZ    value"
-    let current_path = text
+    let (current_path, reg_type) = match text
         .lines()
         .find(|line| line.contains("PATH") && (line.contains("REG_EXPAND_SZ") || line.contains("REG_SZ")))
-        .and_then(|line| {
-            // Split on the REG_ type and take everything after
+    {
+        Some(line) => {
             if let Some(idx) = line.find("REG_EXPAND_SZ") {
-                Some(line[idx + "REG_EXPAND_SZ".len()..].trim().to_string())
+                (line[idx + "REG_EXPAND_SZ".len()..].trim().to_string(), "REG_EXPAND_SZ")
             } else if let Some(idx) = line.find("REG_SZ") {
-                Some(line[idx + "REG_SZ".len()..].trim().to_string())
+                (line[idx + "REG_SZ".len()..].trim().to_string(), "REG_SZ")
             } else {
-                None
+                return Ok(false);
             }
-        });
-
-    let current_path = match current_path {
-        Some(p) => p,
+        }
         None => return Ok(false), // No user PATH set
     };
 
@@ -351,7 +348,7 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
             "/v",
             "PATH",
             "/t",
-            "REG_EXPAND_SZ",
+            reg_type,
             "/d",
             &new_path,
             "/f",

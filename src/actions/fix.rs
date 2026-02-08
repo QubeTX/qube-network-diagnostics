@@ -192,7 +192,7 @@ async fn run_json(config: &Config) -> i32 {
         "dhcp_renew": dhcp,
         "adapter_restart": adapter_restart,
     });
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
 
     if all_success { 0 } else { 2 }
 }

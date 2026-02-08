@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-02-08
+## [1.0.0] - 2026-02-08
+
+### Fixed
+- Replaced `.unwrap()` with safe fallback on JSON serialization in action modules (clear_dns, fix, uninstall)
+- Preserve original Windows registry PATH type (REG_SZ vs REG_EXPAND_SZ) during uninstall
 
 ### Added
 - `-c, --clear-dns` flag to flush DNS cache (Windows, macOS, Linux)

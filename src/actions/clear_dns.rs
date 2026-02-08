@@ -57,7 +57,7 @@ async fn run_json() -> i32 {
             "message": message,
         }
     });
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
 
     if success { 0 } else { 2 }
 }
