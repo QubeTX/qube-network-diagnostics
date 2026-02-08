@@ -47,6 +47,7 @@ pub async fn flush_dns_platform() -> Result<String, String> {
                 Err(String::from_utf8_lossy(&k.stderr).trim().to_string())
             }
             (Err(e), _) | (_, Err(e)) => Err(format!("Failed to flush DNS: {}", e)),
+            _ => Err("Failed to flush DNS".to_string()),
         }
     }
 

@@ -181,13 +181,12 @@ async fn collect_adapters_macos() -> Vec<AdapterInfo> {
     {
         let text = String::from_utf8_lossy(&output.stdout);
         let mut current_name = String::new();
-        let mut current_device = String::new();
 
         for line in text.lines() {
             if let Some(name) = line.strip_prefix("Hardware Port: ") {
                 current_name = name.trim().to_string();
             } else if let Some(dev) = line.strip_prefix("Device: ") {
-                current_device = dev.trim().to_string();
+                let current_device = dev.trim().to_string();
 
                 let status = if check_interface_up(&current_device).await {
                     "Active"

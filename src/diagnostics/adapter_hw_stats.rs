@@ -41,11 +41,11 @@ pub async fn collect() -> Option<Vec<AdapterHwStat>> {
     }
 }
 
-async fn get_link_info(iface: &str) -> (Option<String>, Option<String>) {
+async fn get_link_info(_iface: &str) -> (Option<String>, Option<String>) {
     #[cfg(windows)]
     {
         // Use wmic or powershell to get link speed
-        let escaped_iface = iface.replace('\'', "''");
+        let escaped_iface = _iface.replace('\'', "''");
         if let Ok(output) = tokio::process::Command::new("powershell")
             .args(["-Command", &format!(
                 "Get-NetAdapter -Name '{}' | Select-Object LinkSpeed,FullDuplex | Format-List",
@@ -75,7 +75,7 @@ async fn get_link_info(iface: &str) -> (Option<String>, Option<String>) {
 
     #[cfg(target_os = "linux")]
     {
-        let speed = tokio::fs::read_to_string(format!("/sys/class/net/{}/speed", iface))
+        let speed = tokio::fs::read_to_string(format!("/sys/class/net/{}/speed", _iface))
             .await
             .ok()
             .and_then(|s| {
@@ -83,7 +83,7 @@ async fn get_link_info(iface: &str) -> (Option<String>, Option<String>) {
                 Some(format!("{} Mbps", mbps))
             });
 
-        let duplex = tokio::fs::read_to_string(format!("/sys/class/net/{}/duplex", iface))
+        let duplex = tokio::fs::read_to_string(format!("/sys/class/net/{}/duplex", _iface))
             .await
             .ok()
             .map(|s| s.trim().to_string());

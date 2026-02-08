@@ -439,22 +439,21 @@ async fn list_active_adapters() -> Vec<String> {
     {
         let text = String::from_utf8_lossy(&output.stdout);
         let mut current_name = String::new();
-        let mut current_device = String::new();
 
         for line in text.lines() {
             if let Some(name) = line.strip_prefix("Hardware Port: ") {
                 current_name = name.trim().to_string();
             } else if let Some(dev) = line.strip_prefix("Device: ") {
-                current_device = dev.trim().to_string();
+                let device = dev.trim();
                 // Check if this interface is active
                 if let Ok(status_output) = tokio::process::Command::new("ifconfig")
-                    .arg(&current_device)
+                    .arg(device)
                     .output()
                     .await
                 {
                     let status_text = String::from_utf8_lossy(&status_output.stdout);
                     if status_text.contains("status: active") || status_text.contains("inet ") {
-                        adapters.push(format!("{}:{}", current_name, current_device));
+                        adapters.push(format!("{}:{}", current_name, device));
                     }
                 }
             }

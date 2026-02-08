@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-02-08
+
+### Fixed
+- Fix non-exhaustive match in macOS DNS flush (compile error on macOS CI)
+- Fix unused variable warnings on macOS/Linux targets
+
 ## [1.0.0] - 2026-02-08
 
 ### Fixed
