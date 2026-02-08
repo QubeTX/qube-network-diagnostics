@@ -135,7 +135,7 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
                         if let Some(addr) = parts.get(1) {
                             let scope = if addr.starts_with("fe80") {
                                 "link-local"
-                            } else if addr == "::1" {
+                            } else if *addr == "::1" {
                                 "loopback"
                             } else {
                                 "global"
