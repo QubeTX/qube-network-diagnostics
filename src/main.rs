@@ -39,6 +39,18 @@ struct Cli {
     /// Show additional debug/trace information
     #[arg(long)]
     verbose: bool,
+
+    /// Clear DNS cache and exit
+    #[arg(short = 'c', long = "clear-dns")]
+    clear_dns: bool,
+
+    /// Full network fix: flush DNS, flush ARP, renew DHCP, optionally restart adapters
+    #[arg(short = 'f', long = "fix")]
+    fix: bool,
+
+    /// Uninstall nd300 from this system
+    #[arg(long = "uninstall")]
+    uninstall: bool,
 }
 
 #[tokio::main]
@@ -69,6 +81,20 @@ async fn main() {
         config = config.with_title(title);
     }
     config = config.with_speed_duration(cli.speed_duration);
+
+    // Action flags: exit early without running diagnostics
+    if cli.uninstall {
+        let exit_code = nd_300::actions::uninstall::run(&config).await;
+        std::process::exit(exit_code);
+    }
+    if cli.fix {
+        let exit_code = nd_300::actions::fix::run(&config).await;
+        std::process::exit(exit_code);
+    }
+    if cli.clear_dns {
+        let exit_code = nd_300::actions::clear_dns::run(&config).await;
+        std::process::exit(exit_code);
+    }
 
     let results = diagnostics::run_all(&config).await;
 

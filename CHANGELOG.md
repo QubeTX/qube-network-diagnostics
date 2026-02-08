@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-08
+
+### Added
+- `-c, --clear-dns` flag to flush DNS cache (Windows, macOS, Linux)
+- `-f, --fix` flag for full network reset: DNS flush + ARP cache flush + DHCP lease renewal
+- Interactive prompt to restart network adapters during `--fix` (Windows, macOS)
+- `--uninstall` flag to completely remove nd300 from the system (binary, install receipt, PATH entry)
+- JSON output support for all action flags
+
 ## [0.1.2] - 2026-02-08
 
 ### Fixed
