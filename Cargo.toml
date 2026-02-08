@@ -1,6 +1,6 @@
 [package]
 name = "nd-300"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -9,6 +9,12 @@ license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/QubeTX/qube-network-diagnostics"
 keywords = ["cli", "network", "diagnostic", "cross-platform"]
 categories = ["command-line-utilities"]
+
+[package.metadata.wix]
+upgrade-guid = "7208E6EA-ABAE-4AF6-A69C-7C7E4DA3DDF5"
+path-guid = "D131558E-5659-455C-A5C7-3E7943C3B005"
+license = false
+eula = false
 
 [[bin]]
 name = "nd300"
@@ -40,12 +46,21 @@ libc = "0.2"
 inherits = "release"
 lto = "thin"
 
+# Config for 'dist'
 [workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.30.3"
+# CI backends to support
 ci = "github"
+# The installers to generate for each app
 installers = ["shell", "powershell", "msi"]
+# Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+# Which actions to run on pull requests
 pr-run-mode = "plan"
+# Whether to install an updater program
 install-updater = false
+# Path that installers should place binaries in
 install-path = "CARGO_HOME"
+# Whether to publish prereleases to package managers
 publish-prereleases = false
