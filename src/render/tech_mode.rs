@@ -422,6 +422,15 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
             b = b.row("VPN Adapter", &vpn.name);
             b = b.row("Type", &vpn.adapter_type);
             b = b.row("Status", &vpn.status);
+            if let Some(ref vendor) = vpn.vendor {
+                b = b.row("Vendor", vendor);
+            }
+            if vpn.is_enterprise {
+                b = b.row("Policy", "Enterprise/Managed");
+            }
+            if let Some(ref iface) = vpn.interface_name {
+                b = b.row("Interface", iface);
+            }
             if let Some(ref ip) = vpn.ip_address {
                 b = b.row("IP Address", ip);
             }

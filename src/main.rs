@@ -44,7 +44,7 @@ struct Cli {
     #[arg(short = 'c', long = "clear-dns")]
     clear_dns: bool,
 
-    /// Full network fix: flush DNS, flush ARP, renew DHCP, optionally restart adapters
+    /// Multi-stage network fix: graduated recovery from service restart to stack reset
     #[arg(short = 'f', long = "fix")]
     fix: bool,
 

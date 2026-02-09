@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-02-09
+
+### Changed
+- **Breaking:** `--fix` now uses a 3-stage graduated recovery instead of flat step sequence
+  - Stage 1: Service restart (DNS flush, ARP flush, service restart, DHCP renew) — automatic
+  - Stage 2: Interface reset (disable/re-enable default adapter, targeted DHCP) — prompts user
+  - Stage 3: Network stack/profile reset (Winsock reset, profile deletion, Wi-Fi reconnect) — prompts with strong warning
+- Connectivity checks between stages; stops as soon as connectivity is restored
+- Linux adapter restart now supported (was previously skipped)
+- JSON mode runs Stages 1-2 automatically; skips Stage 3 (requires interaction)
+
+### Added
+- VPN conflict detection and resolution integrated into `--fix` flow
+  - Detects connected VPNs before fix stages
+  - Enterprise VPN detection (Cisco, GlobalProtect, Zscaler, etc.) — never touched automatically
+  - Consumer VPN disable via vendor CLI (NordVPN, ExpressVPN, Mullvad, Tailscale, WireGuard)
+  - Fallback adapter-level disable for unknown VPNs
+  - Offers to re-enable VPNs after fix; auto-disables again if connectivity breaks
+- Enhanced Linux DNS flush: detects and flushes systemd-resolved, dnsmasq, and nscd layers
+- VPN diagnostics now include vendor detection, enterprise classification, and OS interface name
+- Structured JSON output with stage results, VPN section, and `requires_interaction` flag
+- Wi-Fi SSID capture before disconnect for reconnection in Stage 3
+- Cross-platform Wi-Fi network scanning for Stage 3 reconnection
+- macOS Stage 3: network service removal/recreation with Keychain password retrieval
+- Linux Stage 3: NetworkManager profile delete/recreate, wpa_supplicant fallback for dhcpcd systems
+
 ## [1.0.1] - 2026-02-08
 
 ### Fixed
