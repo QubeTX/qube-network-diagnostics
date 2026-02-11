@@ -1,5 +1,6 @@
 pub mod adapters;
 pub mod arp;
+pub mod cmd;
 pub mod connectivity;
 pub mod dhcp;
 pub mod stages;

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-02-11
+
+### Fixed
+- Add command timeouts to all subprocess calls in `--fix` flow to prevent indefinite hangs
+  - Quick (15s): DNS flush, ARP flush, process queries, Wi-Fi scan
+  - Medium (30s): Service restart, VPN vendor CLI, nmcli/scutil
+  - Slow (60s): DHCP release/renew, interface disable/enable, netsh stack resets
+- Add loading spinners to previously silent operations in `--fix` flow
+  - VPN detection, disable, re-enable, and post-re-enable connectivity check
+  - Post-stage connectivity wait periods (Stages 1, 2, 3)
+  - Interface disable/re-enable wait gap in Stage 2
+  - Wi-Fi rescan sleeps on Linux Stage 3
+- Add retry on Stage 2 interface re-enable failure to prevent leaving interface disabled
+- Fix missing `TIMEOUT_MEDIUM` import that would cause compile failure on Linux
+
 ## [2.0.0] - 2026-02-09
 
 ### Changed

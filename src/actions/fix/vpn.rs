@@ -1,6 +1,8 @@
 use crate::config::Config;
 use crate::diagnostics::vpn::{self, VpnAdapter};
+use crate::render::progress::create_spinner;
 
+use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
 use super::{print_step_ok, print_step_fail, warn_icon};
 use crate::actions::{is_interactive, prompt_yes_no};
 
@@ -95,7 +97,11 @@ fn find_vendor_cli(adapter: &VpnAdapter) -> Option<(String, Vec<String>)> {
 pub async fn detect_and_disable(config: &Config) -> Vec<DisabledVpn> {
     let mut disabled = Vec::new();
 
-    let vpns = match vpn::collect().await {
+    let spinner = create_spinner("Detecting VPN connections...");
+    let vpns = vpn::collect().await;
+    spinner.finish_and_clear();
+
+    let vpns = match vpns {
         Some(v) => v,
         None => return disabled,
     };
@@ -134,10 +140,11 @@ pub async fn detect_and_disable(config: &Config) -> Vec<DisabledVpn> {
 
         // Try vendor CLI first
         if let Some((bin, args)) = find_vendor_cli(adapter) {
-            let result = tokio::process::Command::new(&bin)
-                .args(&args)
-                .output()
-                .await;
+            let spinner = create_spinner(&format!("Disabling {}...", adapter.name));
+            let mut cmd = tokio::process::Command::new(&bin);
+            cmd.args(&args);
+            let result = run_cmd(cmd, TIMEOUT_MEDIUM).await;
+            spinner.finish_and_clear();
 
             if let Ok(output) = result {
                 if output.status.success() {
@@ -154,7 +161,10 @@ pub async fn detect_and_disable(config: &Config) -> Vec<DisabledVpn> {
         }
 
         // Fallback: platform-specific adapter disable
-        match disable_adapter_fallback(adapter, config).await {
+        let spinner = create_spinner(&format!("Disabling {}...", adapter.name));
+        let fallback_result = disable_adapter_fallback(adapter, config).await;
+        spinner.finish_and_clear();
+        match fallback_result {
             Some(d) => disabled.push(d),
             None => {
                 if is_interactive(config) {
@@ -170,7 +180,9 @@ pub async fn detect_and_disable(config: &Config) -> Vec<DisabledVpn> {
 
     if !disabled.is_empty() {
         // Give VPNs time to fully disconnect
+        let spinner = create_spinner("Waiting for VPN disconnect...");
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        spinner.finish_and_clear();
     }
 
     disabled
@@ -181,11 +193,9 @@ async fn disable_adapter_fallback(adapter: &VpnAdapter, config: &Config) -> Opti
     {
         // Try netsh to disable the adapter
         if let Some(ref iface) = adapter.interface_name {
-            let result = tokio::process::Command::new("netsh")
-                .args(["interface", "set", "interface", iface, "disabled"])
-                .output()
-                .await;
-            if let Ok(output) = result {
+            let mut cmd = tokio::process::Command::new("netsh");
+            cmd.args(["interface", "set", "interface", iface, "disabled"]);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_SLOW).await {
                 if output.status.success() {
                     if is_interactive(config) {
                         print_step_ok(&format!("Disabled {}", adapter.name), config);
@@ -204,11 +214,9 @@ async fn disable_adapter_fallback(adapter: &VpnAdapter, config: &Config) -> Opti
     #[cfg(target_os = "macos")]
     {
         // Try scutil --nc stop
-        let result = tokio::process::Command::new("scutil")
-            .args(["--nc", "stop", &adapter.name])
-            .output()
-            .await;
-        if let Ok(output) = result {
+        let mut cmd = tokio::process::Command::new("scutil");
+        cmd.args(["--nc", "stop", &adapter.name]);
+        if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
                 if is_interactive(config) {
                     print_step_ok(&format!("Disabled {}", adapter.name), config);
@@ -225,11 +233,9 @@ async fn disable_adapter_fallback(adapter: &VpnAdapter, config: &Config) -> Opti
     #[cfg(target_os = "linux")]
     {
         // Try nmcli connection down
-        let result = tokio::process::Command::new("nmcli")
-            .args(["connection", "down", &adapter.name])
-            .output()
-            .await;
-        if let Ok(output) = result {
+        let mut nmcli_cmd = tokio::process::Command::new("nmcli");
+        nmcli_cmd.args(["connection", "down", &adapter.name]);
+        if let Ok(output) = run_cmd(nmcli_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
                 if is_interactive(config) {
                     print_step_ok(&format!("Disabled {}", adapter.name), config);
@@ -242,11 +248,9 @@ async fn disable_adapter_fallback(adapter: &VpnAdapter, config: &Config) -> Opti
         }
         // Try wg-quick down
         if let Some(ref iface) = adapter.interface_name {
-            let result = tokio::process::Command::new("wg-quick")
-                .args(["down", iface])
-                .output()
-                .await;
-            if let Ok(output) = result {
+            let mut wg_cmd = tokio::process::Command::new("wg-quick");
+            wg_cmd.args(["down", iface]);
+            if let Ok(output) = run_cmd(wg_cmd, TIMEOUT_MEDIUM).await {
                 if output.status.success() {
                     if is_interactive(config) {
                         print_step_ok(&format!("Disabled {}", adapter.name), config);
@@ -282,16 +286,26 @@ pub async fn offer_reenable(disabled: &[DisabledVpn], config: &Config) {
             continue;
         }
 
+        let spinner = create_spinner(&format!("Re-enabling {}...", vpn.name));
         let success = reenable_vpn(vpn).await;
+        spinner.finish_and_clear();
+
         if success {
             if is_interactive(config) {
                 print_step_ok(&format!("Re-enabled {}", vpn.name), config);
             }
             // Verify connectivity after re-enable
+            let spinner = create_spinner("Verifying connectivity...");
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            if !super::connectivity::check_connectivity().await {
+            let connected = super::connectivity::check_connectivity().await;
+            spinner.finish_and_clear();
+
+            if !connected {
                 // Auto-disable again
+                let spinner = create_spinner(&format!("Disabling {} again...", vpn.name));
                 let _ = redisable_vpn(vpn).await;
+                spinner.finish_and_clear();
+
                 if is_interactive(config) {
                     println!(
                         "  {} Re-enabling {} broke connectivity. The VPN has been disabled again.",
@@ -313,50 +327,44 @@ pub async fn offer_reenable(disabled: &[DisabledVpn], config: &Config) {
 async fn reenable_vpn(vpn: &DisabledVpn) -> bool {
     match &vpn.method {
         DisableMethod::VendorCli(bin, reconnect_args) => {
-            if let Ok(output) = tokio::process::Command::new(bin).args(reconnect_args).output().await {
+            let mut cmd = tokio::process::Command::new(bin);
+            cmd.args(reconnect_args);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 return output.status.success();
             }
             false
         }
         DisableMethod::Netsh(iface) => {
-            if let Ok(output) = tokio::process::Command::new("netsh")
-                .args(["interface", "set", "interface", iface, "enabled"])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("netsh");
+            cmd.args(["interface", "set", "interface", iface, "enabled"]);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_SLOW).await {
                 return output.status.success();
             }
             false
         }
         #[cfg(target_os = "macos")]
         DisableMethod::Scutil(service) => {
-            if let Ok(output) = tokio::process::Command::new("scutil")
-                .args(["--nc", "start", service])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("scutil");
+            cmd.args(["--nc", "start", service]);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 return output.status.success();
             }
             false
         }
         #[cfg(target_os = "linux")]
         DisableMethod::Nmcli(conn) => {
-            if let Ok(output) = tokio::process::Command::new("nmcli")
-                .args(["connection", "up", conn])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("nmcli");
+            cmd.args(["connection", "up", conn]);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 return output.status.success();
             }
             false
         }
         #[cfg(target_os = "linux")]
         DisableMethod::WgQuick(iface) => {
-            if let Ok(output) = tokio::process::Command::new("wg-quick")
-                .args(["up", iface])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("wg-quick");
+            cmd.args(["up", iface]);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 return output.status.success();
             }
             false
@@ -370,50 +378,44 @@ async fn redisable_vpn(vpn: &DisabledVpn) -> bool {
             let disconnect_args: Vec<String> = reconnect_args.iter()
                 .map(|a| a.replace("connect", "disconnect").replace("up", "down"))
                 .collect();
-            if let Ok(output) = tokio::process::Command::new(bin).args(&disconnect_args).output().await {
+            let mut cmd = tokio::process::Command::new(bin);
+            cmd.args(&disconnect_args);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 return output.status.success();
             }
             false
         }
         DisableMethod::Netsh(iface) => {
-            if let Ok(output) = tokio::process::Command::new("netsh")
-                .args(["interface", "set", "interface", iface, "disabled"])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("netsh");
+            cmd.args(["interface", "set", "interface", iface, "disabled"]);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_SLOW).await {
                 return output.status.success();
             }
             false
         }
         #[cfg(target_os = "macos")]
         DisableMethod::Scutil(service) => {
-            if let Ok(output) = tokio::process::Command::new("scutil")
-                .args(["--nc", "stop", service])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("scutil");
+            cmd.args(["--nc", "stop", service]);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 return output.status.success();
             }
             false
         }
         #[cfg(target_os = "linux")]
         DisableMethod::Nmcli(conn) => {
-            if let Ok(output) = tokio::process::Command::new("nmcli")
-                .args(["connection", "down", conn])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("nmcli");
+            cmd.args(["connection", "down", conn]);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 return output.status.success();
             }
             false
         }
         #[cfg(target_os = "linux")]
         DisableMethod::WgQuick(iface) => {
-            if let Ok(output) = tokio::process::Command::new("wg-quick")
-                .args(["down", iface])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("wg-quick");
+            cmd.args(["down", iface]);
+            if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 return output.status.success();
             }
             false

@@ -7,6 +7,7 @@ use super::arp;
 use super::connectivity;
 use super::dhcp;
 use super::wifi;
+use super::cmd::{run_cmd, TIMEOUT_QUICK, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
 use super::{print_step_ok, print_step_fail, warn_icon, StepResult};
 use crate::actions::{flush_dns_platform, is_interactive, prompt_yes_no};
 #[cfg(target_os = "linux")]
@@ -86,10 +87,13 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
     }
 
     // Wait and check connectivity
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let connected = connectivity::check_connectivity().await;
-
-    (steps, connected)
+    {
+        let spinner = create_spinner("Checking connectivity...");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let connected = connectivity::check_connectivity().await;
+        spinner.finish_and_clear();
+        (steps, connected)
+    }
 }
 
 /// Restart platform networking services.
@@ -99,18 +103,13 @@ async fn restart_services() -> Result<String, String> {
         let mut restarted = Vec::new();
 
         for service in &["DNS Client", "DHCP Client"] {
-            let stop = tokio::process::Command::new("net")
-                .args(["stop", service])
-                .output()
-                .await;
-            let _ = stop; // stop may fail if not running
+            let mut stop_cmd = tokio::process::Command::new("net");
+            stop_cmd.args(["stop", service]);
+            let _ = run_cmd(stop_cmd, TIMEOUT_MEDIUM).await;
 
-            let start = tokio::process::Command::new("net")
-                .args(["start", service])
-                .output()
-                .await;
-
-            match start {
+            let mut start_cmd = tokio::process::Command::new("net");
+            start_cmd.args(["start", service]);
+            match run_cmd(start_cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => {
                     restarted.push(*service);
                 }
@@ -127,11 +126,9 @@ async fn restart_services() -> Result<String, String> {
 
     #[cfg(target_os = "macos")]
     {
-        match tokio::process::Command::new("killall")
-            .args(["-HUP", "configd"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("killall");
+        cmd.args(["-HUP", "configd"]);
+        match run_cmd(cmd, TIMEOUT_QUICK).await {
             Ok(output) if output.status.success() => {
                 Ok("Restarted configd".to_string())
             }
@@ -142,22 +139,18 @@ async fn restart_services() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         // Try NetworkManager first
-        if let Ok(output) = tokio::process::Command::new("systemctl")
-            .args(["restart", "NetworkManager"])
-            .output()
-            .await
-        {
+        let mut nm_cmd = tokio::process::Command::new("systemctl");
+        nm_cmd.args(["restart", "NetworkManager"]);
+        if let Ok(output) = run_cmd(nm_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
                 return Ok("Restarted NetworkManager".to_string());
             }
         }
 
         // Fallback to dhcpcd
-        if let Ok(output) = tokio::process::Command::new("systemctl")
-            .args(["restart", "dhcpcd"])
-            .output()
-            .await
-        {
+        let mut dhcpcd_cmd = tokio::process::Command::new("systemctl");
+        dhcpcd_cmd.args(["restart", "dhcpcd"]);
+        if let Ok(output) = run_cmd(dhcpcd_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
                 return Ok("Restarted dhcpcd".to_string());
             }
@@ -231,8 +224,12 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
         }
     }
 
-    // Wait
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    // Wait for interface to fully disable
+    {
+        let spinner = create_spinner("Waiting for interface...");
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        spinner.finish_and_clear();
+    }
 
     // Re-enable/up
     {
@@ -243,14 +240,26 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
             Ok(_) => {
                 if is_interactive(config) { print_step_ok(&format!("Re-enabled {}", iface), config); }
             }
-            Err(msg) => {
-                if is_interactive(config) { print_step_fail(&format!("Failed to re-enable {}", iface), &msg, config); }
-                steps.push(StepResult {
-                    name: "interface_reset",
-                    success: false,
-                    message: msg,
-                });
-                return (steps, false);
+            Err(_) => {
+                // Retry once — leaving interface disabled is worse than a slow retry
+                let spinner = create_spinner(&format!("Retrying re-enable {}...", iface));
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let retry = enable_interface(&iface).await;
+                spinner.finish_and_clear();
+                match retry {
+                    Ok(_) => {
+                        if is_interactive(config) { print_step_ok(&format!("Re-enabled {} (retry)", iface), config); }
+                    }
+                    Err(msg) => {
+                        if is_interactive(config) { print_step_fail(&format!("Failed to re-enable {}", iface), &msg, config); }
+                        steps.push(StepResult {
+                            name: "interface_reset",
+                            success: false,
+                            message: msg,
+                        });
+                        return (steps, false);
+                    }
+                }
             }
         }
     }
@@ -273,23 +282,24 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
     }
 
     // Wait and check connectivity
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    let connected = connectivity::check_connectivity().await;
-
-    (steps, connected)
+    {
+        let spinner = create_spinner("Checking connectivity...");
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        let connected = connectivity::check_connectivity().await;
+        spinner.finish_and_clear();
+        (steps, connected)
+    }
 }
 
 async fn disable_interface(iface: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        match tokio::process::Command::new("netsh")
-            .args(["interface", "set", "interface", iface, "disabled"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("netsh");
+        cmd.args(["interface", "set", "interface", iface, "disabled"]);
+        match run_cmd(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-            Err(e) => Err(format!("netsh: {}", e)),
+            Err(e) => Err(e),
         }
     }
 
@@ -298,38 +308,32 @@ async fn disable_interface(iface: &str) -> Result<(), String> {
         // Check if Wi-Fi
         let is_wifi = iface.starts_with("en") && is_wifi_device(iface).await;
         if is_wifi {
-            match tokio::process::Command::new("networksetup")
-                .args(["-setairportpower", iface, "off"])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("networksetup");
+            cmd.args(["-setairportpower", iface, "off"]);
+            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
                 Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-                Err(e) => Err(format!("networksetup: {}", e)),
+                Err(e) => Err(e),
             }
         } else {
-            match tokio::process::Command::new("ifconfig")
-                .args([iface, "down"])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("ifconfig");
+            cmd.args([iface, "down"]);
+            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
                 Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-                Err(e) => Err(format!("ifconfig: {}", e)),
+                Err(e) => Err(e),
             }
         }
     }
 
     #[cfg(target_os = "linux")]
     {
-        match tokio::process::Command::new("ip")
-            .args(["link", "set", iface, "down"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("ip");
+        cmd.args(["link", "set", iface, "down"]);
+        match run_cmd(cmd, TIMEOUT_MEDIUM).await {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-            Err(e) => Err(format!("ip link: {}", e)),
+            Err(e) => Err(e),
         }
     }
 }
@@ -337,14 +341,12 @@ async fn disable_interface(iface: &str) -> Result<(), String> {
 async fn enable_interface(iface: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        match tokio::process::Command::new("netsh")
-            .args(["interface", "set", "interface", iface, "enabled"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("netsh");
+        cmd.args(["interface", "set", "interface", iface, "enabled"]);
+        match run_cmd(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-            Err(e) => Err(format!("netsh: {}", e)),
+            Err(e) => Err(e),
         }
     }
 
@@ -352,49 +354,41 @@ async fn enable_interface(iface: &str) -> Result<(), String> {
     {
         let is_wifi = iface.starts_with("en") && is_wifi_device(iface).await;
         if is_wifi {
-            match tokio::process::Command::new("networksetup")
-                .args(["-setairportpower", iface, "on"])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("networksetup");
+            cmd.args(["-setairportpower", iface, "on"]);
+            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
                 Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-                Err(e) => Err(format!("networksetup: {}", e)),
+                Err(e) => Err(e),
             }
         } else {
-            match tokio::process::Command::new("ifconfig")
-                .args([iface, "up"])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("ifconfig");
+            cmd.args([iface, "up"]);
+            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
                 Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-                Err(e) => Err(format!("ifconfig: {}", e)),
+                Err(e) => Err(e),
             }
         }
     }
 
     #[cfg(target_os = "linux")]
     {
-        match tokio::process::Command::new("ip")
-            .args(["link", "set", iface, "up"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("ip");
+        cmd.args(["link", "set", iface, "up"]);
+        match run_cmd(cmd, TIMEOUT_MEDIUM).await {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-            Err(e) => Err(format!("ip link: {}", e)),
+            Err(e) => Err(e),
         }
     }
 }
 
 #[cfg(target_os = "macos")]
 async fn is_wifi_device(iface: &str) -> bool {
-    if let Ok(output) = tokio::process::Command::new("networksetup")
-        .args(["-listallhardwareports"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("networksetup");
+    cmd.args(["-listallhardwareports"]);
+    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         let mut is_wifi_port = false;
         for line in text.lines() {
@@ -458,10 +452,13 @@ pub async fn run_stage3(config: &Config, saved_ssid: &Option<String>) -> (Vec<St
     }
 
     // Wait and check connectivity
-    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-    let connected = connectivity::check_connectivity().await;
-
-    (steps, connected)
+    {
+        let spinner = create_spinner("Checking connectivity...");
+        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        let connected = connectivity::check_connectivity().await;
+        spinner.finish_and_clear();
+        (steps, connected)
+    }
 }
 
 fn platform_stage3_warning() -> &'static str {
@@ -493,10 +490,9 @@ async fn stage3_windows(config: &Config, saved_ssid: &Option<String>) -> Result<
     // 1. Winsock reset
     {
         let spinner = create_spinner("Resetting Winsock catalog...");
-        let r = tokio::process::Command::new("netsh")
-            .args(["winsock", "reset"])
-            .output()
-            .await;
+        let mut cmd = tokio::process::Command::new("netsh");
+        cmd.args(["winsock", "reset"]);
+        let r = run_cmd(cmd, TIMEOUT_SLOW).await;
         spinner.finish_and_clear();
         match r {
             Ok(output) if output.status.success() => completed.push("Winsock reset".to_string()),
@@ -507,10 +503,9 @@ async fn stage3_windows(config: &Config, saved_ssid: &Option<String>) -> Result<
     // 2. TCP/IP reset
     {
         let spinner = create_spinner("Resetting TCP/IP stack...");
-        let r = tokio::process::Command::new("netsh")
-            .args(["int", "ip", "reset"])
-            .output()
-            .await;
+        let mut cmd = tokio::process::Command::new("netsh");
+        cmd.args(["int", "ip", "reset"]);
+        let r = run_cmd(cmd, TIMEOUT_SLOW).await;
         spinner.finish_and_clear();
         match r {
             Ok(output) if output.status.success() => completed.push("TCP/IP reset".to_string()),
@@ -521,10 +516,9 @@ async fn stage3_windows(config: &Config, saved_ssid: &Option<String>) -> Result<
     // 3. IPv6 reset
     {
         let spinner = create_spinner("Resetting IPv6 stack...");
-        let r = tokio::process::Command::new("netsh")
-            .args(["int", "ipv6", "reset"])
-            .output()
-            .await;
+        let mut cmd = tokio::process::Command::new("netsh");
+        cmd.args(["int", "ipv6", "reset"]);
+        let r = run_cmd(cmd, TIMEOUT_SLOW).await;
         spinner.finish_and_clear();
         match r {
             Ok(output) if output.status.success() => completed.push("IPv6 reset".to_string()),
@@ -533,7 +527,11 @@ async fn stage3_windows(config: &Config, saved_ssid: &Option<String>) -> Result<
     }
 
     // 4. DNS flush
-    let _ = tokio::process::Command::new("ipconfig").arg("/flushdns").output().await;
+    {
+        let mut cmd = tokio::process::Command::new("ipconfig");
+        cmd.arg("/flushdns");
+        let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
+    }
 
     // 5. Wi-Fi profile deletion (if applicable)
     if let Some(ssid) = saved_ssid {
@@ -543,10 +541,9 @@ async fn stage3_windows(config: &Config, saved_ssid: &Option<String>) -> Result<
                 ssid,
             );
             if prompt_yes_no(&prompt) {
-                let _ = tokio::process::Command::new("netsh")
-                    .args(["wlan", "delete", "profile", &format!("name={}", ssid)])
-                    .output()
-                    .await;
+                let mut cmd = tokio::process::Command::new("netsh");
+                cmd.args(["wlan", "delete", "profile", &format!("name={}", ssid)]);
+                let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
                 completed.push(format!("Deleted Wi-Fi profile: {}", ssid));
 
                 // Show available networks
@@ -595,10 +592,9 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
     // 1. Remove network service
     {
         let spinner = create_spinner(&format!("Removing service \"{}\"...", service_name));
-        let r = tokio::process::Command::new("networksetup")
-            .args(["-removenetworkservice", &service_name])
-            .output()
-            .await;
+        let mut cmd = tokio::process::Command::new("networksetup");
+        cmd.args(["-removenetworkservice", &service_name]);
+        let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
         spinner.finish_and_clear();
         match r {
             Ok(output) if output.status.success() => {
@@ -611,10 +607,9 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
     // 2. Recreate
     {
         let spinner = create_spinner(&format!("Recreating service \"{}\"...", service_name));
-        let r = tokio::process::Command::new("networksetup")
-            .args(["-createnetworkservice", &service_name, &iface])
-            .output()
-            .await;
+        let mut cmd = tokio::process::Command::new("networksetup");
+        cmd.args(["-createnetworkservice", &service_name, &iface]);
+        let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
         spinner.finish_and_clear();
         match r {
             Ok(output) if output.status.success() => {
@@ -625,10 +620,11 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
     }
 
     // 3. Set DHCP
-    let _ = tokio::process::Command::new("networksetup")
-        .args(["-setdhcp", &service_name])
-        .output()
-        .await;
+    {
+        let mut cmd = tokio::process::Command::new("networksetup");
+        cmd.args(["-setdhcp", &service_name]);
+        let _ = run_cmd(cmd, TIMEOUT_MEDIUM).await;
+    }
 
     // 4. Wi-Fi reconnection
     if let Some(ssid) = saved_ssid {
@@ -636,11 +632,9 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
         let password = get_keychain_password(ssid).await;
         match password {
             Some(pass) => {
-                let r = tokio::process::Command::new("networksetup")
-                    .args(["-setairportnetwork", &iface, ssid, &pass])
-                    .output()
-                    .await;
-                if let Ok(output) = r {
+                let mut cmd = tokio::process::Command::new("networksetup");
+                cmd.args(["-setairportnetwork", &iface, ssid, &pass]);
+                if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
                     if output.status.success() {
                         completed.push(format!("Reconnected to {}", ssid));
                     }
@@ -661,19 +655,25 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
     }
 
     // 5. Flush DNS
-    let _ = tokio::process::Command::new("dscacheutil").arg("-flushcache").output().await;
-    let _ = tokio::process::Command::new("killall").args(["-HUP", "mDNSResponder"]).output().await;
+    {
+        let mut cmd = tokio::process::Command::new("dscacheutil");
+        cmd.arg("-flushcache");
+        let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
+    }
+    {
+        let mut cmd = tokio::process::Command::new("killall");
+        cmd.args(["-HUP", "mDNSResponder"]);
+        let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
+    }
 
     Ok(completed)
 }
 
 #[cfg(target_os = "macos")]
 async fn detect_macos_service(iface: &str) -> Option<String> {
-    if let Ok(output) = tokio::process::Command::new("networksetup")
-        .args(["-listallhardwareports"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("networksetup");
+    cmd.args(["-listallhardwareports"]);
+    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         let mut current_name = String::new();
         for line in text.lines() {
@@ -691,11 +691,9 @@ async fn detect_macos_service(iface: &str) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 async fn get_keychain_password(ssid: &str) -> Option<String> {
-    if let Ok(output) = tokio::process::Command::new("security")
-        .args(["find-generic-password", "-wa", ssid])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("security");
+    cmd.args(["find-generic-password", "-wa", ssid]);
+    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         if output.status.success() {
             let pass = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !pass.is_empty() {
@@ -719,10 +717,9 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
         // Delete active connection profile
         if let Some(profile) = detect_nm_profile(&iface).await {
             let spinner = create_spinner(&format!("Deleting profile \"{}\"...", profile));
-            let _ = tokio::process::Command::new("nmcli")
-                .args(["connection", "delete", &profile])
-                .output()
-                .await;
+            let mut cmd = tokio::process::Command::new("nmcli");
+            cmd.args(["connection", "delete", &profile]);
+            let _ = run_cmd(cmd, TIMEOUT_MEDIUM).await;
             spinner.finish_and_clear();
             completed.push(format!("Deleted profile: {}", profile));
         }
@@ -731,11 +728,12 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
         let is_wifi = is_linux_wifi(&iface).await;
         if is_wifi {
             // Wi-Fi: scan and connect
-            let _ = tokio::process::Command::new("nmcli")
-                .args(["device", "wifi", "rescan"])
-                .output()
-                .await;
+            let spinner = create_spinner("Scanning for Wi-Fi networks...");
+            let mut rescan_cmd = tokio::process::Command::new("nmcli");
+            rescan_cmd.args(["device", "wifi", "rescan"]);
+            let _ = run_cmd(rescan_cmd, TIMEOUT_QUICK).await;
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            spinner.finish_and_clear();
 
             let ssid_to_connect = if let Some(ssid) = saved_ssid {
                 ssid.clone()
@@ -755,10 +753,9 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
             if is_interactive(config) {
                 let passphrase = prompt_string("  Enter passphrase: ");
                 let spinner = create_spinner(&format!("Connecting to {}...", ssid_to_connect));
-                let r = tokio::process::Command::new("nmcli")
-                    .args(["device", "wifi", "connect", &ssid_to_connect, "password", &passphrase, "ifname", &iface])
-                    .output()
-                    .await;
+                let mut cmd = tokio::process::Command::new("nmcli");
+                cmd.args(["device", "wifi", "connect", &ssid_to_connect, "password", &passphrase, "ifname", &iface]);
+                let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
                 spinner.finish_and_clear();
                 match r {
                     Ok(output) if output.status.success() => {
@@ -773,10 +770,9 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
             // Wired: auto-create
             let spinner = create_spinner("Creating new ethernet profile...");
             let con_name = format!("Auto {}", iface);
-            let r = tokio::process::Command::new("nmcli")
-                .args(["connection", "add", "type", "ethernet", "con-name", &con_name, "ifname", &iface])
-                .output()
-                .await;
+            let mut cmd = tokio::process::Command::new("nmcli");
+            cmd.args(["connection", "add", "type", "ethernet", "con-name", &con_name, "ifname", &iface]);
+            let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
             spinner.finish_and_clear();
             match r {
                 Ok(output) if output.status.success() => {
@@ -789,18 +785,15 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
         // dhcpcd fallback
         let spinner = create_spinner("Resetting dhcpcd configuration...");
         // Back up config
-        let _ = tokio::process::Command::new("cp")
-            .args(["/etc/dhcpcd.conf", "/etc/dhcpcd.conf.bak"])
-            .output()
-            .await;
+        let mut cp_cmd = tokio::process::Command::new("cp");
+        cp_cmd.args(["/etc/dhcpcd.conf", "/etc/dhcpcd.conf.bak"]);
+        let _ = run_cmd(cp_cmd, TIMEOUT_QUICK).await;
         completed.push("Backed up /etc/dhcpcd.conf".to_string());
 
-        // Remove static IP blocks (simple: copy default)
         // Just restart dhcpcd to pick up changes
-        let _ = tokio::process::Command::new("systemctl")
-            .args(["restart", "dhcpcd"])
-            .output()
-            .await;
+        let mut restart_cmd = tokio::process::Command::new("systemctl");
+        restart_cmd.args(["restart", "dhcpcd"]);
+        let _ = run_cmd(restart_cmd, TIMEOUT_MEDIUM).await;
         spinner.finish_and_clear();
         completed.push("Restarted dhcpcd".to_string());
 
@@ -816,11 +809,12 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
                 let passphrase = prompt_string("  Enter passphrase: ");
 
                 // Add network via wpa_cli
-                let _ = tokio::process::Command::new("wpa_cli")
-                    .args(["-i", &iface, "scan"])
-                    .output()
-                    .await;
+                let spinner = create_spinner("Scanning for Wi-Fi networks...");
+                let mut scan_cmd = tokio::process::Command::new("wpa_cli");
+                scan_cmd.args(["-i", &iface, "scan"]);
+                let _ = run_cmd(scan_cmd, TIMEOUT_QUICK).await;
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                spinner.finish_and_clear();
 
                 // Create wpa_supplicant entry
                 let wpa_conf = format!(
@@ -835,10 +829,9 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
                 {
                     use tokio::io::AsyncWriteExt;
                     let _ = file.write_all(wpa_conf.as_bytes()).await;
-                    let _ = tokio::process::Command::new("wpa_cli")
-                        .args(["-i", &iface, "reconfigure"])
-                        .output()
-                        .await;
+                    let mut reconf_cmd = tokio::process::Command::new("wpa_cli");
+                    reconf_cmd.args(["-i", &iface, "reconfigure"]);
+                    let _ = run_cmd(reconf_cmd, TIMEOUT_QUICK).await;
                     completed.push(format!("Connected to {} via wpa_supplicant", ssid_to_connect));
                 }
             }
@@ -854,11 +847,9 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
 
 #[cfg(target_os = "linux")]
 async fn has_network_manager() -> bool {
-    if let Ok(output) = tokio::process::Command::new("systemctl")
-        .args(["is-active", "NetworkManager"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("systemctl");
+    cmd.args(["is-active", "NetworkManager"]);
+    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         return text.trim() == "active";
     }
@@ -867,11 +858,9 @@ async fn has_network_manager() -> bool {
 
 #[cfg(target_os = "linux")]
 async fn detect_nm_profile(iface: &str) -> Option<String> {
-    if let Ok(output) = tokio::process::Command::new("nmcli")
-        .args(["-t", "-f", "NAME,DEVICE", "connection", "show", "--active"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("nmcli");
+    cmd.args(["-t", "-f", "NAME,DEVICE", "connection", "show", "--active"]);
+    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             let parts: Vec<&str> = line.splitn(2, ':').collect();
@@ -885,11 +874,9 @@ async fn detect_nm_profile(iface: &str) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 async fn is_linux_wifi(iface: &str) -> bool {
-    if let Ok(output) = tokio::process::Command::new("iw")
-        .args(["dev", iface, "info"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("iw");
+    cmd.args(["dev", iface, "info"]);
+    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         return output.status.success();
     }
     false

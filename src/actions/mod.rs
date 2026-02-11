@@ -5,36 +5,34 @@ pub mod uninstall;
 use crate::config::{Config, OutputFormat};
 use std::io::IsTerminal;
 
+use fix::cmd::{run_cmd, TIMEOUT_QUICK};
+
 /// Run the platform-specific DNS flush command.
 /// Returns Ok(stdout message) on success, Err(stderr/error message) on failure.
 pub async fn flush_dns_platform() -> Result<String, String> {
     #[cfg(windows)]
     {
-        match tokio::process::Command::new("ipconfig")
-            .arg("/flushdns")
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("ipconfig");
+        cmd.arg("/flushdns");
+        match run_cmd(cmd, TIMEOUT_QUICK).await {
             Ok(output) if output.status.success() => {
                 Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
             }
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-            Err(e) => Err(format!("Failed to run ipconfig: {}", e)),
+            Err(e) => Err(e),
         }
     }
 
     #[cfg(target_os = "macos")]
     {
         // dscacheutil -flushcache
-        let flush = tokio::process::Command::new("dscacheutil")
-            .arg("-flushcache")
-            .output()
-            .await;
+        let mut flush_cmd = tokio::process::Command::new("dscacheutil");
+        flush_cmd.arg("-flushcache");
+        let flush = run_cmd(flush_cmd, TIMEOUT_QUICK).await;
         // killall -HUP mDNSResponder
-        let kill = tokio::process::Command::new("killall")
-            .args(["-HUP", "mDNSResponder"])
-            .output()
-            .await;
+        let mut kill_cmd = tokio::process::Command::new("killall");
+        kill_cmd.args(["-HUP", "mDNSResponder"]);
+        let kill = run_cmd(kill_cmd, TIMEOUT_QUICK).await;
 
         match (flush, kill) {
             (Ok(f), Ok(k)) if f.status.success() && k.status.success() => {
@@ -46,7 +44,7 @@ pub async fn flush_dns_platform() -> Result<String, String> {
             (_, Ok(k)) if !k.status.success() => {
                 Err(String::from_utf8_lossy(&k.stderr).trim().to_string())
             }
-            (Err(e), _) | (_, Err(e)) => Err(format!("Failed to flush DNS: {}", e)),
+            (Err(e), _) | (_, Err(e)) => Err(e),
             _ => Err("Failed to flush DNS".to_string()),
         }
     }
@@ -56,28 +54,22 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         let mut flushed = Vec::new();
 
         // Layer 1: systemd-resolved (resolvectl, fallback systemd-resolve)
-        if let Ok(output) = tokio::process::Command::new("systemctl")
-            .args(["is-active", "systemd-resolved"])
-            .output()
-            .await
-        {
+        let mut check_cmd = tokio::process::Command::new("systemctl");
+        check_cmd.args(["is-active", "systemd-resolved"]);
+        if let Ok(output) = run_cmd(check_cmd, TIMEOUT_QUICK).await {
             if String::from_utf8_lossy(&output.stdout).trim() == "active" {
-                let ok = if let Ok(r) = tokio::process::Command::new("resolvectl")
-                    .arg("flush-caches")
-                    .output()
-                    .await
-                {
+                let mut resolvectl_cmd = tokio::process::Command::new("resolvectl");
+                resolvectl_cmd.arg("flush-caches");
+                let ok = if let Ok(r) = run_cmd(resolvectl_cmd, TIMEOUT_QUICK).await {
                     r.status.success()
                 } else {
                     false
                 };
 
                 if !ok {
-                    if let Ok(r) = tokio::process::Command::new("systemd-resolve")
-                        .arg("--flush-caches")
-                        .output()
-                        .await
-                    {
+                    let mut fallback_cmd = tokio::process::Command::new("systemd-resolve");
+                    fallback_cmd.arg("--flush-caches");
+                    if let Ok(r) = run_cmd(fallback_cmd, TIMEOUT_QUICK).await {
                         if r.status.success() {
                             flushed.push("systemd-resolved");
                         }
@@ -89,17 +81,13 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         }
 
         // Layer 2: dnsmasq (often a NetworkManager plugin)
-        if let Ok(output) = tokio::process::Command::new("pgrep")
-            .arg("dnsmasq")
-            .output()
-            .await
-        {
+        let mut pgrep_dnsmasq = tokio::process::Command::new("pgrep");
+        pgrep_dnsmasq.arg("dnsmasq");
+        if let Ok(output) = run_cmd(pgrep_dnsmasq, TIMEOUT_QUICK).await {
             if output.status.success() {
-                if let Ok(r) = tokio::process::Command::new("killall")
-                    .args(["-HUP", "dnsmasq"])
-                    .output()
-                    .await
-                {
+                let mut killall_cmd = tokio::process::Command::new("killall");
+                killall_cmd.args(["-HUP", "dnsmasq"]);
+                if let Ok(r) = run_cmd(killall_cmd, TIMEOUT_QUICK).await {
                     if r.status.success() {
                         flushed.push("dnsmasq");
                     }
@@ -108,17 +96,13 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         }
 
         // Layer 3: nscd
-        if let Ok(output) = tokio::process::Command::new("pgrep")
-            .arg("nscd")
-            .output()
-            .await
-        {
+        let mut pgrep_nscd = tokio::process::Command::new("pgrep");
+        pgrep_nscd.arg("nscd");
+        if let Ok(output) = run_cmd(pgrep_nscd, TIMEOUT_QUICK).await {
             if output.status.success() {
-                if let Ok(r) = tokio::process::Command::new("nscd")
-                    .args(["-i", "hosts"])
-                    .output()
-                    .await
-                {
+                let mut nscd_cmd = tokio::process::Command::new("nscd");
+                nscd_cmd.args(["-i", "hosts"]);
+                if let Ok(r) = run_cmd(nscd_cmd, TIMEOUT_QUICK).await {
                     if r.status.success() {
                         flushed.push("nscd");
                     }

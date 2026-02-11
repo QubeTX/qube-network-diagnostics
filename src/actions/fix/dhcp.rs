@@ -1,12 +1,14 @@
+#[allow(unused_imports)]
+use super::cmd::{run_cmd, TIMEOUT_QUICK, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
+
 /// DHCP lease renewal — all platforms.
 pub async fn renew_dhcp() -> Result<String, String> {
     #[cfg(windows)]
     {
         // Release first, then renew
-        let release = tokio::process::Command::new("ipconfig")
-            .arg("/release")
-            .output()
-            .await;
+        let mut release_cmd = tokio::process::Command::new("ipconfig");
+        release_cmd.arg("/release");
+        let release = run_cmd(release_cmd, TIMEOUT_SLOW).await;
 
         if let Ok(output) = &release {
             if !output.status.success() {
@@ -17,11 +19,9 @@ pub async fn renew_dhcp() -> Result<String, String> {
             }
         }
 
-        match tokio::process::Command::new("ipconfig")
-            .arg("/renew")
-            .output()
-            .await
-        {
+        let mut renew_cmd = tokio::process::Command::new("ipconfig");
+        renew_cmd.arg("/renew");
+        match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => {
                 Ok("DHCP lease renewed".to_string())
             }
@@ -29,7 +29,7 @@ pub async fn renew_dhcp() -> Result<String, String> {
                 "DHCP renew failed: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             )),
-            Err(e) => Err(format!("Failed to run ipconfig: {}", e)),
+            Err(e) => Err(e),
         }
     }
 
@@ -39,11 +39,9 @@ pub async fn renew_dhcp() -> Result<String, String> {
         let device = detect_active_device_macos().await;
         match &device {
             Some(dev) => {
-                match tokio::process::Command::new("ipconfig")
-                    .args(["set", dev, "DHCP"])
-                    .output()
-                    .await
-                {
+                let mut cmd = tokio::process::Command::new("ipconfig");
+                cmd.args(["set", dev, "DHCP"]);
+                match run_cmd(cmd, TIMEOUT_SLOW).await {
                     Ok(output) if output.status.success() => {
                         Ok(format!("DHCP renewed on {}", dev))
                     }
@@ -52,7 +50,7 @@ pub async fn renew_dhcp() -> Result<String, String> {
                         dev,
                         String::from_utf8_lossy(&output.stderr).trim()
                     )),
-                    Err(e) => Err(format!("Failed to run ipconfig: {}", e)),
+                    Err(e) => Err(e),
                 }
             }
             None => Err("Could not detect active network device".to_string()),
@@ -62,17 +60,14 @@ pub async fn renew_dhcp() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         // Try dhclient first
-        let dhclient_release = tokio::process::Command::new("dhclient")
-            .arg("-r")
-            .output()
-            .await;
+        let mut release_cmd = tokio::process::Command::new("dhclient");
+        release_cmd.arg("-r");
+        let dhclient_release = run_cmd(release_cmd, TIMEOUT_SLOW).await;
 
         if let Ok(output) = dhclient_release {
             if output.status.success() {
-                match tokio::process::Command::new("dhclient")
-                    .output()
-                    .await
-                {
+                let mut renew_cmd = tokio::process::Command::new("dhclient");
+                match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
                     Ok(output) if output.status.success() => {
                         return Ok("DHCP lease renewed via dhclient".to_string());
                     }
@@ -82,17 +77,13 @@ pub async fn renew_dhcp() -> Result<String, String> {
         }
 
         // Fallback to nmcli
-        match tokio::process::Command::new("nmcli")
-            .args(["networking", "off"])
-            .output()
-            .await
-        {
+        let mut off_cmd = tokio::process::Command::new("nmcli");
+        off_cmd.args(["networking", "off"]);
+        match run_cmd(off_cmd, TIMEOUT_MEDIUM).await {
             Ok(off_output) if off_output.status.success() => {
-                match tokio::process::Command::new("nmcli")
-                    .args(["networking", "on"])
-                    .output()
-                    .await
-                {
+                let mut on_cmd = tokio::process::Command::new("nmcli");
+                on_cmd.args(["networking", "on"]);
+                match run_cmd(on_cmd, TIMEOUT_MEDIUM).await {
                     Ok(on_output) if on_output.status.success() => {
                         Ok("DHCP renewed via nmcli".to_string())
                     }
@@ -108,11 +99,9 @@ pub async fn renew_dhcp() -> Result<String, String> {
 /// Detect the active network device on macOS using `route -n get default`.
 #[cfg(target_os = "macos")]
 async fn detect_active_device_macos() -> Option<String> {
-    if let Ok(output) = tokio::process::Command::new("route")
-        .args(["-n", "get", "default"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("route");
+    cmd.args(["-n", "get", "default"]);
+    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             let line = line.trim();
