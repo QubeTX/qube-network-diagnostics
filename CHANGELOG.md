@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-02-11
+
+### Fixed
+- Fix Windows service restart failure: replace `net stop/start` with `sc` commands for PPL-protected services (dnscache, Dhcp), with PowerShell fallback and graceful degradation instead of hard failure
+- Remove redundant dim "Checking for VPN connections..." text that leaked raw ANSI escape codes (SGR 2 unsupported on some Windows terminals); VPN spinner already covers this
+
 ## [2.0.1] - 2026-02-11
 
 ### Fixed

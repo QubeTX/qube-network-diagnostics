@@ -56,10 +56,6 @@ pub async fn run(config: &Config) -> i32 {
     let saved_ssid = wifi::capture_current_ssid().await;
 
     // Step 0b: VPN detection and disable
-    println!(
-        "  {}",
-        color::dim("Checking for VPN connections...", config),
-    );
     let disabled_vpns = vpn::detect_and_disable(config).await;
 
     // ── Stage 1: Service Restart (automatic) ────────────────────────────────

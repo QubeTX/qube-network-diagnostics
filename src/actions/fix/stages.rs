@@ -102,23 +102,39 @@ async fn restart_services() -> Result<String, String> {
     {
         let mut restarted = Vec::new();
 
-        for service in &["DNS Client", "DHCP Client"] {
-            let mut stop_cmd = tokio::process::Command::new("net");
-            stop_cmd.args(["stop", service]);
+        // Try sc stop/start with internal service names (works better than net stop/start)
+        for (internal, display) in &[("dnscache", "DNS Client"), ("Dhcp", "DHCP Client")] {
+            let mut stop_cmd = tokio::process::Command::new("sc");
+            stop_cmd.args(["stop", internal]);
             let _ = run_cmd(stop_cmd, TIMEOUT_MEDIUM).await;
 
-            let mut start_cmd = tokio::process::Command::new("net");
-            start_cmd.args(["start", service]);
+            let mut start_cmd = tokio::process::Command::new("sc");
+            start_cmd.args(["start", internal]);
             match run_cmd(start_cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => {
-                    restarted.push(*service);
+                    restarted.push(*display);
                 }
                 _ => {}
             }
         }
 
+        // If sc failed (PPL-protected services), try PowerShell Restart-Service
         if restarted.is_empty() {
-            Err("Could not restart network services (may require elevation)".to_string())
+            for (internal, display) in &[("dnscache", "DNS Client"), ("Dhcp", "DHCP Client")] {
+                let mut cmd = tokio::process::Command::new("powershell");
+                cmd.args(["-NoProfile", "-Command", &format!("Restart-Service -Name '{}' -Force", internal)]);
+                match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+                    Ok(output) if output.status.success() => {
+                        restarted.push(*display);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if restarted.is_empty() {
+            // Services are PPL-protected; DNS flush and DHCP renew already handle cache refresh
+            Ok("Services protected (PPL); DNS flush and DHCP renew handle cache refresh".to_string())
         } else {
             Ok(format!("Restarted: {}", restarted.join(", ")))
         }
