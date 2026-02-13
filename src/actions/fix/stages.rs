@@ -88,9 +88,8 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
 
     // Wait and check connectivity
     {
-        let spinner = create_spinner("Checking connectivity...");
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let connected = connectivity::check_connectivity().await;
+        let spinner = create_spinner("Waiting for network to reconnect...");
+        let connected = connectivity::wait_for_connectivity(&spinner).await;
         spinner.finish_and_clear();
         (steps, connected)
     }
@@ -299,9 +298,8 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
 
     // Wait and check connectivity
     {
-        let spinner = create_spinner("Checking connectivity...");
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        let connected = connectivity::check_connectivity().await;
+        let spinner = create_spinner("Waiting for network to reconnect...");
+        let connected = connectivity::wait_for_connectivity(&spinner).await;
         spinner.finish_and_clear();
         (steps, connected)
     }
@@ -469,9 +467,8 @@ pub async fn run_stage3(config: &Config, saved_ssid: &Option<String>) -> (Vec<St
 
     // Wait and check connectivity
     {
-        let spinner = create_spinner("Checking connectivity...");
-        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-        let connected = connectivity::check_connectivity().await;
+        let spinner = create_spinner("Waiting for network to reconnect...");
+        let connected = connectivity::wait_for_connectivity(&spinner).await;
         spinner.finish_and_clear();
         (steps, connected)
     }

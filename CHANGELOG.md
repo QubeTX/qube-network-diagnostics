@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-02-12
+
+### Fixed
+- Add retry logic to post-fix connectivity checks: retry up to 3 times with 30-second countdown between each attempt, preventing false failure reports after interface resets (especially on Windows where Wi-Fi reconnection takes 15-30+ seconds)
+- Replace hardcoded 2s/5s/8s single-check waits with visible spinner countdown so the tool doesn't appear frozen during reconnection
+
 ## [2.0.2] - 2026-02-11
 
 ### Fixed
