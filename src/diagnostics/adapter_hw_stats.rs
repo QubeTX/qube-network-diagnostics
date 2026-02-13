@@ -1,6 +1,8 @@
 use serde::Serialize;
 use sysinfo::Networks;
 
+use super::shared_cache::SharedCache;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AdapterHwStat {
     pub name: String,
@@ -12,6 +14,39 @@ pub struct AdapterHwStat {
     pub tx_errors: u64,
     pub link_speed: Option<String>,
     pub duplex: Option<String>,
+}
+
+pub async fn collect_with_cache(cache: &SharedCache) -> Option<Vec<AdapterHwStat>> {
+    if let Some(ref networks) = cache.sysinfo_networks {
+        return collect_from_networks(networks).await;
+    }
+    collect().await
+}
+
+async fn collect_from_networks(networks: &Networks) -> Option<Vec<AdapterHwStat>> {
+    let mut stats = Vec::new();
+
+    for (name, data) in networks {
+        let (link_speed, duplex) = get_link_info(name).await;
+
+        stats.push(AdapterHwStat {
+            name: name.clone(),
+            rx_bytes: data.total_received(),
+            tx_bytes: data.total_transmitted(),
+            rx_packets: data.total_packets_received(),
+            tx_packets: data.total_packets_transmitted(),
+            rx_errors: data.total_errors_on_received(),
+            tx_errors: data.total_errors_on_transmitted(),
+            link_speed,
+            duplex,
+        });
+    }
+
+    if stats.is_empty() {
+        None
+    } else {
+        Some(stats)
+    }
 }
 
 pub async fn collect() -> Option<Vec<AdapterHwStat>> {
@@ -44,33 +79,67 @@ pub async fn collect() -> Option<Vec<AdapterHwStat>> {
 async fn get_link_info(_iface: &str) -> (Option<String>, Option<String>) {
     #[cfg(windows)]
     {
-        // Use wmic or powershell to get link speed
-        let escaped_iface = _iface.replace('\'', "''");
-        if let Ok(output) = tokio::process::Command::new("powershell")
-            .args(["-Command", &format!(
-                "Get-NetAdapter -Name '{}' | Select-Object LinkSpeed,FullDuplex | Format-List",
-                escaped_iface
-            )])
-            .output()
-            .await
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            let mut speed = None;
-            let mut duplex = None;
+        // Look up interface by name via ipconfig crate, then use GetIfEntry2
+        let iface_name = _iface.to_string();
+        tokio::task::spawn_blocking(move || {
+            let adapters = match ipconfig::get_adapters() {
+                Ok(a) => a,
+                Err(_) => return (None, None),
+            };
 
-            for line in text.lines() {
-                let line = line.trim();
-                if let Some(val) = line.strip_prefix("LinkSpeed") {
-                    speed = Some(val.trim().trim_start_matches(':').trim().to_string());
-                }
-                if let Some(val) = line.strip_prefix("FullDuplex") {
-                    let val = val.trim().trim_start_matches(':').trim();
-                    duplex = Some(if val == "True" { "Full" } else { "Half" }.to_string());
-                }
+            // Match by friendly_name
+            let adapter = adapters
+                .iter()
+                .find(|a| a.friendly_name() == iface_name);
+
+            let adapter = match adapter {
+                Some(a) => a,
+                None => return (None, None),
+            };
+
+            let if_index = adapter.ipv6_if_index();
+            if if_index == 0 {
+                // Fall back to link speed from ipconfig crate
+                let tx = adapter.transmit_link_speed();
+                let speed = if tx > 0 {
+                    Some(format_speed_bps(tx))
+                } else {
+                    None
+                };
+                return (speed, None);
             }
-            return (speed, duplex);
-        }
-        (None, None)
+
+            // Call GetIfEntry2 for precise speed + duplex
+            use std::mem::zeroed;
+            use winapi::shared::netioapi::{GetIfEntry2, MIB_IF_ROW2};
+
+            unsafe {
+                let mut row: MIB_IF_ROW2 = zeroed();
+                row.InterfaceIndex = if_index;
+                let ret = GetIfEntry2(&mut row);
+                if ret != 0 {
+                    return (None, None);
+                }
+
+                let tx_speed = row.TransmitLinkSpeed;
+                let speed = if tx_speed > 0 {
+                    Some(format_speed_bps(tx_speed))
+                } else {
+                    None
+                };
+
+                // MIB_IF_ROW2 doesn't directly expose duplex, but
+                // ConnectionType can hint: 1=dedicated (usually full duplex)
+                let duplex = match row.ConnectionType {
+                    1 => Some("Full".to_string()), // NET_IF_CONNECTION_DEDICATED
+                    _ => None,
+                };
+
+                (speed, duplex)
+            }
+        })
+        .await
+        .unwrap_or((None, None))
     }
 
     #[cfg(target_os = "linux")]
@@ -93,7 +162,16 @@ async fn get_link_info(_iface: &str) -> (Option<String>, Option<String>) {
 
     #[cfg(target_os = "macos")]
     {
-        // macOS doesn't easily expose this info
         (None, None)
+    }
+}
+
+#[cfg(windows)]
+fn format_speed_bps(bps: u64) -> String {
+    let mbps = bps / 1_000_000;
+    if mbps >= 1000 {
+        format!("{:.1} Gbps", mbps as f64 / 1000.0)
+    } else {
+        format!("{} Mbps", mbps)
     }
 }

@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::diagnostics::{DiagnosticResults, DiagnosticStatus, TechnicianResults};
-use crate::render::color::colorize_status;
+use crate::render::color::{colorize_status, dim};
 use crate::render::table::ReportBuilder;
 
 pub fn render(results: &DiagnosticResults, config: &Config) -> String {
@@ -31,6 +31,10 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
     let overall = format_overall(fail_count, warn_count, config);
     builder = builder.divider();
     builder = builder.span_row(&format!("  OVERALL: {}", overall));
+
+    if fail_count > 0 {
+        builder = builder.span_row(&dim("  Run 'nd300 -f' to attempt automatic fixes", config));
+    }
 
     output.push_str(&builder.finish());
     output.push('\n');
@@ -68,9 +72,53 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
                 if i > 0 {
                     b = b.divider();
                 }
-                b = b.row("Adapter", &adapter.name);
-                b = b.row("Type", &adapter.adapter_type);
+                // Use description (hardware chip name) as primary label if available
+                let adapter_label = adapter.description.as_deref().unwrap_or(&adapter.name);
+                b = b.row("Adapter", adapter_label);
+
+                // Show display type with physical medium detail
+                let type_detail = if let Some(ref pm) = adapter.physical_medium {
+                    format!("{} ({})", adapter.adapter_type, pm)
+                } else {
+                    adapter.adapter_type.clone()
+                };
+                b = b.row("Type", &type_detail);
                 b = b.row("Status", &adapter.status);
+
+                if let Some(ref mac) = adapter.mac_address {
+                    b = b.row("MAC", mac);
+                }
+
+                // Link speed (show TX/RX if different, single value if same)
+                match (adapter.link_speed_mbps, adapter.rx_link_speed_mbps) {
+                    (Some(tx), Some(rx)) if tx == rx => {
+                        b = b.row("Link Speed", &format_link_speed(tx));
+                    }
+                    (Some(tx), Some(rx)) => {
+                        b = b.row("Link Speed", &format!("TX: {} / RX: {}", format_link_speed(tx), format_link_speed(rx)));
+                    }
+                    (Some(tx), None) => {
+                        b = b.row("Link Speed", &format_link_speed(tx));
+                    }
+                    _ => {}
+                }
+
+                if let Some(ref gws) = adapter.gateways {
+                    for gw in gws {
+                        b = b.row("Gateway", gw);
+                    }
+                }
+                if let Some(ref dns) = adapter.dns_servers {
+                    for server in dns {
+                        b = b.row("DNS", server);
+                    }
+                }
+                if let Some(mtu) = adapter.mtu {
+                    b = b.row("MTU", &mtu.to_string());
+                }
+                if let Some(metric) = adapter.ipv4_metric {
+                    b = b.row("IPv4 Metric", &metric.to_string());
+                }
 
                 if let Some(ref drv) = adapter.driver_name {
                     b = b.row("Driver", drv);
@@ -627,6 +675,14 @@ fn format_overall(fails: usize, warns: usize, config: &Config) -> String {
         colorize_status(&text, &DiagnosticStatus::Warn, config)
     } else {
         colorize_status("All diagnostics passed", &DiagnosticStatus::Ok, config)
+    }
+}
+
+fn format_link_speed(mbps: u64) -> String {
+    if mbps >= 1000 {
+        format!("{:.1} Gbps", mbps as f64 / 1000.0)
+    } else {
+        format!("{} Mbps", mbps)
     }
 }
 

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::Serialize;
 
 use super::DiagnosticResult;
@@ -9,6 +11,26 @@ pub struct AdapterInfo {
     pub status: String,
     pub has_ip: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mac_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_speed_mbps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rx_link_speed_mbps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_servers: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateways: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_connect_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_medium: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv4_metric: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub driver_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub driver_version: Option<String>,
@@ -16,6 +38,96 @@ pub struct AdapterInfo {
     pub driver_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem_code: Option<u32>,
+}
+
+fn display_type(adapter_type: &str, name: &str, physical_medium: Option<&str>) -> &'static str {
+    // Priority 1: PhysicalMediumType from GetIfEntry2 (most accurate)
+    if let Some(pm) = physical_medium {
+        match pm {
+            "Native802_11" | "WirelessLan" => return "Wi-Fi",
+            "Bluetooth" => return "Bluetooth",
+            "BluetoothPAN" => return "BT PAN",
+            "Ethernet802_3" => return "Ethernet",
+            "WirelessWan" => return "WWAN",
+            _ => {} // fall through
+        }
+    }
+
+    // Priority 2: Name-based heuristics
+    let lower_name = name.to_lowercase();
+
+    if lower_name.contains("virtualbox")
+        || lower_name.contains("vmware")
+        || lower_name.contains("hyper-v")
+        || lower_name.contains("vethernet")
+        || lower_name.contains("docker")
+        || lower_name.contains("virtual")
+        || lower_name.contains("host-only")
+        || lower_name.contains("vm network")
+    {
+        return "Virtual";
+    }
+    if lower_name.contains("wi-fi")
+        || lower_name.contains("wireless")
+        || lower_name.contains("wlan")
+    {
+        return "Wi-Fi";
+    }
+    if lower_name.contains("bluetooth") {
+        if lower_name.contains("personal area network")
+            || lower_name.contains("pan")
+            || lower_name.contains("bnep")
+        {
+            return "BT PAN";
+        }
+        return "Bluetooth";
+    }
+
+    // Priority 3: adapter_type field (IfType-derived)
+    match adapter_type {
+        "Ieee80211" | "Wi-Fi" => "Wi-Fi",
+        t if t.contains("802.11") || t.to_lowercase().contains("wireless") => "Wi-Fi",
+        "Bluetooth" => "Bluetooth",
+        "EthernetCsmacd" | "Ethernet" => "Ethernet",
+        t if t.contains("802.3") || t.eq_ignore_ascii_case("ethernet") => "Ethernet",
+        "Tunnel" | "VPN/Tunnel" => "VPN",
+        "Virtual" => "Virtual",
+        "Ppp" => "PPP",
+        "Other" | "Unknown" => "Other",
+        _ => "Other",
+    }
+}
+
+/// Build a set of display types for adapters matching a given status,
+/// optionally appending link speed for active Wi-Fi adapters.
+fn types_by_status(adapters: &[AdapterInfo], status: &str) -> BTreeSet<String> {
+    adapters
+        .iter()
+        .filter(|a| a.status == status)
+        .map(|a| {
+            let dtype = display_type(
+                &a.adapter_type,
+                &a.name,
+                a.physical_medium.as_deref(),
+            );
+            // Append link speed for active Wi-Fi adapters
+            if status == "Active" && dtype == "Wi-Fi" {
+                if let Some(speed) = a.link_speed_mbps {
+                    if speed >= 1000 {
+                        return format!("Wi-Fi {:.1} Gbps", speed as f64 / 1000.0);
+                    } else if speed > 0 {
+                        return format!("Wi-Fi {} Mbps", speed);
+                    }
+                }
+            }
+            dtype.to_string()
+        })
+        .collect()
+}
+
+fn format_types(types: &BTreeSet<String>) -> String {
+    let v: Vec<&str> = types.iter().map(|s| s.as_str()).collect();
+    v.join(", ")
 }
 
 pub async fn check() -> (DiagnosticResult, Vec<AdapterInfo>) {
@@ -41,17 +153,26 @@ pub async fn check() -> (DiagnosticResult, Vec<AdapterInfo>) {
             ),
         )
     } else if disabled_count > 0 && active_count > 0 {
+        let active_types = types_by_status(&adapters, "Active");
+        let disabled_types = types_by_status(&adapters, "Disabled");
         DiagnosticResult::warn(
             "Adapters",
             format!(
-                "{} disabled, {} active",
-                disabled_count, active_count
+                "{} active ({})\n{} disabled ({})",
+                active_count,
+                format_types(&active_types),
+                disabled_count,
+                format_types(&disabled_types),
             ),
         )
     } else if active_count == 0 {
         DiagnosticResult::fail("Adapters", "No active network adapters found")
     } else {
-        DiagnosticResult::ok("Adapters", "All network adapters healthy")
+        let active_types = types_by_status(&adapters, "Active");
+        DiagnosticResult::ok(
+            "Adapters",
+            format!("{} active ({})", active_count, format_types(&active_types)),
+        )
     };
 
     (result, adapters)
@@ -74,60 +195,181 @@ async fn collect_adapters() -> Vec<AdapterInfo> {
     }
 }
 
+// ── GetIfEntry2 helper (Windows only) ────────────────────────────────────
+
+#[cfg(windows)]
+struct IfEntry2Data {
+    media_connect_state: u32, // 0=Unknown, 1=Connected, 2=Disconnected
+    physical_medium_type: u32,
+    admin_status: u32, // 1=Up, 2=Down, 3=Testing
+    transmit_link_speed: u64,
+    receive_link_speed: u64,
+    mtu: u32,
+}
+
+#[cfg(windows)]
+fn get_if_entry2(if_index: u32) -> Option<IfEntry2Data> {
+    use std::mem::zeroed;
+    use winapi::shared::netioapi::{GetIfEntry2, MIB_IF_ROW2};
+
+    if if_index == 0 {
+        return None;
+    }
+
+    unsafe {
+        let mut row: MIB_IF_ROW2 = zeroed();
+        row.InterfaceIndex = if_index;
+        let ret = GetIfEntry2(&mut row);
+        if ret != 0 {
+            return None;
+        }
+        Some(IfEntry2Data {
+            media_connect_state: row.MediaConnectState as u32,
+            physical_medium_type: row.PhysicalMediumType as u32,
+            admin_status: row.AdminStatus as u32,
+            transmit_link_speed: row.TransmitLinkSpeed,
+            receive_link_speed: row.ReceiveLinkSpeed,
+            mtu: row.Mtu,
+        })
+    }
+}
+
+/// Map PhysicalMediumType integer to a string we use for classification.
+#[cfg(windows)]
+fn physical_medium_name(pm: u32) -> Option<&'static str> {
+    // Values from NDIS_PHYSICAL_MEDIUM enum
+    match pm {
+        0 => None,           // Unspecified
+        1 => Some("WirelessLan"),       // NdisPhysicalMediumWirelessLan
+        2 => Some("CableModem"),
+        3 => Some("PhoneLine"),
+        4 => Some("PowerLine"),
+        5 => Some("DSL"),
+        6 => Some("FibreChannel"),
+        7 => Some("1394"),              // IEEE 1394 / FireWire
+        8 => Some("WirelessWan"),
+        9 => Some("Native802_11"),      // NdisPhysicalMediumNative802_11
+        10 => Some("Bluetooth"),
+        11 => Some("Infiniband"),
+        12 => Some("WiMax"),
+        13 => Some("UWB"),
+        14 => Some("Ethernet802_3"),    // NdisPhysicalMedium802_3
+        _ => None,
+    }
+}
+
+/// Derive adapter status from GetIfEntry2 + OperStatus.
+#[cfg(windows)]
+fn derive_status(
+    oper_status: ipconfig::OperStatus,
+    if2: Option<&IfEntry2Data>,
+) -> String {
+    if let Some(data) = if2 {
+        // AdminStatus=2 means admin-disabled
+        if data.admin_status == 2 {
+            return "Disabled".to_string();
+        }
+        // Admin is up but media disconnected = no cable/signal
+        if data.admin_status == 1 && data.media_connect_state == 2 {
+            return "No Cable".to_string();
+        }
+    }
+
+    match oper_status {
+        ipconfig::OperStatus::IfOperStatusUp => "Active".to_string(),
+        ipconfig::OperStatus::IfOperStatusDown => "Down".to_string(),
+        ipconfig::OperStatus::IfOperStatusDormant => "Standby".to_string(),
+        ipconfig::OperStatus::IfOperStatusNotPresent => "Not Present".to_string(),
+        ipconfig::OperStatus::IfOperStatusLowerLayerDown => "Down".to_string(),
+        _ => "Unknown".to_string(),
+    }
+}
+
+#[cfg(windows)]
+fn format_mac(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 #[cfg(windows)]
 async fn collect_adapters_windows() -> Vec<AdapterInfo> {
-    use std::collections::HashMap;
-    use wmi::{COMLibrary, WMIConnection};
-
-    let adapters = tokio::task::spawn_blocking(|| {
-        let com = match COMLibrary::new() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-        let wmi = match WMIConnection::new(com) {
-            Ok(w) => w,
-            Err(_) => return Vec::new(),
-        };
-
-        let query = "SELECT Name, NetConnectionStatus, AdapterType, MACAddress FROM Win32_NetworkAdapter WHERE PhysicalAdapter = TRUE";
-        let results: Vec<HashMap<String, wmi::Variant>> = match wmi.raw_query(query) {
-            Ok(r) => r,
+    tokio::task::spawn_blocking(|| {
+        let raw_adapters = match ipconfig::get_adapters() {
+            Ok(a) => a,
             Err(_) => return Vec::new(),
         };
 
         let mut adapters = Vec::new();
-        for row in results {
-            let name = match row.get("Name") {
-                Some(wmi::Variant::String(s)) => s.clone(),
-                _ => continue,
+
+        for adapter in raw_adapters {
+            // Skip loopback
+            if adapter.if_type() == ipconfig::IfType::SoftwareLoopback {
+                continue;
+            }
+
+            // Skip adapters with no MAC (virtual/software adapters)
+            let mac = adapter.physical_address();
+            let is_zero_mac = mac.map_or(true, |m| m.iter().all(|b| *b == 0));
+            if is_zero_mac {
+                continue;
+            }
+
+            // Get extended info from GetIfEntry2
+            let if2 = get_if_entry2(adapter.ipv6_if_index());
+
+            let if_type_str = match adapter.if_type() {
+                ipconfig::IfType::EthernetCsmacd => "EthernetCsmacd",
+                ipconfig::IfType::Ieee80211 => "Ieee80211",
+                ipconfig::IfType::Tunnel => "Tunnel",
+                ipconfig::IfType::Ppp => "Ppp",
+                _ => "Other",
             };
 
-            let status_code = match row.get("NetConnectionStatus") {
-                Some(wmi::Variant::UI2(n)) => *n,
-                Some(wmi::Variant::I4(n)) => *n as u16,
-                _ => 0,
-            };
+            let oper_status = adapter.oper_status();
+            let status = derive_status(oper_status, if2.as_ref());
+            let has_ip = oper_status == ipconfig::OperStatus::IfOperStatusUp
+                && !adapter.ip_addresses().is_empty();
 
-            let adapter_type = match row.get("AdapterType") {
-                Some(wmi::Variant::String(s)) => s.clone(),
+            let physical_medium = if2
+                .as_ref()
+                .and_then(|d| physical_medium_name(d.physical_medium_type))
+                .map(|s| s.to_string());
+
+            let tx_speed_bps = if2.as_ref().map(|d| d.transmit_link_speed)
+                .unwrap_or(adapter.transmit_link_speed());
+            let rx_speed_bps = if2.as_ref().map(|d| d.receive_link_speed)
+                .unwrap_or(adapter.receive_link_speed());
+
+            let tx_mbps = tx_speed_bps / 1_000_000;
+            let rx_mbps = rx_speed_bps / 1_000_000;
+
+            let dns: Vec<String> = adapter.dns_servers().iter().map(|ip| ip.to_string()).collect();
+            let gws: Vec<String> = adapter.gateways().iter().map(|ip| ip.to_string()).collect();
+
+            let media_connect = if2.as_ref().map(|d| match d.media_connect_state {
+                1 => "Connected".to_string(),
+                2 => "Disconnected".to_string(),
                 _ => "Unknown".to_string(),
-            };
-
-            let status = match status_code {
-                2 => "Active".to_string(),
-                1 => "Connecting".to_string(),
-                0 => "Disconnected".to_string(),
-                3 => "Disconnecting".to_string(),
-                4..=6 => "Error".to_string(),
-                7 => "Disabled".to_string(),
-                _ => "Unknown".to_string(),
-            };
+            });
 
             adapters.push(AdapterInfo {
-                name,
-                adapter_type,
+                name: adapter.friendly_name().to_string(),
+                adapter_type: if_type_str.to_string(),
                 status,
-                has_ip: status_code == 2,
+                has_ip,
+                description: Some(adapter.description().to_string()),
+                mac_address: mac.map(format_mac),
+                link_speed_mbps: if tx_mbps > 0 { Some(tx_mbps) } else { None },
+                rx_link_speed_mbps: if rx_mbps > 0 { Some(rx_mbps) } else { None },
+                dns_servers: if dns.is_empty() { None } else { Some(dns) },
+                gateways: if gws.is_empty() { None } else { Some(gws) },
+                media_connect_state: media_connect,
+                physical_medium,
+                mtu: if2.as_ref().map(|d| d.mtu),
+                ipv4_metric: Some(adapter.ipv4_metric()),
                 driver_name: None,
                 driver_version: None,
                 driver_date: None,
@@ -135,39 +377,81 @@ async fn collect_adapters_windows() -> Vec<AdapterInfo> {
             });
         }
 
-        // Try to get driver info
-        let driver_query = "SELECT Name, DriverVersion, DriverDate FROM Win32_PnPSignedDriver WHERE DeviceClass = 'NET'";
-        if let Ok(drivers) = wmi.raw_query::<HashMap<String, wmi::Variant>>(driver_query) {
-            for driver in drivers {
-                let drv_name = match driver.get("Name") {
-                    Some(wmi::Variant::String(s)) => s.clone(),
-                    _ => continue,
-                };
-                let version = match driver.get("DriverVersion") {
-                    Some(wmi::Variant::String(s)) => Some(s.clone()),
-                    _ => None,
-                };
-                let date = match driver.get("DriverDate") {
-                    Some(wmi::Variant::String(s)) => Some(s.chars().take(10).collect()),
-                    _ => None,
-                };
-
-                for adapter in &mut adapters {
-                    if adapter.name.contains(&drv_name) || drv_name.contains(&adapter.name) {
-                        adapter.driver_name = Some(drv_name.clone());
-                        adapter.driver_version = version.clone();
-                        adapter.driver_date = date.clone();
-                    }
-                }
-            }
-        }
-
         adapters
     })
     .await
-    .unwrap_or_default();
+    .unwrap_or_default()
+}
 
-    adapters
+/// Enrich adapter list with driver info from WMI (tech mode only).
+/// Matches by description (hardware chip name) which is more reliable
+/// than the old name-based substring match.
+#[cfg(windows)]
+pub async fn enrich_driver_info(adapters: &mut Vec<AdapterInfo>) {
+    use std::collections::HashMap;
+    use wmi::{COMLibrary, WMIConnection};
+
+    // Extract driver data inside the blocking closure into Send-safe types
+    let driver_data: Vec<(String, Option<String>, Option<String>)> =
+        tokio::task::spawn_blocking(|| {
+            let com = match COMLibrary::new() {
+                Ok(c) => c,
+                Err(_) => return Vec::new(),
+            };
+            let wmi = match WMIConnection::new(com) {
+                Ok(w) => w,
+                Err(_) => return Vec::new(),
+            };
+
+            let query = "SELECT DeviceName, DriverVersion, DriverDate FROM Win32_PnPSignedDriver WHERE DeviceClass = 'NET'";
+            let results: Vec<HashMap<String, wmi::Variant>> = match wmi.raw_query(query) {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
+
+            results
+                .into_iter()
+                .filter_map(|row| {
+                    let name = match row.get("DeviceName") {
+                        Some(wmi::Variant::String(s)) => s.clone(),
+                        _ => return None,
+                    };
+                    let version = match row.get("DriverVersion") {
+                        Some(wmi::Variant::String(s)) => Some(s.clone()),
+                        _ => None,
+                    };
+                    let date = match row.get("DriverDate") {
+                        Some(wmi::Variant::String(s)) => Some(s.chars().take(10).collect()),
+                        _ => None,
+                    };
+                    Some((name, version, date))
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
+
+    for (drv_name, version, date) in &driver_data {
+        for adapter in adapters.iter_mut() {
+            let matches = adapter
+                .description
+                .as_ref()
+                .map_or(false, |desc| {
+                    desc.contains(drv_name.as_str()) || drv_name.contains(desc.as_str())
+                });
+
+            if matches {
+                adapter.driver_name = Some(drv_name.clone());
+                adapter.driver_version = version.clone();
+                adapter.driver_date = date.clone();
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub async fn enrich_driver_info(_adapters: &mut Vec<AdapterInfo>) {
+    // No-op on non-Windows — driver info already collected per-platform
 }
 
 #[cfg(target_os = "macos")]
@@ -199,6 +483,16 @@ async fn collect_adapters_macos() -> Vec<AdapterInfo> {
                     adapter_type: detect_macos_type(&current_name),
                     status: status.to_string(),
                     has_ip: status == "Active",
+                    description: None,
+                    mac_address: None,
+                    link_speed_mbps: None,
+                    rx_link_speed_mbps: None,
+                    dns_servers: None,
+                    gateways: None,
+                    media_connect_state: None,
+                    physical_medium: None,
+                    mtu: None,
+                    ipv4_metric: None,
                     driver_name: Some(current_device.clone()),
                     driver_version: None,
                     driver_date: None,
@@ -273,7 +567,6 @@ async fn collect_adapters_linux() -> Vec<AdapterInfo> {
                 "Other"
             };
 
-            // Get driver info
             let driver = get_linux_driver(name).await;
 
             adapters.push(AdapterInfo {
@@ -281,6 +574,16 @@ async fn collect_adapters_linux() -> Vec<AdapterInfo> {
                 adapter_type: iface_type.to_string(),
                 status: if is_up { "Active" } else { "Disconnected" }.to_string(),
                 has_ip: is_up,
+                description: None,
+                mac_address: None,
+                link_speed_mbps: None,
+                rx_link_speed_mbps: None,
+                dns_servers: None,
+                gateways: None,
+                media_connect_state: None,
+                physical_medium: None,
+                mtu: None,
+                ipv4_metric: None,
                 driver_name: driver,
                 driver_version: None,
                 driver_date: None,

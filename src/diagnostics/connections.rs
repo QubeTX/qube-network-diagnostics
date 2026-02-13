@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use super::shared_cache::SharedCache;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectionEntry {
     pub protocol: String,
@@ -8,6 +10,26 @@ pub struct ConnectionEntry {
     pub state: String,
     pub pid: Option<u32>,
     pub process_name: Option<String>,
+}
+
+pub async fn collect_with_cache(cache: &SharedCache) -> Option<Vec<ConnectionEntry>> {
+    #[cfg(windows)]
+    {
+        if let Some(ref nc) = cache.netstat {
+            return Some(parse_windows_connections(&nc.lines, &nc.process_map));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(ref nc) = cache.netstat {
+            return Some(parse_macos_connections(&nc.lines));
+        }
+    }
+
+    // Linux uses `ss`, not netstat -ano, so always falls through
+    let _ = cache;
+    collect().await
 }
 
 pub async fn collect() -> Option<Vec<ConnectionEntry>> {
@@ -28,22 +50,13 @@ pub async fn collect() -> Option<Vec<ConnectionEntry>> {
 }
 
 #[cfg(windows)]
-async fn collect_windows() -> Option<Vec<ConnectionEntry>> {
-    use sysinfo::System;
-
-    let output = tokio::process::Command::new("netstat")
-        .args(["-ano"])
-        .output()
-        .await
-        .ok()?;
-
-    let text = String::from_utf8_lossy(&output.stdout);
+fn parse_windows_connections(
+    lines: &[String],
+    process_map: &std::collections::HashMap<u32, String>,
+) -> Vec<ConnectionEntry> {
     let mut entries = Vec::new();
 
-    let mut sys = System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-
-    for line in text.lines() {
+    for line in lines {
         let line = line.trim();
         let parts: Vec<&str> = line.split_whitespace().collect();
 
@@ -55,10 +68,7 @@ async fn collect_windows() -> Option<Vec<ConnectionEntry>> {
                 String::new()
             };
 
-            let process_name = pid.and_then(|p| {
-                sys.process(sysinfo::Pid::from_u32(p))
-                    .map(|pr| pr.name().to_string_lossy().to_string())
-            });
+            let process_name = pid.and_then(|p| process_map.get(&p).cloned());
 
             entries.push(ConnectionEntry {
                 protocol: parts[0].to_string(),
@@ -71,21 +81,37 @@ async fn collect_windows() -> Option<Vec<ConnectionEntry>> {
         }
     }
 
-    Some(entries)
+    entries
 }
 
-#[cfg(target_os = "macos")]
-async fn collect_macos() -> Option<Vec<ConnectionEntry>> {
+#[cfg(windows)]
+async fn collect_windows() -> Option<Vec<ConnectionEntry>> {
+    use sysinfo::System;
+
     let output = tokio::process::Command::new("netstat")
-        .args(["-anp", "tcp"])
+        .args(["-ano"])
         .output()
         .await
         .ok()?;
 
     let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+
+    let mut sys = System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let mut process_map = std::collections::HashMap::new();
+    for (pid, process) in sys.processes() {
+        process_map.insert(pid.as_u32(), process.name().to_string_lossy().to_string());
+    }
+
+    Some(parse_windows_connections(&lines, &process_map))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_connections(lines: &[String]) -> Vec<ConnectionEntry> {
     let mut entries = Vec::new();
 
-    for line in text.lines() {
+    for line in lines {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 6 && parts[0].starts_with("tcp") {
             entries.push(ConnectionEntry {
@@ -99,7 +125,20 @@ async fn collect_macos() -> Option<Vec<ConnectionEntry>> {
         }
     }
 
-    Some(entries)
+    entries
+}
+
+#[cfg(target_os = "macos")]
+async fn collect_macos() -> Option<Vec<ConnectionEntry>> {
+    let output = tokio::process::Command::new("netstat")
+        .args(["-anp", "tcp"])
+        .output()
+        .await
+        .ok()?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    Some(parse_macos_connections(&lines))
 }
 
 #[cfg(target_os = "linux")]

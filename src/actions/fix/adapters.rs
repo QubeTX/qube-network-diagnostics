@@ -4,31 +4,17 @@ use super::cmd::{run_cmd, TIMEOUT_QUICK, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
 /// List active network adapters — all platforms.
 #[cfg(windows)]
 pub async fn list_active_adapters() -> Vec<String> {
-    use std::collections::HashMap;
-    use wmi::{COMLibrary, WMIConnection};
-
     tokio::task::spawn_blocking(|| {
-        let com = match COMLibrary::new() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-        let wmi = match WMIConnection::new(com) {
-            Ok(w) => w,
+        let adapters = match ipconfig::get_adapters() {
+            Ok(a) => a,
             Err(_) => return Vec::new(),
         };
 
-        let query = "SELECT NetConnectionID, NetConnectionStatus FROM Win32_NetworkAdapter WHERE NetConnectionID IS NOT NULL AND NetConnectionStatus = 2";
-        let results: Vec<HashMap<String, wmi::Variant>> = match wmi.raw_query(query) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
-
-        results
+        adapters
             .into_iter()
-            .filter_map(|row| match row.get("NetConnectionID") {
-                Some(wmi::Variant::String(s)) => Some(s.clone()),
-                _ => None,
-            })
+            .filter(|a| a.oper_status() == ipconfig::OperStatus::IfOperStatusUp)
+            .filter(|a| a.if_type() != ipconfig::IfType::SoftwareLoopback)
+            .map(|a| a.friendly_name().to_string())
             .collect()
     })
     .await
@@ -235,9 +221,22 @@ pub async fn restart_adapter(name: &str) -> Result<String, String> {
 pub async fn detect_default_interface() -> Option<String> {
     #[cfg(windows)]
     {
-        // Use WMI to find the adapter with default route
-        let adapters = list_active_adapters().await;
-        adapters.into_iter().next()
+        // Pick the active adapter with lowest IPv4 metric that has a gateway
+        tokio::task::spawn_blocking(|| {
+            let adapters = match ipconfig::get_adapters() {
+                Ok(a) => a,
+                Err(_) => return None,
+            };
+
+            adapters
+                .into_iter()
+                .filter(|a| a.oper_status() == ipconfig::OperStatus::IfOperStatusUp)
+                .filter(|a| !a.gateways().is_empty())
+                .min_by_key(|a| a.ipv4_metric())
+                .map(|a| a.friendly_name().to_string())
+        })
+        .await
+        .unwrap_or(None)
     }
 
     #[cfg(target_os = "macos")]

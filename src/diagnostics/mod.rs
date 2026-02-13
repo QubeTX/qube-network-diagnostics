@@ -19,6 +19,7 @@ pub mod proxy;
 pub mod public_ip;
 pub mod reverse_dns;
 pub mod routing_table;
+pub mod shared_cache;
 pub mod speed;
 pub mod tls_inspection;
 pub mod traffic_counters;
@@ -195,8 +196,10 @@ pub async fn run_all(config: &Config) -> DiagnosticResults {
         speed::check(config).await
     };
 
-    // Run technician-mode deep diagnostics if requested
+    // Enrich adapter details with driver info in tech mode only (WMI query)
+    let mut adapter_details = adapter_details;
     let technician = if config.is_tech_mode() {
+        adapters::enrich_driver_info(&mut adapter_details).await;
         Some(run_technician_diagnostics(config).await)
     } else {
         None
@@ -229,6 +232,9 @@ async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
         eprintln!("[verbose] Running technician deep diagnostics...");
     }
 
+    // Pre-fetch shared data to avoid duplicate subprocess calls
+    let cache = shared_cache::SharedCache::build_for_tech_mode().await;
+
     let (
         arp_table,
         routing,
@@ -250,21 +256,21 @@ async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
     ) = tokio::join!(
         arp::collect(),
         routing_table::collect(),
-        connections::collect(),
-        listening_ports::collect(),
-        dhcp::collect(),
+        connections::collect_with_cache(&cache),
+        listening_ports::collect_with_cache(&cache),
+        dhcp::collect_with_cache(&cache),
         protocol_stats::collect(),
-        adapter_hw_stats::collect(),
+        adapter_hw_stats::collect_with_cache(&cache),
         proxy::collect(),
-        vpn::collect(),
+        vpn::collect_with_cache(&cache),
         firewall::collect(),
         dns_cache::collect(),
-        ipv6::collect(),
+        ipv6::collect_with_cache(&cache),
         mtu::collect(),
-        connection_states::collect(),
-        reverse_dns::collect(),
+        connection_states::collect_with_cache(&cache),
+        reverse_dns::collect_with_cache(&cache),
         tls_inspection::collect(),
-        traffic_counters::collect(),
+        traffic_counters::collect_with_cache(&cache),
     );
 
     // Bufferbloat needs speed test data, run separately

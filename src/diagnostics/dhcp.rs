@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use super::shared_cache::SharedCache;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DhcpLease {
     pub interface: String,
@@ -10,6 +12,17 @@ pub struct DhcpLease {
     pub ip_address: Option<String>,
     pub subnet_mask: Option<String>,
     pub default_gateway: Option<String>,
+}
+
+pub async fn collect_with_cache(cache: &SharedCache) -> Option<Vec<DhcpLease>> {
+    #[cfg(windows)]
+    {
+        if let Some(ref ic) = cache.ipconfig {
+            return parse_dhcp_from_ipconfig(&ic.raw);
+        }
+    }
+    let _ = cache;
+    collect().await
 }
 
 pub async fn collect() -> Option<Vec<DhcpLease>> {
@@ -30,14 +43,7 @@ pub async fn collect() -> Option<Vec<DhcpLease>> {
 }
 
 #[cfg(windows)]
-async fn collect_windows() -> Option<Vec<DhcpLease>> {
-    let output = tokio::process::Command::new("ipconfig")
-        .args(["/all"])
-        .output()
-        .await
-        .ok()?;
-
-    let text = String::from_utf8_lossy(&output.stdout);
+fn parse_dhcp_from_ipconfig(text: &str) -> Option<Vec<DhcpLease>> {
     let mut leases = Vec::new();
     let mut current = DhcpLease {
         interface: String::new(),
@@ -104,13 +110,24 @@ async fn collect_windows() -> Option<Vec<DhcpLease>> {
         leases.push(current);
     }
 
-    // Filter to only DHCP-enabled adapters with IPs
     let filtered: Vec<DhcpLease> = leases
         .into_iter()
         .filter(|l| l.dhcp_enabled || l.ip_address.is_some())
         .collect();
 
     Some(filtered)
+}
+
+#[cfg(windows)]
+async fn collect_windows() -> Option<Vec<DhcpLease>> {
+    let output = tokio::process::Command::new("ipconfig")
+        .args(["/all"])
+        .output()
+        .await
+        .ok()?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_dhcp_from_ipconfig(&text)
 }
 
 #[cfg(target_os = "macos")]

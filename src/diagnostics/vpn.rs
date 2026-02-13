@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use super::shared_cache::SharedCache;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct VpnAdapter {
     pub name: String,
@@ -9,6 +11,49 @@ pub struct VpnAdapter {
     pub vendor: Option<String>,
     pub is_enterprise: bool,
     pub interface_name: Option<String>,
+}
+
+pub async fn collect_with_cache(cache: &SharedCache) -> Option<Vec<VpnAdapter>> {
+    let mut vpns = Vec::new();
+
+    #[cfg(windows)]
+    {
+        if let Some(ref ic) = cache.ipconfig {
+            parse_vpn_from_ipconfig(&ic.raw, &mut vpns);
+        } else {
+            collect_windows_ipconfig(&mut vpns).await;
+        }
+        collect_windows_wmi(&mut vpns).await;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = cache;
+        collect_macos_ifconfig(&mut vpns).await;
+        collect_macos_scutil(&mut vpns).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = cache;
+        collect_linux_ip_link(&mut vpns).await;
+        collect_linux_nmcli(&mut vpns).await;
+        collect_linux_wireguard(&mut vpns).await;
+    }
+
+    vpns.dedup_by(|a, b| {
+        if let (Some(ref ai), Some(ref bi)) = (&a.interface_name, &b.interface_name) {
+            ai == bi
+        } else {
+            a.name == b.name
+        }
+    });
+
+    if vpns.is_empty() {
+        None
+    } else {
+        Some(vpns)
+    }
 }
 
 pub async fn collect() -> Option<Vec<VpnAdapter>> {
@@ -52,6 +97,66 @@ pub async fn collect() -> Option<Vec<VpnAdapter>> {
 // ── Windows ─────────────────────────────────────────────────────────────────
 
 #[cfg(windows)]
+fn parse_vpn_from_ipconfig(text: &str, vpns: &mut Vec<VpnAdapter>) {
+    let mut current_name = String::new();
+    let mut current_ip = None;
+
+    for line in text.lines() {
+        if !line.starts_with(' ') && !line.starts_with('\t') && line.contains("adapter") {
+            let name = line.trim().trim_end_matches(':');
+            let lower = name.to_lowercase();
+            if lower.contains("vpn") || lower.contains("tap") || lower.contains("tun")
+                || lower.contains("wireguard") || lower.contains("wintun")
+                || lower.contains("fortinet") || lower.contains("cisco")
+                || lower.contains("palo alto") || lower.contains("global protect")
+                || lower.contains("nordlynx") || lower.contains("expressvpn")
+                || lower.contains("mullvad") || lower.contains("tailscale")
+                || lower.contains("zscaler") || lower.contains("pulse")
+            {
+                if !current_name.is_empty() {
+                    let vendor = detect_vendor(&current_name);
+                    let is_enterprise = is_enterprise_vendor(&current_name, vendor.as_deref());
+                    vpns.push(VpnAdapter {
+                        name: current_name.clone(),
+                        adapter_type: detect_vpn_type(&current_name),
+                        status: if current_ip.is_some() { "Connected" } else { "Disconnected" }.to_string(),
+                        ip_address: current_ip.take(),
+                        vendor,
+                        is_enterprise,
+                        interface_name: None,
+                    });
+                }
+                current_name = name.to_string();
+                current_ip = None;
+            } else {
+                current_name.clear();
+            }
+        } else if !current_name.is_empty() {
+            let trimmed = line.trim();
+            if trimmed.contains("IPv4 Address") || (trimmed.contains("IP Address") && !trimmed.contains("Autoconfiguration")) {
+                current_ip = trimmed.split(':').nth(1).map(|s| {
+                    s.trim().trim_end_matches("(Preferred)").trim().to_string()
+                });
+            }
+        }
+    }
+
+    if !current_name.is_empty() {
+        let vendor = detect_vendor(&current_name);
+        let is_enterprise = is_enterprise_vendor(&current_name, vendor.as_deref());
+        vpns.push(VpnAdapter {
+            name: current_name.clone(),
+            adapter_type: detect_vpn_type(&current_name),
+            status: if current_ip.is_some() { "Connected" } else { "Disconnected" }.to_string(),
+            ip_address: current_ip,
+            vendor,
+            is_enterprise,
+            interface_name: None,
+        });
+    }
+}
+
+#[cfg(windows)]
 async fn collect_windows_ipconfig(vpns: &mut Vec<VpnAdapter>) {
     if let Ok(output) = tokio::process::Command::new("ipconfig")
         .args(["/all"])
@@ -59,62 +164,7 @@ async fn collect_windows_ipconfig(vpns: &mut Vec<VpnAdapter>) {
         .await
     {
         let text = String::from_utf8_lossy(&output.stdout);
-        let mut current_name = String::new();
-        let mut current_ip = None;
-
-        for line in text.lines() {
-            if !line.starts_with(' ') && !line.starts_with('\t') && line.contains("adapter") {
-                let name = line.trim().trim_end_matches(':');
-                let lower = name.to_lowercase();
-                if lower.contains("vpn") || lower.contains("tap") || lower.contains("tun")
-                    || lower.contains("wireguard") || lower.contains("wintun")
-                    || lower.contains("fortinet") || lower.contains("cisco")
-                    || lower.contains("palo alto") || lower.contains("global protect")
-                    || lower.contains("nordlynx") || lower.contains("expressvpn")
-                    || lower.contains("mullvad") || lower.contains("tailscale")
-                    || lower.contains("zscaler") || lower.contains("pulse")
-                {
-                    if !current_name.is_empty() {
-                        let vendor = detect_vendor(&current_name);
-                        let is_enterprise = is_enterprise_vendor(&current_name, vendor.as_deref());
-                        vpns.push(VpnAdapter {
-                            name: current_name.clone(),
-                            adapter_type: detect_vpn_type(&current_name),
-                            status: if current_ip.is_some() { "Connected" } else { "Disconnected" }.to_string(),
-                            ip_address: current_ip.take(),
-                            vendor: vendor,
-                            is_enterprise,
-                            interface_name: None,
-                        });
-                    }
-                    current_name = name.to_string();
-                    current_ip = None;
-                } else {
-                    current_name.clear();
-                }
-            } else if !current_name.is_empty() {
-                let trimmed = line.trim();
-                if trimmed.contains("IPv4 Address") || (trimmed.contains("IP Address") && !trimmed.contains("Autoconfiguration")) {
-                    current_ip = trimmed.split(':').nth(1).map(|s| {
-                        s.trim().trim_end_matches("(Preferred)").trim().to_string()
-                    });
-                }
-            }
-        }
-
-        if !current_name.is_empty() {
-            let vendor = detect_vendor(&current_name);
-            let is_enterprise = is_enterprise_vendor(&current_name, vendor.as_deref());
-            vpns.push(VpnAdapter {
-                name: current_name.clone(),
-                adapter_type: detect_vpn_type(&current_name),
-                status: if current_ip.is_some() { "Connected" } else { "Disconnected" }.to_string(),
-                ip_address: current_ip,
-                vendor,
-                is_enterprise,
-                interface_name: None,
-            });
-        }
+        parse_vpn_from_ipconfig(&text, vpns);
     }
 }
 

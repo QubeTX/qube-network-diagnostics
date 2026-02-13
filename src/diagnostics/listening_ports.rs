@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use super::shared_cache::SharedCache;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ListeningPort {
     pub protocol: String,
@@ -7,6 +9,25 @@ pub struct ListeningPort {
     pub port: u16,
     pub pid: Option<u32>,
     pub process_name: Option<String>,
+}
+
+pub async fn collect_with_cache(cache: &SharedCache) -> Option<Vec<ListeningPort>> {
+    #[cfg(windows)]
+    {
+        if let Some(ref nc) = cache.netstat {
+            return Some(parse_windows_listeners(&nc.lines, &nc.process_map));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(ref nc) = cache.netstat {
+            return Some(parse_macos_listeners(&nc.lines));
+        }
+    }
+
+    let _ = cache;
+    collect().await
 }
 
 pub async fn collect() -> Option<Vec<ListeningPort>> {
@@ -27,25 +48,19 @@ pub async fn collect() -> Option<Vec<ListeningPort>> {
 }
 
 #[cfg(windows)]
-async fn collect_windows() -> Option<Vec<ListeningPort>> {
-    use sysinfo::System;
-
-    let output = tokio::process::Command::new("netstat")
-        .args(["-ano"])
-        .output()
-        .await
-        .ok()?;
-
-    let text = String::from_utf8_lossy(&output.stdout);
+fn parse_windows_listeners(
+    lines: &[String],
+    process_map: &std::collections::HashMap<u32, String>,
+) -> Vec<ListeningPort> {
     let mut ports = Vec::new();
 
-    let mut sys = System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-
-    for line in text.lines() {
+    for line in lines {
         let line = line.trim();
-        if !line.contains("LISTENING") && !(line.starts_with("  UDP") && line.contains("*:*")) {
-            continue;
+        if !line.contains("LISTENING") && !(line.starts_with("UDP") && line.contains("*:*")) {
+            // Also match lines that start with whitespace before UDP
+            if !(line.trim_start().starts_with("UDP") && line.contains("*:*")) {
+                continue;
+            }
         }
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 4 {
@@ -57,10 +72,7 @@ async fn collect_windows() -> Option<Vec<ListeningPort>> {
         let pid = parts.last().and_then(|s| s.parse::<u32>().ok());
 
         if let Some((addr, port)) = parse_addr_port(local) {
-            let pname = pid.and_then(|p| {
-                sys.process(sysinfo::Pid::from_u32(p))
-                    .map(|pr| pr.name().to_string_lossy().to_string())
-            });
+            let pname = pid.and_then(|p| process_map.get(&p).cloned());
 
             ports.push(ListeningPort {
                 protocol,
@@ -72,21 +84,37 @@ async fn collect_windows() -> Option<Vec<ListeningPort>> {
         }
     }
 
-    Some(ports)
+    ports
 }
 
-#[cfg(target_os = "macos")]
-async fn collect_macos() -> Option<Vec<ListeningPort>> {
+#[cfg(windows)]
+async fn collect_windows() -> Option<Vec<ListeningPort>> {
+    use sysinfo::System;
+
     let output = tokio::process::Command::new("netstat")
-        .args(["-anp", "tcp"])
+        .args(["-ano"])
         .output()
         .await
         .ok()?;
 
     let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+
+    let mut sys = System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let mut process_map = std::collections::HashMap::new();
+    for (pid, process) in sys.processes() {
+        process_map.insert(pid.as_u32(), process.name().to_string_lossy().to_string());
+    }
+
+    Some(parse_windows_listeners(&lines, &process_map))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_listeners(lines: &[String]) -> Vec<ListeningPort> {
     let mut ports = Vec::new();
 
-    for line in text.lines() {
+    for line in lines {
         if !line.contains("LISTEN") {
             continue;
         }
@@ -104,7 +132,20 @@ async fn collect_macos() -> Option<Vec<ListeningPort>> {
         }
     }
 
-    Some(ports)
+    ports
+}
+
+#[cfg(target_os = "macos")]
+async fn collect_macos() -> Option<Vec<ListeningPort>> {
+    let output = tokio::process::Command::new("netstat")
+        .args(["-anp", "tcp"])
+        .output()
+        .await
+        .ok()?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    Some(parse_macos_listeners(&lines))
 }
 
 #[cfg(target_os = "linux")]

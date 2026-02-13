@@ -1,10 +1,42 @@
 use serde::Serialize;
 
+use super::shared_cache::SharedCache;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReverseDnsEntry {
     pub ip: String,
     pub hostname: Option<String>,
     pub label: String,
+}
+
+pub async fn collect_with_cache(cache: &SharedCache) -> Option<Vec<ReverseDnsEntry>> {
+    let mut entries = Vec::new();
+
+    let gateway_ip = cache.gateway_ip.clone();
+
+    let mut ips_to_check: Vec<(String, String)> = Vec::new();
+
+    if let Some(ref gw) = gateway_ip {
+        ips_to_check.push((gw.clone(), "Gateway".to_string()));
+    }
+
+    ips_to_check.push(("1.1.1.1".to_string(), "Cloudflare DNS".to_string()));
+    ips_to_check.push(("8.8.8.8".to_string(), "Google DNS".to_string()));
+
+    for (ip, label) in ips_to_check {
+        let hostname = reverse_lookup(&ip).await;
+        entries.push(ReverseDnsEntry {
+            ip,
+            hostname,
+            label,
+        });
+    }
+
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
 }
 
 pub async fn collect() -> Option<Vec<ReverseDnsEntry>> {

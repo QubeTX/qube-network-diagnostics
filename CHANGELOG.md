@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-02-13
+
+### Changed
+- Replace WMI adapter enumeration with native Windows APIs (`ipconfig` crate + `GetIfEntry2`)
+  - ~5ms vs ~300-500ms for adapter data collection
+  - Accurate adapter type classification via `PhysicalMediumType` (Wi-Fi, Ethernet, Bluetooth, WWAN) instead of generic WMI "Ethernet 802.3"
+  - Precise connection status: "No Cable" vs "Disabled" vs "Down" vs "Standby" via `AdminStatus` + `MediaConnectState`
+- Replace per-adapter PowerShell `Get-NetAdapter` calls with `GetIfEntry2` for instant link speed/duplex in tech mode
+- Replace WMI in `--fix` adapter listing with `ipconfig` crate for faster adapter detection
+- Defer WMI driver query (`Win32_PnPSignedDriver`) to tech mode only — user mode no longer pays WMI cost
+- Match drivers to adapters by hardware description instead of name substring (more reliable)
+
+### Added
+- Per-adapter link speed in user-mode summary (e.g., "Wi-Fi 866 Mbps" or "Wi-Fi 2.4 Gbps")
+- Tech-mode NETWORK ADAPTERS section now shows: MAC address, TX/RX link speeds, gateway, DNS servers, MTU, IPv4 metric
+- New JSON fields: `description`, `mac_address`, `link_speed_mbps`, `rx_link_speed_mbps`, `dns_servers`, `gateways`, `media_connect_state`, `physical_medium`, `mtu`, `ipv4_metric`
+- `--fix` default interface detection now picks adapter with lowest IPv4 metric (route preference) instead of first active
+
+## [2.1.0] - 2026-02-13
+
+### Added
+- Show adapter type names in diagnostic summary (e.g., "2 active (Ethernet, Wi-Fi)" instead of just "2 active")
+- Normalize WMI adapter types for cleaner display (e.g., "Ethernet 802.3" -> "Ethernet")
+- Show fix hint ("Run 'nd300 -f' to attempt automatic fixes") when failures are detected
+
+### Changed
+- Consolidate duplicate subprocess calls in technician mode via pre-fetched `SharedCache`
+  - `netstat -ano` shared across connections, listening_ports, and connection_states (was 3 calls)
+  - `ipconfig /all` shared across dhcp, vpn, and ipv6 (was 2 calls)
+  - `sysinfo::Networks` shared across adapter_hw_stats and traffic_counters (was 2 calls)
+  - `default_net::get_default_gateway()` shared with reverse_dns (was 2 calls)
+  - Saves ~200-800ms in technician mode by eliminating redundant subprocess spawns
+- Label "Bluetooth Device (Personal Area Network)" as "BT PAN" instead of "Bluetooth" in adapter summary to avoid confusion with Bluetooth radio status
+- Improve virtual adapter detection with additional patterns: "host-only", "vm network"
+
 ## [2.0.3] - 2026-02-12
 
 ### Fixed

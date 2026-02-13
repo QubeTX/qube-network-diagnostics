@@ -1,6 +1,8 @@
 use serde::Serialize;
 use sysinfo::Networks;
 
+use super::shared_cache::SharedCache;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TrafficCounter {
     pub interface: String,
@@ -9,6 +11,41 @@ pub struct TrafficCounter {
     pub rx_formatted: String,
     pub tx_formatted: String,
     pub total_formatted: String,
+}
+
+pub async fn collect_with_cache(cache: &SharedCache) -> Option<Vec<TrafficCounter>> {
+    if let Some(ref networks) = cache.sysinfo_networks {
+        return collect_from_networks(networks);
+    }
+    collect().await
+}
+
+fn collect_from_networks(networks: &Networks) -> Option<Vec<TrafficCounter>> {
+    let mut counters = Vec::new();
+
+    for (name, data) in networks {
+        let rx = data.total_received();
+        let tx = data.total_transmitted();
+
+        if rx == 0 && tx == 0 {
+            continue;
+        }
+
+        counters.push(TrafficCounter {
+            interface: name.clone(),
+            rx_bytes: rx,
+            tx_bytes: tx,
+            rx_formatted: format_bytes(rx),
+            tx_formatted: format_bytes(tx),
+            total_formatted: format_bytes(rx + tx),
+        });
+    }
+
+    if counters.is_empty() {
+        None
+    } else {
+        Some(counters)
+    }
 }
 
 pub async fn collect() -> Option<Vec<TrafficCounter>> {

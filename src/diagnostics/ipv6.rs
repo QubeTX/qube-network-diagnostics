@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use super::shared_cache::SharedCache;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Ipv6Info {
     pub available: bool,
@@ -20,6 +22,78 @@ pub enum Ipv6Connectivity {
     Full,
     LinkLocal,
     None,
+}
+
+pub async fn collect_with_cache(cache: &SharedCache) -> Option<Ipv6Info> {
+    let addresses = get_ipv6_addresses_cached(cache).await;
+    let has_global = addresses.iter().any(|a| a.scope == "global");
+    let has_link_local = addresses.iter().any(|a| a.scope == "link-local");
+
+    let connectivity = if has_global {
+        test_ipv6_connectivity().await
+    } else if has_link_local {
+        Ipv6Connectivity::LinkLocal
+    } else {
+        Ipv6Connectivity::None
+    };
+
+    let dual_stack = has_global;
+
+    Some(Ipv6Info {
+        available: !addresses.is_empty(),
+        addresses,
+        connectivity,
+        dual_stack,
+    })
+}
+
+async fn get_ipv6_addresses_cached(cache: &SharedCache) -> Vec<Ipv6Address> {
+    #[cfg(windows)]
+    {
+        // ipconfig /all is a superset of plain ipconfig — same IPv6 fields
+        if let Some(ref ic) = cache.ipconfig {
+            return parse_ipv6_from_ipconfig(&ic.raw);
+        }
+    }
+    let _ = cache;
+    get_ipv6_addresses().await
+}
+
+#[cfg(windows)]
+fn parse_ipv6_from_ipconfig(text: &str) -> Vec<Ipv6Address> {
+    let mut addrs = Vec::new();
+    let mut current_iface = String::new();
+
+    for line in text.lines() {
+        if !line.starts_with(' ') && !line.starts_with('\t') && line.contains("adapter") {
+            current_iface = line.trim().trim_end_matches(':').to_string();
+        }
+
+        let trimmed = line.trim();
+        if trimmed.contains("IPv6 Address") || trimmed.contains("Link-local IPv6") || trimmed.contains("Temporary IPv6") {
+            if let Some(addr) = trimmed.split(':').skip(1).collect::<Vec<&str>>().join(":").trim().strip_suffix("(Preferred)") {
+                let scope = if trimmed.contains("Link-local") { "link-local" } else { "global" };
+                addrs.push(Ipv6Address {
+                    interface: current_iface.clone(),
+                    address: addr.trim().to_string(),
+                    scope: scope.to_string(),
+                });
+            } else {
+                let addr: String = trimmed.split(':').skip(1).collect::<Vec<&str>>().join(":");
+                let addr = addr.trim().trim_end_matches("(Preferred)").trim();
+                if !addr.is_empty() {
+                    let scope = if trimmed.contains("Link-local") { "link-local" } else { "global" };
+                    addrs.push(Ipv6Address {
+                        interface: current_iface.clone(),
+                        address: addr.to_string(),
+                        scope: scope.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    addrs
 }
 
 pub async fn collect() -> Option<Ipv6Info> {

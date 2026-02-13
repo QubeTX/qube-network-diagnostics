@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::diagnostics::{DiagnosticResults, DiagnosticStatus};
-use crate::render::color::colorize_status;
+use crate::render::color::{colorize_status, dim};
 use crate::render::table::ReportBuilder;
 
 pub fn render(results: &DiagnosticResults, config: &Config) -> String {
@@ -32,6 +32,10 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
 
     builder = builder.divider();
     builder = builder.span_row(&format!("  OVERALL: {}", overall));
+
+    if fail_count > 0 {
+        builder = builder.span_row(&dim("  Run 'nd300 -f' to attempt automatic fixes", config));
+    }
 
     let mut output = builder.finish();
     output.push('\n');
