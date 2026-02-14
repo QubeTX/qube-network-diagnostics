@@ -52,6 +52,17 @@ pub async fn run(config: &Config) -> i32 {
 
     println!();
 
+    // Elevation check: all fix stages require root/admin on macOS/Linux
+    if !crate::platform::is_elevated() {
+        println!();
+        println!(
+            "  {}",
+            color::red("The fix flow requires elevated privileges.", config),
+        );
+        print_elevation_hint(config);
+        return 2;
+    }
+
     // Step 0: Capture current SSID for potential Stage 3 reconnection
     let saved_ssid = wifi::capture_current_ssid().await;
 
@@ -81,19 +92,6 @@ pub async fn run(config: &Config) -> i32 {
     }
 
     // ── Stage 2: Interface Reset (prompted) ─────────────────────────────────
-    let elevated = crate::platform::is_elevated();
-    if !elevated {
-        println!();
-        print_elevation_hint(config);
-        println!(
-            "    {}",
-            color::dim("Stages 2 and 3 require elevated privileges.", config),
-        );
-        vpn::offer_reenable(&disabled_vpns, config).await;
-        print_summary(config, 1, &stage1_steps, &[], &[]);
-        return 2;
-    }
-
     println!();
     println!(
         "  {} {}",
@@ -186,6 +184,21 @@ fn print_summary(
 }
 
 async fn run_json(config: &Config) -> i32 {
+    // Elevation check: all fix stages require root/admin
+    if !crate::platform::is_elevated() {
+        let output = serde_json::json!({
+            "action": "fix",
+            "error": "elevated_privileges_required",
+            "message": "Run with sudo (Unix) or as Administrator (Windows).",
+            "stages": [],
+            "resolved_at_stage": null,
+            "requires_interaction": false,
+            "vpn": null,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
+        return 2;
+    }
+
     let saved_ssid = wifi::capture_current_ssid().await;
     let _ = saved_ssid; // Stage 3 is skipped in JSON mode
 
@@ -206,7 +219,7 @@ async fn run_json(config: &Config) -> i32 {
     let mut resolved_at: Option<u8> = if connected_s1 { Some(1) } else { None };
 
     // Stage 2 (auto in JSON, no prompt)
-    if resolved_at.is_none() && crate::platform::is_elevated() {
+    if resolved_at.is_none() {
         let (stage2_steps, connected_s2) = stages::run_stage2(config).await;
         let stage2_json = steps_to_json(&stage2_steps);
         stages.push(serde_json::json!({

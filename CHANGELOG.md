@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-02-13
+
+### Fixed
+- Fix `--fix` flow on macOS failing all Stage 1 steps when run without `sudo` — elevation check now runs before any stages, exiting immediately with a clear privilege hint instead of attempting commands that require root
+- Fix `--fix` JSON mode silently running stages without elevation — now returns structured `elevated_privileges_required` error
+- Fix macOS DNS flush reporting failure when `killall -HUP mDNSResponder` needs root but `dscacheutil -flushcache` succeeds — now reports partial success instead of error
+
 ## [2.2.0] - 2026-02-13
 
 ### Changed

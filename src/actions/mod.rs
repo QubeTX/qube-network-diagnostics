@@ -34,18 +34,26 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         kill_cmd.args(["-HUP", "mDNSResponder"]);
         let kill = run_cmd(kill_cmd, TIMEOUT_QUICK).await;
 
-        match (flush, kill) {
-            (Ok(f), Ok(k)) if f.status.success() && k.status.success() => {
-                Ok("DNS cache flushed successfully".to_string())
+        let flush_ok = matches!(&flush, Ok(f) if f.status.success());
+        let kill_ok = matches!(&kill, Ok(k) if k.status.success());
+
+        match (flush_ok, kill_ok) {
+            (true, true) => Ok("DNS cache flushed successfully".to_string()),
+            (true, false) => Ok("DNS cache flushed (user cache only)".to_string()),
+            (false, true) => Ok("DNS cache flushed (mDNSResponder restarted)".to_string()),
+            (false, false) => {
+                // Return the most useful error message
+                match (flush, kill) {
+                    (Err(e), _) | (_, Err(e)) => Err(e),
+                    (Ok(f), _) if !f.status.success() => {
+                        Err(String::from_utf8_lossy(&f.stderr).trim().to_string())
+                    }
+                    (_, Ok(k)) if !k.status.success() => {
+                        Err(String::from_utf8_lossy(&k.stderr).trim().to_string())
+                    }
+                    _ => Err("Failed to flush DNS".to_string()),
+                }
             }
-            (Ok(f), _) if !f.status.success() => {
-                Err(String::from_utf8_lossy(&f.stderr).trim().to_string())
-            }
-            (_, Ok(k)) if !k.status.success() => {
-                Err(String::from_utf8_lossy(&k.stderr).trim().to_string())
-            }
-            (Err(e), _) | (_, Err(e)) => Err(e),
-            _ => Err("Failed to flush DNS".to_string()),
         }
     }
 

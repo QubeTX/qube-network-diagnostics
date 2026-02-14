@@ -111,6 +111,9 @@ nd300 --help
 | `--fast` | Skip the speed test (faster execution) |
 | `--speed-duration <SECS>` | Speed test duration in seconds (default: 10, min: 4) |
 | `--verbose` | Show additional debug/trace information |
+| `-c, --clear-dns` | Flush the system DNS cache |
+| `-f, --fix` | Run the multi-stage network fix flow (requires elevated privileges) |
+| `--uninstall` | Remove nd300 from the system (binary, install receipt, PATH entry) |
 | `-h, --help` | Print help |
 | `-V, --version` | Print version |
 
