@@ -3,6 +3,7 @@ pub mod arp;
 pub mod cmd;
 pub mod connectivity;
 pub mod dhcp;
+pub mod dns;
 pub mod stages;
 pub mod vpn;
 pub mod wifi;

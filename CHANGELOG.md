@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-02-15
+
+### Added
+- DNS verification after connectivity checks in all fix flow stages — resolves 3 domains to confirm DNS is actually working, not just HTTP
+- DNS server selection prompt when DNS fails: Hybrid (Cloudflare + Google, recommended), Cloudflare, Google, or Automatic (DHCP)
+- DNS reachability test before committing server changes — detects corporate firewalls blocking public DNS and auto-adjusts
+- Stage 3 macOS: set hybrid DNS (1.1.1.1 + 8.8.8.8) immediately after network service recreation, preventing DNS gap while DHCP delivers servers
+
+### Fixed
+- Fix `--fix` on macOS reporting "connected" when DNS is broken — HTTP captive portal check passed but DNS resolution failed after `configd` restart + DHCP reset race
+- Fix Stage 2 DHCP renew failing on macOS Wi-Fi — added 5-second delay after interface re-enable for Wi-Fi association before DHCP request
+- Fix Stage 3 macOS creating network service without DNS servers, leaving DNS broken until DHCP delivers servers
+
 ## [2.2.1] - 2026-02-13
 
 ### Fixed

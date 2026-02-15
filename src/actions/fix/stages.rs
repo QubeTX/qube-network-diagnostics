@@ -6,6 +6,7 @@ use super::adapters;
 use super::arp;
 use super::connectivity;
 use super::dhcp;
+use super::dns;
 use super::wifi;
 use super::cmd::{run_cmd, TIMEOUT_QUICK, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
 use super::{print_step_ok, print_step_fail, warn_icon, StepResult};
@@ -87,12 +88,38 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
     }
 
     // Wait and check connectivity
-    {
+    let http_ok = {
         let spinner = create_spinner("Waiting for network to reconnect...");
         let connected = connectivity::wait_for_connectivity(&spinner).await;
         spinner.finish_and_clear();
-        (steps, connected)
+        connected
+    };
+
+    if !http_ok {
+        return (steps, false);
     }
+
+    // DNS verification after connectivity passes
+    let dns_ok = {
+        let spinner = create_spinner("Verifying DNS resolution...");
+        let ok = connectivity::verify_dns_stability(&spinner).await;
+        spinner.finish_and_clear();
+        ok
+    };
+
+    if dns_ok {
+        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+        return (steps, true);
+    }
+
+    // DNS failed — offer the user a chance to change DNS servers before Stage 2
+    if is_interactive(config) {
+        print_step_fail("DNS is not resolving correctly", "", config);
+    }
+
+    let iface = adapters::detect_default_interface().await.unwrap_or_default();
+    let dns_fixed = handle_dns_fallback_prompted(config, &iface, &mut steps).await;
+    (steps, dns_fixed)
 }
 
 /// Restart platform networking services.
@@ -279,6 +306,13 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
         }
     }
 
+    // Wait for Wi-Fi to associate before DHCP (macOS needs ~5s after re-enable)
+    {
+        let spinner = create_spinner("Waiting for link to establish...");
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        spinner.finish_and_clear();
+    }
+
     // Targeted DHCP renew
     {
         let spinner = create_spinner("Renewing DHCP on interface...");
@@ -297,12 +331,33 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
     }
 
     // Wait and check connectivity
-    {
+    let http_ok = {
         let spinner = create_spinner("Waiting for network to reconnect...");
         let connected = connectivity::wait_for_connectivity(&spinner).await;
         spinner.finish_and_clear();
-        (steps, connected)
+        connected
+    };
+
+    if !http_ok {
+        return (steps, false);
     }
+
+    // DNS verification after connectivity passes
+    let dns_ok = {
+        let spinner = create_spinner("Verifying DNS resolution...");
+        let ok = connectivity::verify_dns_stability(&spinner).await;
+        spinner.finish_and_clear();
+        ok
+    };
+
+    if dns_ok {
+        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+        return (steps, true);
+    }
+
+    // DNS failed — prompt user for DNS server choice
+    let dns_fixed = handle_dns_fallback_prompted(config, &iface, &mut steps).await;
+    (steps, dns_fixed)
 }
 
 async fn disable_interface(iface: &str) -> Result<(), String> {
@@ -466,12 +521,34 @@ pub async fn run_stage3(config: &Config, saved_ssid: &Option<String>) -> (Vec<St
     }
 
     // Wait and check connectivity
-    {
+    let http_ok = {
         let spinner = create_spinner("Waiting for network to reconnect...");
         let connected = connectivity::wait_for_connectivity(&spinner).await;
         spinner.finish_and_clear();
-        (steps, connected)
+        connected
+    };
+
+    if !http_ok {
+        return (steps, false);
     }
+
+    // DNS verification after connectivity passes
+    let dns_ok = {
+        let spinner = create_spinner("Verifying DNS resolution...");
+        let ok = connectivity::verify_dns_stability(&spinner).await;
+        spinner.finish_and_clear();
+        ok
+    };
+
+    if dns_ok {
+        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+        return (steps, true);
+    }
+
+    // DNS failed — auto-apply hybrid DNS (no prompt in Stage 3)
+    let iface = adapters::detect_default_interface().await.unwrap_or_default();
+    let dns_fixed = handle_dns_fallback_auto(config, &iface, &mut steps).await;
+    (steps, dns_fixed)
 }
 
 fn platform_stage3_warning() -> &'static str {
@@ -637,6 +714,17 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
         let mut cmd = tokio::process::Command::new("networksetup");
         cmd.args(["-setdhcp", &service_name]);
         let _ = run_cmd(cmd, TIMEOUT_MEDIUM).await;
+    }
+
+    // 3b. Set hybrid DNS on the new service immediately (DHCP may be slow to deliver DNS)
+    {
+        let mut cmd = tokio::process::Command::new("networksetup");
+        cmd.args(["-setdnsservers", &service_name, "1.1.1.1", "8.8.8.8"]);
+        if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
+            if output.status.success() {
+                completed.push("Set hybrid DNS (1.1.1.1 + 8.8.8.8)".to_string());
+            }
+        }
     }
 
     // 4. Wi-Fi reconnection
@@ -893,4 +981,140 @@ async fn is_linux_wifi(iface: &str) -> bool {
         return output.status.success();
     }
     false
+}
+
+// ── DNS fallback helpers ─────────────────────────────────────────────────────
+
+/// Detect the macOS network service name for an interface, or return the
+/// interface name itself on other platforms (used as the service_name param).
+async fn detect_service_name(iface: &str) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        detect_macos_service(iface).await.unwrap_or_else(|| iface.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        iface.to_string()
+    }
+}
+
+/// Stage 2 DNS fallback: prompt user for DNS server choice, test reachability,
+/// set DNS, flush cache, wait 5s, re-verify.
+async fn handle_dns_fallback_prompted(
+    config: &Config,
+    iface: &str,
+    steps: &mut Vec<StepResult>,
+) -> bool {
+    let service_name = detect_service_name(iface).await;
+
+    // Prompt user for DNS choice
+    let mut provider = dns::prompt_dns_choice(config);
+
+    // Test reachability and adjust if needed
+    if provider != dns::DnsProvider::Automatic {
+        let spinner = create_spinner("Testing DNS server reachability...");
+        let (cf_ok, google_ok) = dns::test_dns_reachability().await;
+        spinner.finish_and_clear();
+        provider = dns::adjust_for_reachability(provider, cf_ok, google_ok, config);
+    }
+
+    // Set DNS servers
+    let spinner = create_spinner(&format!("Setting DNS to {}...", provider.label()));
+    let result = dns::set_dns_servers(iface, &service_name, provider).await;
+    spinner.finish_and_clear();
+
+    match &result {
+        Ok(msg) => {
+            if is_interactive(config) { print_step_ok(msg, config); }
+            steps.push(StepResult { name: "dns_set", success: true, message: msg.clone() });
+        }
+        Err(msg) => {
+            if is_interactive(config) { print_step_fail("Failed to set DNS servers", msg, config); }
+            steps.push(StepResult { name: "dns_set", success: false, message: msg.clone() });
+            return false;
+        }
+    }
+
+    // Flush DNS cache after changing servers
+    let _ = flush_dns_platform().await;
+
+    // Wait for DNS to propagate
+    let spinner = create_spinner("Waiting for DNS to propagate...");
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    spinner.finish_and_clear();
+
+    // Re-verify DNS
+    let spinner = create_spinner("Verifying DNS resolution...");
+    let dns_ok = dns::verify_dns().await;
+    spinner.finish_and_clear();
+
+    if dns_ok {
+        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+    } else if is_interactive(config) {
+        print_step_fail("DNS still not resolving", "May need manual configuration", config);
+    }
+
+    dns_ok
+}
+
+/// Stage 3 DNS fallback: auto-apply hybrid DNS (no prompt), test reachability,
+/// set DNS, flush cache, wait 5s, re-verify.
+async fn handle_dns_fallback_auto(
+    config: &Config,
+    iface: &str,
+    steps: &mut Vec<StepResult>,
+) -> bool {
+    let service_name = detect_service_name(iface).await;
+
+    if is_interactive(config) {
+        println!(
+            "    {}",
+            color::dim("DNS not resolving — auto-applying hybrid DNS (1.1.1.1 + 8.8.8.8)", config),
+        );
+    }
+
+    // Test reachability to pick best provider
+    let spinner = create_spinner("Testing DNS server reachability...");
+    let (cf_ok, google_ok) = dns::test_dns_reachability().await;
+    spinner.finish_and_clear();
+
+    let provider = dns::adjust_for_reachability(dns::DnsProvider::Hybrid, cf_ok, google_ok, config);
+
+    // Set DNS servers
+    let spinner = create_spinner(&format!("Setting DNS to {}...", provider.label()));
+    let result = dns::set_dns_servers(iface, &service_name, provider).await;
+    spinner.finish_and_clear();
+
+    match &result {
+        Ok(msg) => {
+            if is_interactive(config) { print_step_ok(msg, config); }
+            steps.push(StepResult { name: "dns_set", success: true, message: msg.clone() });
+        }
+        Err(msg) => {
+            if is_interactive(config) { print_step_fail("Failed to set DNS servers", msg, config); }
+            steps.push(StepResult { name: "dns_set", success: false, message: msg.clone() });
+            return false;
+        }
+    }
+
+    // Flush DNS cache after changing servers
+    let _ = flush_dns_platform().await;
+
+    // Wait for DNS to propagate
+    let spinner = create_spinner("Waiting for DNS to propagate...");
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    spinner.finish_and_clear();
+
+    // Re-verify DNS
+    let spinner = create_spinner("Verifying DNS resolution...");
+    let dns_ok = dns::verify_dns().await;
+    spinner.finish_and_clear();
+
+    if dns_ok {
+        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+    } else if is_interactive(config) {
+        print_step_fail("DNS still not resolving", "May need manual configuration", config);
+    }
+
+    dns_ok
 }

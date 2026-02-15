@@ -1,5 +1,7 @@
 use indicatif::ProgressBar;
 
+use super::dns;
+
 const RETRY_ATTEMPTS: u32 = 3;
 const WAIT_SECONDS: u64 = 30;
 
@@ -55,4 +57,12 @@ pub async fn check_connectivity() -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Verify DNS is stable after connectivity check passes.
+/// Waits 2 seconds for DNS to settle, then resolves 3 domains.
+pub async fn verify_dns_stability(spinner: &ProgressBar) -> bool {
+    spinner.set_message("Verifying DNS resolution...");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    dns::verify_dns().await
 }

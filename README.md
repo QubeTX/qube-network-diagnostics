@@ -154,6 +154,25 @@ nd300 --help
 24. Reverse DNS
 25. TLS Inspection
 
+## Fix Flow (`--fix`)
+
+The fix flow (`nd300 -f`) runs a multi-stage network recovery process. Requires elevated privileges (`sudo` on macOS/Linux, Administrator on Windows).
+
+| Stage | Action | Behavior |
+|-------|--------|----------|
+| **1** | Service Restart | DNS flush, ARP flush, service restart, DHCP renew. Automatic — no prompts. |
+| **2** | Interface Reset | Disable/re-enable network interface, targeted DHCP renew. Prompted before starting. |
+| **3** | Stack Reset | Full network service recreation (macOS), Winsock/TCP reset (Windows), profile reset (Linux). Strong warning before starting. |
+
+Each stage verifies both HTTP connectivity and DNS resolution before declaring success. If DNS fails, the tool offers a choice of DNS servers:
+
+- **Hybrid** (recommended) — Cloudflare primary (1.1.1.1) + Google secondary (8.8.8.8)
+- **Cloudflare** — 1.1.1.1, 1.0.0.1 (privacy-focused)
+- **Google** — 8.8.8.8, 8.8.4.4 (reliability)
+- **Automatic** — DHCP-provided servers
+
+The tool tests DNS server reachability before applying changes, automatically falling back if a server is blocked by corporate firewalls or ISP restrictions.
+
 ## Building from Source
 
 ```sh
