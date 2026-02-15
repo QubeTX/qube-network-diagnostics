@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix `extract_stat_value` dead code warning on Linux — function is only used in Windows `#[cfg]` block
+
 ## [2.3.1] - 2026-02-15
 
 ### Fixed

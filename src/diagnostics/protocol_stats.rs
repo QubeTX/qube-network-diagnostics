@@ -236,6 +236,7 @@ async fn collect_linux() -> Option<ProtocolStatistics> {
     Some(ProtocolStatistics { tcp, udp, icmp })
 }
 
+#[cfg(windows)]
 fn extract_stat_value(line: &str) -> Option<u64> {
     // "  Active Opens              = 12345"
     if let Some(pos) = line.find('=') {
