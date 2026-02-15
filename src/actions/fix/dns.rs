@@ -3,7 +3,8 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::render::color;
 
-use super::cmd::{run_cmd, TIMEOUT_MEDIUM};
+#[allow(unused_imports)]
+use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK};
 use crate::actions::is_interactive;
 
 // ── DNS server constants ─────────────────────────────────────────────────────

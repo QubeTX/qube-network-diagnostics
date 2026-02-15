@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-02-15
+
+### Fixed
+- Fix CI build failure on Linux targets — `TIMEOUT_QUICK` import was removed from `dns.rs` but is used inside `#[cfg(target_os = "linux")]` block
+- Fix unused import warning for `TIMEOUT_SLOW` in `stages.rs` (used only on non-Windows platforms)
+- Fix unnecessary `mut` warning on `renew_cmd` in `dhcp.rs` Linux DHCP renewal
+
 ## [2.3.0] - 2026-02-15
 
 ### Added

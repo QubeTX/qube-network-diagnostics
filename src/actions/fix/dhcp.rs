@@ -66,7 +66,7 @@ pub async fn renew_dhcp() -> Result<String, String> {
 
         if let Ok(output) = dhclient_release {
             if output.status.success() {
-                let mut renew_cmd = tokio::process::Command::new("dhclient");
+                let renew_cmd = tokio::process::Command::new("dhclient");
                 match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
                     Ok(output) if output.status.success() => {
                         return Ok("DHCP lease renewed via dhclient".to_string());

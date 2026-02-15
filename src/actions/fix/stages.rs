@@ -8,6 +8,7 @@ use super::connectivity;
 use super::dhcp;
 use super::dns;
 use super::wifi;
+#[allow(unused_imports)]
 use super::cmd::{run_cmd, TIMEOUT_QUICK, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
 use super::{print_step_ok, print_step_fail, warn_icon, StepResult};
 use crate::actions::{flush_dns_platform, is_interactive, prompt_yes_no};
