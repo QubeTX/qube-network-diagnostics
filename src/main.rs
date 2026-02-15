@@ -9,6 +9,7 @@ use nd_300::render;
     name = "nd300",
     author,
     version,
+    disable_version_flag = true,
     about = "ND-300 Network Diagnostic - QubeTX Developer Tools",
     long_about = "ND-300 Network Diagnostic - QubeTX Developer Tools\n\n\
         Cross-platform network diagnostics with 25+ concurrent checks,\n\
@@ -70,6 +71,10 @@ struct Cli {
     /// Uninstall nd300 from this system
     #[arg(long = "uninstall", help_heading = "Actions")]
     uninstall: bool,
+
+    /// Print version
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    version: (),
 }
 
 #[tokio::main]
