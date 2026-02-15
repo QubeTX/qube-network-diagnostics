@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-02-15
+
+### Added
+- `-d, --dns` flag for standalone DNS configuration — choose a provider, set DNS, verify connectivity, auto-revert on failure, then run full diagnostics
+- NextDNS support (encrypted DNS with filtering) across all platforms:
+  - Windows: DNS-over-HTTPS via `netsh` DoH template registration
+  - Linux: DNS-over-TLS via `systemd-resolved` config, `nmcli` fallback
+  - macOS: NextDNS CLI client integration with plain IP fallback
+- Extended DNS provider menu: Hybrid, Cloudflare, Google, NextDNS, Automatic (DHCP)
+- JSON output for `--dns` action with structured success/failure/revert fields
+- Auto-revert to DHCP when DNS verification fails after change (includes platform-specific NextDNS cleanup)
+- Man-page style `--help` output with grouped sections (Modes, Output, Speed Test, Actions) and usage examples
+
 ### Fixed
 - Fix `extract_stat_value` dead code warning on Linux — function is only used in Windows `#[cfg]` block
 

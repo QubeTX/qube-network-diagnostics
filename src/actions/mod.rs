@@ -1,4 +1,5 @@
 pub mod clear_dns;
+pub mod dns;
 pub mod fix;
 pub mod uninstall;
 

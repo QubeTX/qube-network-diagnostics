@@ -988,7 +988,7 @@ async fn is_linux_wifi(iface: &str) -> bool {
 
 /// Detect the macOS network service name for an interface, or return the
 /// interface name itself on other platforms (used as the service_name param).
-async fn detect_service_name(iface: &str) -> String {
+pub async fn detect_service_name(iface: &str) -> String {
     #[cfg(target_os = "macos")]
     {
         detect_macos_service(iface).await.unwrap_or_else(|| iface.to_string())

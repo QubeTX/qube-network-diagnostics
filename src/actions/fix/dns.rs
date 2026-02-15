@@ -12,6 +12,7 @@ use crate::actions::is_interactive;
 const CLOUDFLARE_V4: [&str; 2] = ["1.1.1.1", "1.0.0.1"];
 const GOOGLE_V4: [&str; 2] = ["8.8.8.8", "8.8.4.4"];
 const HYBRID_V4: [&str; 2] = ["1.1.1.1", "8.8.8.8"];
+const NEXTDNS_V4: [&str; 2] = ["45.90.28.0", "45.90.30.0"];
 
 #[allow(dead_code)]
 const CLOUDFLARE_V6: &str = "2606:4700:4700::1111";
@@ -20,7 +21,7 @@ const GOOGLE_V6: &str = "2001:4860:4860::8888";
 
 // ── DnsProvider enum ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DnsProvider {
     /// Cloudflare primary + Google secondary
     Hybrid,
@@ -28,6 +29,8 @@ pub enum DnsProvider {
     Cloudflare,
     /// Google 8.8.8.8, 8.8.4.4
     Google,
+    /// NextDNS encrypted DNS with filtering (config ID)
+    NextDns(String),
     /// DHCP-provided (clear manual servers)
     Automatic,
 }
@@ -38,6 +41,7 @@ impl DnsProvider {
             DnsProvider::Hybrid => &HYBRID_V4,
             DnsProvider::Cloudflare => &CLOUDFLARE_V4,
             DnsProvider::Google => &GOOGLE_V4,
+            DnsProvider::NextDns(_) => &NEXTDNS_V4,
             DnsProvider::Automatic => &[],
         }
     }
@@ -47,6 +51,7 @@ impl DnsProvider {
             DnsProvider::Hybrid => "Hybrid (Cloudflare + Google)",
             DnsProvider::Cloudflare => "Cloudflare (1.1.1.1)",
             DnsProvider::Google => "Google (8.8.8.8)",
+            DnsProvider::NextDns(_) => "NextDNS (encrypted)",
             DnsProvider::Automatic => "Automatic (DHCP)",
         }
     }
@@ -91,6 +96,17 @@ pub async fn test_dns_reachability() -> (bool, bool) {
     let google_ok = matches!(google_result, Ok(Ok(_)));
 
     (cloudflare_ok, google_ok)
+}
+
+/// Test TCP reachability of NextDNS (45.90.28.0:53).
+pub async fn test_nextdns_reachability() -> bool {
+    let timeout = Duration::from_secs(3);
+    let result = tokio::time::timeout(
+        timeout,
+        tokio::net::TcpStream::connect("45.90.28.0:53"),
+    )
+    .await;
+    matches!(result, Ok(Ok(_)))
 }
 
 // ── DNS provider selection ───────────────────────────────────────────────────
@@ -139,13 +155,13 @@ pub fn adjust_for_reachability(
     config: &Config,
 ) -> DnsProvider {
     if chosen == DnsProvider::Automatic {
-        return chosen; // no servers to test
+        return chosen;
     }
 
     match chosen {
         DnsProvider::Hybrid => {
             if cloudflare_ok && google_ok {
-                chosen
+                DnsProvider::Hybrid
             } else if cloudflare_ok {
                 if is_interactive(config) {
                     println!(
@@ -174,7 +190,7 @@ pub fn adjust_for_reachability(
         }
         DnsProvider::Cloudflare => {
             if cloudflare_ok {
-                chosen
+                DnsProvider::Cloudflare
             } else if google_ok {
                 if is_interactive(config) {
                     println!(
@@ -195,7 +211,7 @@ pub fn adjust_for_reachability(
         }
         DnsProvider::Google => {
             if google_ok {
-                chosen
+                DnsProvider::Google
             } else if cloudflare_ok {
                 if is_interactive(config) {
                     println!(
@@ -214,7 +230,22 @@ pub fn adjust_for_reachability(
                 DnsProvider::Automatic
             }
         }
-        DnsProvider::Automatic => chosen,
+        DnsProvider::NextDns(id) => {
+            // NextDNS IPs are always the same; test basic reachability
+            if cloudflare_ok || google_ok {
+                // If public DNS is reachable, NextDNS should be too
+                DnsProvider::NextDns(id)
+            } else {
+                if is_interactive(config) {
+                    println!(
+                        "    {}",
+                        color::dim("Public DNS servers unreachable — falling back to DHCP", config),
+                    );
+                }
+                DnsProvider::Automatic
+            }
+        }
+        DnsProvider::Automatic => DnsProvider::Automatic,
     }
 }
 
@@ -250,6 +281,67 @@ pub async fn set_dns_servers(
 
 #[cfg(target_os = "macos")]
 async fn set_dns_macos(service: &str, provider: DnsProvider) -> Result<String, String> {
+    if let DnsProvider::NextDns(ref id) = provider {
+        // Check if nextdns CLI is installed
+        let mut check = tokio::process::Command::new("which");
+        check.arg("nextdns");
+        let has_cli = if let Ok(output) = run_cmd(check, TIMEOUT_QUICK).await {
+            output.status.success()
+        } else {
+            false
+        };
+
+        if has_cli {
+            let mut install_cmd = tokio::process::Command::new("nextdns");
+            install_cmd.args(["install", "-config", id, "-report-client-info"]);
+            if let Ok(output) = run_cmd(install_cmd, TIMEOUT_MEDIUM).await {
+                if !output.status.success() {
+                    return Err(format!(
+                        "nextdns install failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ));
+                }
+            }
+            let mut activate_cmd = tokio::process::Command::new("nextdns");
+            activate_cmd.arg("activate");
+            match run_cmd(activate_cmd, TIMEOUT_MEDIUM).await {
+                Ok(output) if output.status.success() => {
+                    return Ok(format!("NextDNS activated with config {} on {}", id, service));
+                }
+                Ok(output) => {
+                    return Err(format!(
+                        "nextdns activate failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        } else {
+            // No CLI — set DNS IPs directly as fallback (no encryption)
+            let servers = provider.servers_v4();
+            let mut args: Vec<&str> = vec!["-setdnsservers", service];
+            args.extend_from_slice(servers);
+            let mut cmd = tokio::process::Command::new("networksetup");
+            cmd.args(&args);
+            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+                Ok(output) if output.status.success() => {
+                    return Ok(format!(
+                        "NextDNS IPs set on {} (install nextdns CLI for encrypted DNS: sh -c \"$(curl -sL https://nextdns.io/install)\")",
+                        service
+                    ));
+                }
+                Ok(output) => {
+                    return Err(format!(
+                        "Failed to set DNS: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    let label = provider.label();
     let mut cmd = tokio::process::Command::new("networksetup");
     match provider {
         DnsProvider::Automatic => {
@@ -265,7 +357,7 @@ async fn set_dns_macos(service: &str, provider: DnsProvider) -> Result<String, S
 
     match run_cmd(cmd, TIMEOUT_MEDIUM).await {
         Ok(output) if output.status.success() => {
-            Ok(format!("DNS set to {} on {}", provider.label(), service))
+            Ok(format!("DNS set to {} on {}", label, service))
         }
         Ok(output) => Err(format!(
             "Failed to set DNS: {}",
@@ -277,6 +369,21 @@ async fn set_dns_macos(service: &str, provider: DnsProvider) -> Result<String, S
 
 #[cfg(windows)]
 async fn set_dns_windows(iface: &str, provider: DnsProvider) -> Result<String, String> {
+    // Register DoH templates for NextDNS before setting IPs
+    if let DnsProvider::NextDns(ref id) = provider {
+        for ip in &NEXTDNS_V4 {
+            let template = format!("https://dns.nextdns.io/{}", id);
+            let mut cmd = tokio::process::Command::new("netsh");
+            cmd.args([
+                "dns", "add", "encryption", &format!("server={}", ip),
+                &format!("dohtemplate={}", template),
+                "autoupgrade=yes", "udpfallback=no",
+            ]);
+            let _ = run_cmd(cmd, TIMEOUT_MEDIUM).await; // best-effort
+        }
+    }
+
+    let label = provider.label();
     match provider {
         DnsProvider::Automatic => {
             let mut cmd = tokio::process::Command::new("netsh");
@@ -319,7 +426,7 @@ async fn set_dns_windows(iface: &str, provider: DnsProvider) -> Result<String, S
                 let _ = run_cmd(cmd2, TIMEOUT_MEDIUM).await; // best-effort
             }
 
-            Ok(format!("DNS set to {} on {}", provider.label(), iface))
+            Ok(format!("DNS set to {} on {}", label, iface))
         }
     }
 }
@@ -335,7 +442,35 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
         false
     };
 
+    let label = provider.label();
+
     if has_resolved {
+        // NextDNS with systemd-resolved: configure DoT via resolved.conf
+        if let DnsProvider::NextDns(ref id) = provider {
+            // Back up existing config
+            let mut backup = tokio::process::Command::new("cp");
+            backup.args(["/etc/systemd/resolved.conf", "/etc/systemd/resolved.conf.bak"]);
+            let _ = run_cmd(backup, TIMEOUT_QUICK).await;
+
+            let config_content = format!(
+                "[Resolve]\nDNS=45.90.28.0#{id}.dns.nextdns.io 45.90.30.0#{id}.dns.nextdns.io\n\
+                 DNSOverTLS=yes\n",
+                id = id,
+            );
+            if let Err(e) = tokio::fs::write("/etc/systemd/resolved.conf", &config_content).await {
+                return Err(format!("Failed to write resolved.conf: {}", e));
+            }
+
+            let mut restart = tokio::process::Command::new("systemctl");
+            restart.args(["restart", "systemd-resolved"]);
+            match run_cmd(restart, TIMEOUT_MEDIUM).await {
+                Ok(output) if output.status.success() => {
+                    return Ok(format!("NextDNS (DoT) configured on {}", iface));
+                }
+                _ => return Err("Failed to restart systemd-resolved".to_string()),
+            }
+        }
+
         match provider {
             DnsProvider::Automatic => {
                 let mut cmd = tokio::process::Command::new("resolvectl");
@@ -359,7 +494,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
                 cmd.args(&args);
                 match run_cmd(cmd, TIMEOUT_MEDIUM).await {
                     Ok(output) if output.status.success() => {
-                        Ok(format!("DNS set to {} on {}", provider.label(), iface))
+                        Ok(format!("DNS set to {} on {}", label, iface))
                     }
                     Ok(output) => Err(format!(
                         "Failed to set DNS: {}",
@@ -370,7 +505,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
             }
         }
     } else {
-        // Fallback: nmcli
+        // Fallback: nmcli (no DoT for NextDNS — just set IPs)
         let nm_iface = iface.to_string();
         match provider {
             DnsProvider::Automatic => {
@@ -393,7 +528,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
                         let mut apply = tokio::process::Command::new("nmcli");
                         apply.args(["con", "up", &nm_iface]);
                         let _ = run_cmd(apply, TIMEOUT_MEDIUM).await;
-                        Ok(format!("DNS set to {} on {}", provider.label(), iface))
+                        Ok(format!("DNS set to {} on {}", label, iface))
                     }
                     _ => Err("Failed to set DNS via nmcli".to_string()),
                 }

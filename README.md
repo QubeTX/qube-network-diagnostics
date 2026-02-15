@@ -58,6 +58,12 @@ nd300
 # Technician mode — full deep diagnostics
 nd300 -t
 
+# Change DNS configuration (interactive)
+nd300 -d
+
+# Multi-stage network fix
+nd300 -f
+
 # Skip the speed test for faster execution
 nd300 --fast
 
@@ -111,8 +117,9 @@ nd300 --help
 | `--fast` | Skip the speed test (faster execution) |
 | `--speed-duration <SECS>` | Speed test duration in seconds (default: 10, min: 4) |
 | `--verbose` | Show additional debug/trace information |
-| `-c, --clear-dns` | Flush the system DNS cache |
+| `-d, --dns` | Change DNS servers and verify connectivity (requires elevated privileges) |
 | `-f, --fix` | Run the multi-stage network fix flow (requires elevated privileges) |
+| `-c, --clear-dns` | Flush the system DNS cache |
 | `--uninstall` | Remove nd300 from the system (binary, install receipt, PATH entry) |
 | `-h, --help` | Print help |
 | `-V, --version` | Print version |
@@ -172,6 +179,24 @@ Each stage verifies both HTTP connectivity and DNS resolution before declaring s
 - **Automatic** — DHCP-provided servers
 
 The tool tests DNS server reachability before applying changes, automatically falling back if a server is blocked by corporate firewalls or ISP restrictions.
+
+## DNS Configuration (`--dns`)
+
+The DNS flag (`nd300 -d`) provides a standalone way to change your DNS configuration. Requires elevated privileges.
+
+**Providers:**
+- **Hybrid** (recommended) — Cloudflare + Google
+- **Cloudflare** — 1.1.1.1 (privacy-focused)
+- **Google** — 8.8.8.8 (reliability)
+- **NextDNS** — Encrypted DNS with filtering (requires config ID)
+- **Automatic** — Reset to system default (DHCP)
+
+**NextDNS encryption by platform:**
+- **Windows** — DNS-over-HTTPS via `netsh` DoH template registration
+- **Linux** — DNS-over-TLS via `systemd-resolved` (falls back to plain IPs via `nmcli`)
+- **macOS** — NextDNS CLI client (`nextdns install/activate`), plain IPs if CLI not installed
+
+After setting DNS, the tool verifies both DNS resolution and HTTP connectivity. If verification fails, it automatically reverts to DHCP and reports the result. On success, full diagnostics run to confirm network health.
 
 ## Building from Source
 
