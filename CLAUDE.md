@@ -83,7 +83,7 @@ Releases are automated via `cargo-dist` v0.30.3. Push a version tag (e.g., `v2.2
 
 ## Fix Flow Stages
 
-1. **Stage 1** (Automatic): DNS flush, ARP flush, service restart, DHCP renew
+1. **Stage 1** (Automatic): DNS reset to DHCP, DNS flush, ARP flush, service restart, DHCP renew
 2. **Stage 2** (Prompted): Interface disable/re-enable, targeted DHCP
 3. **Stage 3** (Warned): Network stack reset, profile deletion, Wi-Fi reconnect
 

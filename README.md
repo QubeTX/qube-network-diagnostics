@@ -167,7 +167,7 @@ The fix flow (`nd300 -f`) runs a multi-stage network recovery process. Requires 
 
 | Stage | Action | Behavior |
 |-------|--------|----------|
-| **1** | Service Restart | DNS flush, ARP flush, service restart, DHCP renew. Automatic — no prompts. |
+| **1** | Service Restart | Reset DNS to automatic (DHCP), DNS flush, ARP flush, service restart, DHCP renew. Automatic — no prompts. |
 | **2** | Interface Reset | Disable/re-enable network interface, targeted DHCP renew. Prompted before starting. |
 | **3** | Stack Reset | Full network service recreation (macOS), Winsock/TCP reset (Windows), profile reset (Linux). Strong warning before starting. |
 

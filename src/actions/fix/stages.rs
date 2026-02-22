@@ -20,6 +20,39 @@ use crate::actions::prompt_string;
 pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
     let mut steps = Vec::new();
 
+    // Reset DNS to Automatic (DHCP) — clear any custom/broken DNS servers first
+    {
+        let spinner = create_spinner("Resetting DNS to automatic (DHCP)...");
+        match adapters::detect_default_interface().await {
+            Some(iface) => {
+                let service_name = detect_service_name(&iface).await;
+                let result = dns::set_dns_servers(&iface, &service_name, dns::DnsProvider::Automatic).await;
+                spinner.finish_and_clear();
+                match result {
+                    Ok(msg) => {
+                        if is_interactive(config) { print_step_ok("DNS reset to automatic (DHCP)", config); }
+                        steps.push(StepResult { name: "dns_reset_auto", success: true, message: msg });
+                    }
+                    Err(msg) => {
+                        if is_interactive(config) { print_step_fail("Failed to reset DNS to automatic", &msg, config); }
+                        steps.push(StepResult { name: "dns_reset_auto", success: false, message: msg });
+                    }
+                }
+            }
+            None => {
+                spinner.finish_and_clear();
+                if is_interactive(config) {
+                    print_step_fail("Could not detect interface for DNS reset", "", config);
+                }
+                steps.push(StepResult {
+                    name: "dns_reset_auto",
+                    success: false,
+                    message: "Could not detect default interface".to_string(),
+                });
+            }
+        }
+    }
+
     // DNS flush
     {
         let spinner = create_spinner("Flushing DNS cache...");
