@@ -23,7 +23,7 @@ const GOOGLE_V6: &str = "2001:4860:4860::8888";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DnsProvider {
-    /// Cloudflare primary + Google secondary
+    /// Cloudflare primary + Google secondary (not recommended — mixed providers cause sticky failover)
     Hybrid,
     /// Cloudflare 1.1.1.1, 1.0.0.1
     Cloudflare,
@@ -48,7 +48,7 @@ impl DnsProvider {
 
     pub fn label(&self) -> &'static str {
         match self {
-            DnsProvider::Hybrid => "Hybrid (Cloudflare + Google)",
+            DnsProvider::Hybrid => "Hybrid (Cloudflare + Google) [not recommended]",
             DnsProvider::Cloudflare => "Cloudflare (1.1.1.1)",
             DnsProvider::Google => "Google (8.8.8.8)",
             DnsProvider::NextDns(_) => "NextDNS (encrypted)",
@@ -112,10 +112,10 @@ pub async fn test_nextdns_reachability() -> bool {
 // ── DNS provider selection ───────────────────────────────────────────────────
 
 /// Prompt the user to choose a DNS provider (Stage 2 only).
-/// In non-interactive/JSON mode, returns Hybrid without prompting.
+/// In non-interactive/JSON mode, returns Cloudflare without prompting.
 pub fn prompt_dns_choice(config: &Config) -> DnsProvider {
     if !is_interactive(config) {
-        return DnsProvider::Hybrid;
+        return DnsProvider::Cloudflare;
     }
 
     println!();
@@ -124,10 +124,10 @@ pub fn prompt_dns_choice(config: &Config) -> DnsProvider {
         color::yellow(super::warn_icon(config), config),
         color::yellow("DNS is not resolving correctly. Choose a DNS server:", config),
     );
-    println!("    1. Hybrid — Cloudflare + Google (recommended)");
-    println!("    2. Cloudflare (1.1.1.1) — privacy-focused");
-    println!("    3. Google (8.8.8.8) — reliability");
-    println!("    4. Automatic — DHCP-provided");
+    println!("    1. Cloudflare (1.1.1.1) — privacy-focused, recommended");
+    println!("    2. Google (8.8.8.8) — reliability");
+    println!("    3. Automatic — DHCP-provided");
+    println!("    4. Hybrid — Cloudflare + Google (not recommended, causes sticky failover)");
 
     use std::io::Write;
     print!("  Choose [1-4, default=1]: ");
@@ -136,13 +136,13 @@ pub fn prompt_dns_choice(config: &Config) -> DnsProvider {
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_ok() {
         match input.trim() {
-            "2" => DnsProvider::Cloudflare,
-            "3" => DnsProvider::Google,
-            "4" => DnsProvider::Automatic,
-            _ => DnsProvider::Hybrid, // "1", empty, or anything else
+            "2" => DnsProvider::Google,
+            "3" => DnsProvider::Automatic,
+            "4" => DnsProvider::Hybrid,
+            _ => DnsProvider::Cloudflare, // "1", empty, or anything else
         }
     } else {
-        DnsProvider::Hybrid
+        DnsProvider::Cloudflare
     }
 }
 

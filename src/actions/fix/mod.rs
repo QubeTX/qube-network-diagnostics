@@ -4,6 +4,7 @@ pub mod cmd;
 pub mod connectivity;
 pub mod dhcp;
 pub mod dns;
+pub mod report;
 pub mod stages;
 pub mod vpn;
 pub mod wifi;
@@ -64,11 +65,14 @@ pub async fn run(config: &Config) -> i32 {
         return 2;
     }
 
+    let mut fix_report = report::FixReport::new();
+
     // Step 0: Capture current SSID for potential Stage 3 reconnection
     let saved_ssid = wifi::capture_current_ssid().await;
 
     // Step 0b: VPN detection and disable
     let disabled_vpns = vpn::detect_and_disable(config).await;
+    fix_report.vpn_names = disabled_vpns.iter().map(|v| v.name.clone()).collect();
 
     // ── Stage 1: Service Restart (automatic) ────────────────────────────────
     println!();
@@ -79,6 +83,7 @@ pub async fn run(config: &Config) -> i32 {
     );
 
     let (stage1_steps, connected) = stages::run_stage1(config).await;
+    fix_report.push_stage(1, "Service Restart", stage1_steps, connected);
 
     if connected {
         println!();
@@ -88,7 +93,10 @@ pub async fn run(config: &Config) -> i32 {
             color::green("Connectivity restored at Stage 1", config),
         );
         vpn::offer_reenable(&disabled_vpns, config).await;
-        print_summary(config, 1, &stage1_steps, &[], &[]);
+        fix_report.mark_resolved(1);
+        fix_report.finalize();
+        let saved_path = report::save_report(&fix_report);
+        report::print_terminal_summary(&fix_report, saved_path.as_deref(), config);
         return 0;
     }
 
@@ -101,6 +109,7 @@ pub async fn run(config: &Config) -> i32 {
     );
 
     let (stage2_steps, connected) = stages::run_stage2(config).await;
+    fix_report.push_stage(2, "Interface Reset", stage2_steps, connected);
 
     if connected {
         println!();
@@ -110,7 +119,10 @@ pub async fn run(config: &Config) -> i32 {
             color::green("Connectivity restored at Stage 2", config),
         );
         vpn::offer_reenable(&disabled_vpns, config).await;
-        print_summary(config, 2, &stage1_steps, &stage2_steps, &[]);
+        fix_report.mark_resolved(2);
+        fix_report.finalize();
+        let saved_path = report::save_report(&fix_report);
+        report::print_terminal_summary(&fix_report, saved_path.as_deref(), config);
         return 0;
     }
 
@@ -123,17 +135,18 @@ pub async fn run(config: &Config) -> i32 {
     );
 
     let (stage3_steps, connected) = stages::run_stage3(config, &saved_ssid).await;
+    fix_report.push_stage(3, "Network Stack Reset", stage3_steps, connected);
 
     vpn::offer_reenable(&disabled_vpns, config).await;
 
     println!();
-    if connected {
+    let exit_code = if connected {
         println!(
             "  {} {}",
             color::green(success_icon(config), config),
             color::green("Connectivity restored at Stage 3", config),
         );
-        print_summary(config, 3, &stage1_steps, &stage2_steps, &stage3_steps);
+        fix_report.mark_resolved(3);
         0
     } else {
         println!(
@@ -145,43 +158,13 @@ pub async fn run(config: &Config) -> i32 {
             "    {}",
             color::dim("The issue may require manual intervention or a system reboot.", config),
         );
-        print_summary(config, 0, &stage1_steps, &stage2_steps, &stage3_steps);
         2
-    }
-}
+    };
 
-fn print_summary(
-    config: &Config,
-    resolved_stage: u8,
-    stage1: &[StepResult],
-    stage2: &[StepResult],
-    stage3: &[StepResult],
-) {
-    let all_steps: Vec<&StepResult> = stage1.iter().chain(stage2.iter()).chain(stage3.iter()).collect();
-    let total = all_steps.len();
-    let failed = all_steps.iter().filter(|s| !s.success).count();
-
-    println!();
-    if resolved_stage > 0 {
-        println!(
-            "  {} {}",
-            color::green(success_icon(config), config),
-            color::green(
-                &format!("Network fix complete — resolved at stage {}", resolved_stage),
-                config,
-            ),
-        );
-    }
-    if failed > 0 && resolved_stage == 0 {
-        println!(
-            "  {} {}",
-            color::yellow(warn_icon(config), config),
-            color::yellow(
-                &format!("Fix completed with {} of {} steps failed", failed, total),
-                config,
-            ),
-        );
-    }
+    fix_report.finalize();
+    let saved_path = report::save_report(&fix_report);
+    report::print_terminal_summary(&fix_report, saved_path.as_deref(), config);
+    exit_code
 }
 
 async fn run_json(config: &Config) -> i32 {
@@ -195,20 +178,25 @@ async fn run_json(config: &Config) -> i32 {
             "resolved_at_stage": null,
             "requires_interaction": false,
             "vpn": null,
+            "report_path": null,
         });
         println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
         return 2;
     }
+
+    let mut fix_report = report::FixReport::new();
 
     let saved_ssid = wifi::capture_current_ssid().await;
     let _ = saved_ssid; // Stage 3 is skipped in JSON mode
 
     // VPN: auto-disable consumer VPNs
     let disabled_vpns = vpn::detect_and_disable(config).await;
+    fix_report.vpn_names = disabled_vpns.iter().map(|v| v.name.clone()).collect();
 
     // Stage 1
     let (stage1_steps, connected_s1) = stages::run_stage1(config).await;
     let stage1_json = steps_to_json(&stage1_steps);
+    fix_report.push_stage(1, "Service Restart", stage1_steps, connected_s1);
 
     let mut stages = vec![serde_json::json!({
         "stage": 1,
@@ -223,6 +211,7 @@ async fn run_json(config: &Config) -> i32 {
     if resolved_at.is_none() {
         let (stage2_steps, connected_s2) = stages::run_stage2(config).await;
         let stage2_json = steps_to_json(&stage2_steps);
+        fix_report.push_stage(2, "Interface Reset", stage2_steps, connected_s2);
         stages.push(serde_json::json!({
             "stage": 2,
             "name": "interface_reset",
@@ -233,6 +222,15 @@ async fn run_json(config: &Config) -> i32 {
             resolved_at = Some(2);
         }
     }
+
+    if let Some(stage) = resolved_at {
+        fix_report.mark_resolved(stage);
+    }
+    fix_report.finalize();
+
+    // Save Markdown report (best-effort)
+    let saved_path = report::save_report(&fix_report);
+    let report_path_str = saved_path.as_ref().map(|p| p.display().to_string());
 
     // Stage 3 is SKIPPED in JSON mode
     let requires_interaction = resolved_at.is_none();
@@ -245,6 +243,7 @@ async fn run_json(config: &Config) -> i32 {
         "resolved_at_stage": resolved_at,
         "requires_interaction": requires_interaction,
         "vpn": vpn_json,
+        "report_path": report_path_str,
     });
 
     println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));

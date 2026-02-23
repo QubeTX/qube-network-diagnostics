@@ -579,7 +579,7 @@ pub async fn run_stage3(config: &Config, saved_ssid: &Option<String>) -> (Vec<St
         return (steps, true);
     }
 
-    // DNS failed — auto-apply hybrid DNS (no prompt in Stage 3)
+    // DNS failed — auto-apply Google DNS (no prompt in Stage 3)
     let iface = adapters::detect_default_interface().await.unwrap_or_default();
     let dns_fixed = handle_dns_fallback_auto(config, &iface, &mut steps).await;
     (steps, dns_fixed)
@@ -750,13 +750,13 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
         let _ = run_cmd(cmd, TIMEOUT_MEDIUM).await;
     }
 
-    // 3b. Set hybrid DNS on the new service immediately (DHCP may be slow to deliver DNS)
+    // 3b. Set Cloudflare DNS on the new service immediately (DHCP may be slow to deliver DNS)
     {
         let mut cmd = tokio::process::Command::new("networksetup");
-        cmd.args(["-setdnsservers", &service_name, "1.1.1.1", "8.8.8.8"]);
+        cmd.args(["-setdnsservers", &service_name, "1.1.1.1", "1.0.0.1"]);
         if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
-                completed.push("Set hybrid DNS (1.1.1.1 + 8.8.8.8)".to_string());
+                completed.push("Set Cloudflare DNS (1.1.1.1 + 1.0.0.1)".to_string());
             }
         }
     }
@@ -1091,7 +1091,7 @@ async fn handle_dns_fallback_prompted(
     dns_ok
 }
 
-/// Stage 3 DNS fallback: auto-apply hybrid DNS (no prompt), test reachability,
+/// Stage 3 DNS fallback: auto-apply Google DNS (no prompt), test reachability,
 /// set DNS, flush cache, wait 5s, re-verify.
 async fn handle_dns_fallback_auto(
     config: &Config,
@@ -1103,7 +1103,7 @@ async fn handle_dns_fallback_auto(
     if is_interactive(config) {
         println!(
             "    {}",
-            color::dim("DNS not resolving — auto-applying hybrid DNS (1.1.1.1 + 8.8.8.8)", config),
+            color::dim("DNS not resolving — auto-applying Google DNS (8.8.8.8 + 8.8.4.4)", config),
         );
     }
 
@@ -1112,7 +1112,7 @@ async fn handle_dns_fallback_auto(
     let (cf_ok, google_ok) = dns::test_dns_reachability().await;
     spinner.finish_and_clear();
 
-    let provider = dns::adjust_for_reachability(dns::DnsProvider::Hybrid, cf_ok, google_ok, config);
+    let provider = dns::adjust_for_reachability(dns::DnsProvider::Google, cf_ok, google_ok, config);
 
     // Set DNS servers
     let spinner = create_spinner(&format!("Setting DNS to {}...", provider.label()));

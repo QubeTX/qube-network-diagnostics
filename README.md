@@ -122,7 +122,7 @@ nd300 --help
 | `-c, --clear-dns` | Flush the system DNS cache |
 | `--uninstall` | Remove nd300 from the system (binary, install receipt, PATH entry) |
 | `-h, --help` | Print help |
-| `-V, --version` | Print version |
+| `-v, --version` | Print version |
 
 ## User Mode vs Technician Mode
 
@@ -173,23 +173,34 @@ The fix flow (`nd300 -f`) runs a multi-stage network recovery process. Requires 
 
 Each stage verifies both HTTP connectivity and DNS resolution before declaring success. If DNS fails, the tool offers a choice of DNS servers:
 
-- **Hybrid** (recommended) — Cloudflare primary (1.1.1.1) + Google secondary (8.8.8.8)
-- **Cloudflare** — 1.1.1.1, 1.0.0.1 (privacy-focused)
+- **Cloudflare** (recommended) — 1.1.1.1, 1.0.0.1 (privacy-focused)
 - **Google** — 8.8.8.8, 8.8.4.4 (reliability)
 - **Automatic** — DHCP-provided servers
+- **Hybrid** (not recommended) — Cloudflare primary + Google secondary (mixed providers cause sticky failover)
 
 The tool tests DNS server reachability before applying changes, automatically falling back if a server is blocked by corporate firewalls or ISP restrictions.
+
+### Fix Report
+
+After the fix flow completes, a detailed Markdown report is automatically saved to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`. The report includes:
+
+- **Summary** — resolved or not, at which stage, and the likely root cause
+- **Per-stage step tables** — every action taken with OK/FAIL status and details
+- **VPN activity** — any VPNs that were disabled during the fix
+- **Recommendations** — context-aware next steps based on what was fixed
+
+A concise terminal summary is also printed showing the result, likely cause, and report file path. In JSON mode (`--fix --json`), the `report_path` field points to the saved file.
 
 ## DNS Configuration (`--dns`)
 
 The DNS flag (`nd300 -d`) provides a standalone way to change your DNS configuration. Requires elevated privileges.
 
 **Providers:**
-- **Hybrid** (recommended) — Cloudflare + Google
-- **Cloudflare** — 1.1.1.1 (privacy-focused)
+- **Cloudflare** (recommended) — 1.1.1.1 (privacy-focused)
 - **Google** — 8.8.8.8 (reliability)
 - **NextDNS** — Encrypted DNS with filtering (requires config ID)
 - **Automatic** — Reset to system default (DHCP)
+- **Hybrid** (not recommended) — Cloudflare + Google
 
 **NextDNS encryption by platform:**
 - **Windows** — DNS-over-HTTPS via `netsh` DoH template registration

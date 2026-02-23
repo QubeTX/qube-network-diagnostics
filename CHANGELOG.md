@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-02-22
+
+### Added
+- Fix flow report generation — after `--fix` completes, a detailed Markdown report is saved to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`
+- Terminal fix summary printed after fix flow with result, likely root cause, changes applied, VPN activity, and report file path
+- Root cause inference engine analyzes which steps resolved the issue (DNS misconfiguration, stale caches, degraded interface, corrupted stack)
+- JSON mode `--fix --json` now includes `report_path` field pointing to the saved Markdown report
+- Context-aware recommendations in the report based on what was fixed (DNS tips, driver suggestions, reboot advice)
+
+### Changed
+- Default DNS provider changed from Hybrid to Cloudflare (1.1.1.1) across `--dns`, `--fix` DNS fallback, and JSON mode — Hybrid (mixed providers) causes sticky failover issues
+- DNS provider menu reordered: Cloudflare is now option 1 (recommended), Hybrid moved to last position with "not recommended" label
+- Stage 3 macOS now sets Cloudflare DNS (1.1.1.1 + 1.0.0.1) instead of Hybrid (1.1.1.1 + 8.8.8.8) after network service recreation
+
 ## [2.5.0] - 2026-02-22
 
 ### Changed

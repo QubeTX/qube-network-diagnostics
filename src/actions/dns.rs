@@ -83,7 +83,7 @@ pub async fn run(config: &Config) -> i32 {
                     "    {}",
                     color::dim("NextDNS servers unreachable — falling back", config),
                 );
-                fix_dns::adjust_for_reachability(DnsProvider::Hybrid, cf_ok, google_ok, config)
+                fix_dns::adjust_for_reachability(DnsProvider::Cloudflare, cf_ok, google_ok, config)
             } else {
                 provider
             }
@@ -220,7 +220,7 @@ pub async fn run(config: &Config) -> i32 {
     2
 }
 
-/// JSON mode: auto-selects Hybrid (no NextDNS — requires interactive config ID).
+/// JSON mode: auto-selects Cloudflare (no NextDNS — requires interactive config ID).
 async fn run_json(config: &Config) -> i32 {
     if !crate::platform::is_elevated() {
         let output = serde_json::json!({
@@ -255,7 +255,7 @@ async fn run_json(config: &Config) -> i32 {
 
     // Test reachability
     let (cf_ok, google_ok) = fix_dns::test_dns_reachability().await;
-    let provider = fix_dns::adjust_for_reachability(DnsProvider::Hybrid, cf_ok, google_ok, config);
+    let provider = fix_dns::adjust_for_reachability(DnsProvider::Cloudflare, cf_ok, google_ok, config);
 
     // Set DNS
     let set_result = fix_dns::set_dns_servers(&iface, &service_name, provider.clone()).await;
@@ -320,15 +320,15 @@ async fn run_json(config: &Config) -> i32 {
 /// Extended DNS choice prompt including NextDNS option.
 fn prompt_dns_choice_extended(config: &Config) -> DnsProvider {
     if !is_interactive(config) {
-        return DnsProvider::Hybrid;
+        return DnsProvider::Cloudflare;
     }
 
     println!("  Choose a DNS provider:");
-    println!("    1. Hybrid — Cloudflare + Google (recommended)");
-    println!("    2. Cloudflare (1.1.1.1) — privacy-focused");
-    println!("    3. Google (8.8.8.8) — reliability");
-    println!("    4. NextDNS — encrypted DNS with filtering");
-    println!("    5. Automatic — reset to system default (DHCP)");
+    println!("    1. Cloudflare (1.1.1.1) — privacy-focused, recommended");
+    println!("    2. Google (8.8.8.8) — reliability");
+    println!("    3. NextDNS — encrypted DNS with filtering");
+    println!("    4. Automatic — reset to system default (DHCP)");
+    println!("    5. Hybrid — Cloudflare + Google (not recommended, causes sticky failover)");
 
     use std::io::Write;
     print!("  Choose [1-5, default=1]: ");
@@ -337,13 +337,13 @@ fn prompt_dns_choice_extended(config: &Config) -> DnsProvider {
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_ok() {
         match input.trim() {
-            "2" => DnsProvider::Cloudflare,
-            "3" => DnsProvider::Google,
-            "4" => DnsProvider::NextDns(String::new()), // placeholder, ID prompted separately
-            "5" => DnsProvider::Automatic,
-            _ => DnsProvider::Hybrid,
+            "2" => DnsProvider::Google,
+            "3" => DnsProvider::NextDns(String::new()), // placeholder, ID prompted separately
+            "4" => DnsProvider::Automatic,
+            "5" => DnsProvider::Hybrid,
+            _ => DnsProvider::Cloudflare,
         }
     } else {
-        DnsProvider::Hybrid
+        DnsProvider::Cloudflare
     }
 }
