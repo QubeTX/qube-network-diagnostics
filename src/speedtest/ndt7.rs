@@ -1,6 +1,7 @@
 use super::{Phase, ProviderResult, SpeedTestConfig, TestDuration};
 use futures_util::{SinkExt, StreamExt};
 use std::time::{Duration, Instant};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 const LOCATE_URL: &str =
@@ -90,6 +91,14 @@ where
         .ok_or("NDT7 discovery: missing upload URL")?
         .to_string();
 
+    // Fallback plain WS URLs (no TLS) — used if WSS connection fails
+    let download_url_ws = urls["ws:///ndt/v7/download"]
+        .as_str()
+        .map(|s| s.to_string());
+    let upload_url_ws = urls["ws:///ndt/v7/upload"]
+        .as_str()
+        .map(|s| s.to_string());
+
     progress(Phase::Ndt7Discovery, 1.0);
 
     // ── Determine iteration count ────────────────────────────────────
@@ -115,7 +124,7 @@ where
         // ── Download test ────────────────────────────────────────────
         progress(Phase::Ndt7Download, iter_frac_base);
 
-        let dl_result = run_download(&download_url, |frac| {
+        let dl_result = run_download(&download_url, download_url_ws.as_deref(), |frac| {
             progress(
                 Phase::Ndt7Download,
                 iter_frac_base + frac * iter_frac_step,
@@ -139,7 +148,7 @@ where
         // ── Upload test ──────────────────────────────────────────────
         progress(Phase::Ndt7Upload, iter_frac_base);
 
-        let ul_result = run_upload(&upload_url, |frac| {
+        let ul_result = run_upload(&upload_url, upload_url_ws.as_deref(), |frac| {
             progress(
                 Phase::Ndt7Upload,
                 iter_frac_base + frac * iter_frac_step,
@@ -226,14 +235,60 @@ struct SubTestResult {
     jitter_ms: Option<f64>,
 }
 
+/// Connect to an NDT7 WebSocket endpoint with the required subprotocol header.
+/// Tries the primary URL first; falls back to the alternate URL on failure.
+async fn ndt7_connect(
+    url: &str,
+    fallback_url: Option<&str>,
+    label: &str,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,
+    ),
+    String,
+> {
+    let mut req = url
+        .into_client_request()
+        .map_err(|e| format!("NDT7 {label} request build failed: {e}"))?;
+    req.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        "net.measurementlab.ndt.v7"
+            .parse()
+            .expect("valid header value"),
+    );
+
+    match tokio_tungstenite::connect_async(req).await {
+        Ok(conn) => Ok(conn),
+        Err(e) => {
+            if let Some(ws_url) = fallback_url {
+                let mut fallback_req = ws_url
+                    .into_client_request()
+                    .map_err(|e| format!("NDT7 {label} fallback request build failed: {e}"))?;
+                fallback_req.headers_mut().insert(
+                    "Sec-WebSocket-Protocol",
+                    "net.measurementlab.ndt.v7"
+                        .parse()
+                        .expect("valid header value"),
+                );
+                tokio_tungstenite::connect_async(fallback_req)
+                    .await
+                    .map_err(|e2| {
+                        format!("NDT7 {label} WebSocket connect failed: wss: {e}, ws: {e2}")
+                    })
+            } else {
+                Err(format!("NDT7 {label} WebSocket connect failed: {e}"))
+            }
+        }
+    }
+}
+
 /// Run a single NDT7 download test over WebSocket.
-async fn run_download<F>(url: &str, progress: F) -> Result<SubTestResult, String>
+async fn run_download<F>(url: &str, fallback_url: Option<&str>, progress: F) -> Result<SubTestResult, String>
 where
     F: Fn(f64),
 {
-    let (ws, _) = tokio_tungstenite::connect_async(url)
-        .await
-        .map_err(|e| format!("NDT7 download WebSocket connect failed: {e}"))?;
+    let (ws, _) = ndt7_connect(url, fallback_url, "download").await?;
 
     let (_, mut read) = ws.split();
 
@@ -319,13 +374,11 @@ where
 }
 
 /// Run a single NDT7 upload test over WebSocket.
-async fn run_upload<F>(url: &str, progress: F) -> Result<SubTestResult, String>
+async fn run_upload<F>(url: &str, fallback_url: Option<&str>, progress: F) -> Result<SubTestResult, String>
 where
     F: Fn(f64),
 {
-    let (ws, _) = tokio_tungstenite::connect_async(url)
-        .await
-        .map_err(|e| format!("NDT7 upload WebSocket connect failed: {e}"))?;
+    let (ws, _) = ndt7_connect(url, fallback_url, "upload").await?;
 
     let (mut write, mut read) = ws.split();
 

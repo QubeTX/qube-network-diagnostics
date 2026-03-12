@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.4] - 2026-03-12
+
+### Fixed
+- Fix NDT7 (M-Lab) WebSocket connection failing with 400 Bad Request — add required `Sec-WebSocket-Protocol: net.measurementlab.ndt.v7` subprotocol header to WebSocket handshake
+- Add OS-native TLS certificate store support (`rustls-native-certs`) for WebSocket connections — resolves TLS validation failures in environments with custom/corporate CAs
+- Add WSS→WS fallback for NDT7 WebSocket connections — if TLS connection fails, automatically retries with plain WebSocket URL from the M-Lab locate API
+
 ## [2.7.3] - 2026-03-12
 
 ### Added
