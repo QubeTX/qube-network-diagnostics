@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.3] - 2026-03-12
+
+### Added
+- Man page generation (`nd300.1`, `speedqx.1`) via `clap_mangen` — auto-generated from CLI definitions at build time, included in release archives
+- Usage examples section in SpeedQX `--help` output (matching nd300's existing examples)
+
+### Changed
+- Extracted CLI definitions to shared `src/cli.rs` module for reuse by both binaries and the man page generator
+
 ## [2.7.2] - 2026-03-12
 
 ### Changed

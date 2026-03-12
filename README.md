@@ -249,6 +249,18 @@ The DNS flag (`nd300 -d`) provides a standalone way to change your DNS configura
 
 After setting DNS, the tool verifies both DNS resolution and HTTP connectivity. If verification fails, it automatically reverts to DHCP and reports the result. On success, full diagnostics run to confirm network health.
 
+## Man Pages (Linux/macOS)
+
+Man pages are generated at build time and included in release archives. To install after building from source:
+
+```sh
+sudo cp man/nd300.1 /usr/share/man/man1/
+sudo cp man/speedqx.1 /usr/share/man/man1/
+sudo mandb
+```
+
+Then use `man nd300` or `man speedqx` to view documentation.
+
 ## Building from Source
 
 ```sh

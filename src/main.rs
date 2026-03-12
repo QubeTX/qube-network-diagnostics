@@ -1,85 +1,12 @@
 use clap::Parser;
+use nd_300::cli::Nd300Cli;
 use nd_300::config::{Config, OutputFormat};
 use nd_300::diagnostics::{self, DiagnosticResults, DiagnosticStatus};
 use nd_300::render;
 
-/// ND-300: Cross-platform network diagnostic tool
-#[derive(Parser)]
-#[command(
-    name = "nd300",
-    author,
-    version,
-    disable_version_flag = true,
-    about = "ND-300 Network Diagnostic - QubeTX Developer Tools",
-    long_about = "ND-300 Network Diagnostic - QubeTX Developer Tools\n\n\
-        Cross-platform network diagnostics with 25+ concurrent checks,\n\
-        multi-stage network repair, and DNS configuration management.",
-    after_long_help = "EXAMPLES:\n\
-        \x20 nd300              Run standard diagnostics\n\
-        \x20 nd300 -t           Technician mode (deep diagnostics)\n\
-        \x20 nd300 -d           Change DNS configuration\n\
-        \x20 nd300 -f           Multi-stage network fix\n\
-        \x20 nd300 --fast       Skip speed test for faster execution\n\
-        \x20 nd300 --json       Output results as JSON\n\n\
-        Run 'nd300 --help' for full details, or 'nd300 -h' for a summary."
-)]
-struct Cli {
-    /// Technician mode - full technical report with deep diagnostics
-    #[arg(short = 't', long = "tech", alias = "technician", help_heading = "Modes")]
-    tech: bool,
-
-    /// Custom title for the report header
-    #[arg(short = 'T', long, help_heading = "Modes")]
-    title: Option<String>,
-
-    /// Output results as JSON
-    #[arg(long, help_heading = "Output")]
-    json: bool,
-
-    /// Use ASCII characters instead of Unicode box-drawing
-    #[arg(long, help_heading = "Output")]
-    ascii: bool,
-
-    /// Disable colored output
-    #[arg(long, help_heading = "Output")]
-    no_color: bool,
-
-    /// Show additional debug/trace information
-    #[arg(long, help_heading = "Output")]
-    verbose: bool,
-
-    /// Skip the speed test (faster execution)
-    #[arg(long, help_heading = "Speed Test")]
-    fast: bool,
-
-    /// Speed test duration in seconds
-    #[arg(long, default_value = "10", help_heading = "Speed Test")]
-    speed_duration: u64,
-
-    /// Change DNS servers and verify connectivity
-    #[arg(short = 'd', long = "dns", help_heading = "Actions")]
-    dns: bool,
-
-    /// Multi-stage network fix: graduated recovery from service restart to stack reset
-    #[arg(short = 'f', long = "fix", help_heading = "Actions")]
-    fix: bool,
-
-    /// Clear DNS cache and exit
-    #[arg(short = 'c', long = "clear-dns", help_heading = "Actions")]
-    clear_dns: bool,
-
-    /// Uninstall nd300 from this system
-    #[arg(long = "uninstall", help_heading = "Actions")]
-    uninstall: bool,
-
-    /// Print version
-    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
-    version: (),
-}
-
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = Nd300Cli::parse();
 
     #[cfg(windows)]
     enable_utf8_console();

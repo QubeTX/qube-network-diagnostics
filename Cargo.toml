@@ -1,6 +1,6 @@
 [package]
 name = "nd-300"
-version = "2.7.2"
+version = "2.7.3"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -49,6 +49,10 @@ ipconfig = "0.3"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["net", "socket"] }
 libc = "0.2"
+
+[build-dependencies]
+clap = { version = "4.5", features = ["derive"] }
+clap_mangen = "0.2"
 
 [profile.dist]
 inherits = "release"

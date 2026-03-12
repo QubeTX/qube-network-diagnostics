@@ -1,0 +1,54 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH speedqx 1  "speedqx 2.7.3" 
+.SH NAME
+speedqx \- SpeedQX Internet Speed Test \- QubeTX Developer Tools
+.SH SYNOPSIS
+\fBspeedqx\fR [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-duration\fR] [\fB\-\-cf\-only\fR] [\fB\-\-ndt\-only\fR] [\fB\-\-latency\-probes\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+SpeedQX Internet Speed Test \- QubeTX Developer Tools
+.PP
+Dual\-provider speed test using Cloudflare and M\-Lab NDT7.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-version\fR
+Print version
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH OUTPUT
+.TP
+\fB\-\-json\fR
+Output results as JSON
+.TP
+\fB\-\-ascii\fR
+Use ASCII characters instead of Unicode box\-drawing
+.TP
+\fB\-\-no\-color\fR
+Disable colored output
+.SH "SPEED TEST"
+.TP
+\fB\-\-duration\fR \fI<DURATION>\fR [default: 30]
+Test duration per provider: seconds or "auto"
+.TP
+\fB\-\-cf\-only\fR
+Use only Cloudflare (skip NDT7)
+.TP
+\fB\-\-ndt\-only\fR
+Use only M\-Lab NDT7 (skip Cloudflare)
+.TP
+\fB\-\-latency\-probes\fR \fI<LATENCY_PROBES>\fR [default: 20]
+Number of latency probes
+.SH EXTRA
+EXAMPLES:
+  speedqx                Run full speed test (Cloudflare + NDT7)
+  speedqx \-\-cf\-only      Cloudflare only
+  speedqx \-\-ndt\-only     M\-Lab NDT7 only
+  speedqx \-\-duration 60  60\-second test per provider
+  speedqx \-\-json         Output results as JSON
+
+Run \*(Aqspeedqx \-\-help\*(Aq for full details, or \*(Aqspeedqx \-h\*(Aq for a summary.
+.SH VERSION
+v2.7.3
+.SH AUTHORS
+Emmett S <hey@emmetts.dev>

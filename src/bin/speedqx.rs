@@ -1,69 +1,8 @@
 use clap::Parser;
+use nd_300::cli::SpeedQXCli;
 use nd_300::speedtest::display::{render_results, SpeedQXDisplay};
-use nd_300::speedtest::{Phase, SpeedTestConfig, TestDuration};
+use nd_300::speedtest::{Phase, SpeedTestConfig};
 use std::sync::Mutex;
-
-/// SpeedQX Internet Speed Test - QubeTX Developer Tools
-///
-/// Dual-provider speed test using Cloudflare and M-Lab NDT7.
-#[derive(Parser)]
-#[command(
-    name = "speedqx",
-    author,
-    version,
-    disable_version_flag = true,
-    about = "SpeedQX Internet Speed Test - QubeTX Developer Tools",
-    long_about = "SpeedQX Internet Speed Test - QubeTX Developer Tools\n\n\
-        Dual-provider speed test using Cloudflare and M-Lab NDT7."
-)]
-struct Cli {
-    /// Output results as JSON
-    #[arg(long, help_heading = "Output")]
-    json: bool,
-
-    /// Use ASCII characters instead of Unicode box-drawing
-    #[arg(long, help_heading = "Output")]
-    ascii: bool,
-
-    /// Disable colored output
-    #[arg(long, help_heading = "Output")]
-    no_color: bool,
-
-    /// Test duration per provider: seconds or "auto"
-    #[arg(
-        long,
-        default_value = "30",
-        value_parser = parse_duration,
-        help_heading = "Speed Test"
-    )]
-    duration: TestDuration,
-
-    /// Use only Cloudflare (skip NDT7)
-    #[arg(long, conflicts_with = "ndt_only", help_heading = "Speed Test")]
-    cf_only: bool,
-
-    /// Use only M-Lab NDT7 (skip Cloudflare)
-    #[arg(long, conflicts_with = "cf_only", help_heading = "Speed Test")]
-    ndt_only: bool,
-
-    /// Number of latency probes
-    #[arg(long, default_value = "20", help_heading = "Speed Test")]
-    latency_probes: u32,
-
-    /// Print version
-    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
-    version: (),
-}
-
-fn parse_duration(s: &str) -> Result<TestDuration, String> {
-    if s.eq_ignore_ascii_case("auto") {
-        Ok(TestDuration::Auto)
-    } else {
-        s.parse::<u64>()
-            .map(TestDuration::Seconds)
-            .map_err(|_| format!("invalid duration '{}': expected a number or \"auto\"", s))
-    }
-}
 
 /// Tracks which phase is currently active so the callback can manage transitions.
 struct DisplayState {
@@ -175,7 +114,7 @@ impl DisplayState {
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = SpeedQXCli::parse();
 
     #[cfg(windows)]
     enable_utf8_console();

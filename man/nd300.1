@@ -1,0 +1,73 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH nd300 1  "nd300 2.7.3" 
+.SH NAME
+nd300 \- ND\-300 Network Diagnostic \- QubeTX Developer Tools
+.SH SYNOPSIS
+\fBnd300\fR [\fB\-t\fR|\fB\-\-tech\fR] [\fB\-T\fR|\fB\-\-title\fR] [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-verbose\fR] [\fB\-\-fast\fR] [\fB\-\-speed\-duration\fR] [\fB\-d\fR|\fB\-\-dns\fR] [\fB\-f\fR|\fB\-\-fix\fR] [\fB\-c\fR|\fB\-\-clear\-dns\fR] [\fB\-\-uninstall\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+ND\-300 Network Diagnostic \- QubeTX Developer Tools
+.PP
+Cross\-platform network diagnostics with 25+ concurrent checks,
+multi\-stage network repair, and DNS configuration management.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-version\fR
+Print version
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH MODES
+.TP
+\fB\-t\fR, \fB\-\-tech\fR
+Technician mode \- full technical report with deep diagnostics
+.TP
+\fB\-T\fR, \fB\-\-title\fR \fI<TITLE>\fR
+Custom title for the report header
+.SH OUTPUT
+.TP
+\fB\-\-json\fR
+Output results as JSON
+.TP
+\fB\-\-ascii\fR
+Use ASCII characters instead of Unicode box\-drawing
+.TP
+\fB\-\-no\-color\fR
+Disable colored output
+.TP
+\fB\-\-verbose\fR
+Show additional debug/trace information
+.SH "SPEED TEST"
+.TP
+\fB\-\-fast\fR
+Skip the speed test (faster execution)
+.TP
+\fB\-\-speed\-duration\fR \fI<SPEED_DURATION>\fR [default: 10]
+Speed test duration in seconds
+.SH ACTIONS
+.TP
+\fB\-d\fR, \fB\-\-dns\fR
+Change DNS servers and verify connectivity
+.TP
+\fB\-f\fR, \fB\-\-fix\fR
+Multi\-stage network fix: graduated recovery from service restart to stack reset
+.TP
+\fB\-c\fR, \fB\-\-clear\-dns\fR
+Clear DNS cache and exit
+.TP
+\fB\-\-uninstall\fR
+Uninstall nd300 from this system
+.SH EXTRA
+EXAMPLES:
+  nd300              Run standard diagnostics
+  nd300 \-t           Technician mode (deep diagnostics)
+  nd300 \-d           Change DNS configuration
+  nd300 \-f           Multi\-stage network fix
+  nd300 \-\-fast       Skip speed test for faster execution
+  nd300 \-\-json       Output results as JSON
+
+Run \*(Aqnd300 \-\-help\*(Aq for full details, or \*(Aqnd300 \-h\*(Aq for a summary.
+.SH VERSION
+v2.7.3
+.SH AUTHORS
+Emmett S <hey@emmetts.dev>
