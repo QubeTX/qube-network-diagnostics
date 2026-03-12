@@ -4,9 +4,13 @@ use std::path::{Path, PathBuf};
 
 use super::{fail_icon, is_interactive, prompt_yes_no, success_icon};
 
+/// Binaries that are part of this package (installed together by cargo-dist).
+const OUR_BINARIES: &[&str] = &["nd300", "speedqx"];
+
 /// Tracks what we cleaned up for reporting.
 struct CleanupReport {
     binary_removed: bool,
+    sibling_removed: bool,
     receipt_removed: bool,
     path_cleaned: bool,
     notes: Vec<String>,
@@ -46,8 +50,8 @@ pub async fn run(config: &Config) -> i32 {
 
     println!();
     println!(
-        "  This will remove nd300 from: {}",
-        color::cyan(&real_path.display().to_string(), config),
+        "  This will remove nd300 and speedqx from: {}",
+        color::cyan(&real_path.parent().unwrap_or(&real_path).display().to_string(), config),
     );
 
     // Show what we'll clean up
@@ -65,7 +69,7 @@ pub async fn run(config: &Config) -> i32 {
     {
         let bin_dir = real_path.parent().map(|p| p.to_path_buf());
         if let Some(ref dir) = bin_dir {
-            if is_sole_binary_in_dir(&real_path, dir) {
+            if is_sole_package_in_dir(dir) {
                 println!(
                     "  PATH entry to clean:        {}",
                     color::cyan(&dir.display().to_string(), config),
@@ -77,7 +81,7 @@ pub async fn run(config: &Config) -> i32 {
     println!();
 
     if is_interactive(config) {
-        if !prompt_yes_no("  Are you sure you want to uninstall nd300? (y/N): ") {
+        if !prompt_yes_no("  Are you sure you want to uninstall nd300 and speedqx? (y/N): ") {
             println!("  Uninstall cancelled.");
             return 0;
         }
@@ -88,9 +92,13 @@ pub async fn run(config: &Config) -> i32 {
 
     // Print results
     if report.binary_removed {
-        print_ok("Binary removed", config);
+        print_ok("nd300 binary removed", config);
     } else {
-        print_fail("Failed to remove binary", config);
+        print_fail("Failed to remove nd300 binary", config);
+    }
+
+    if report.sibling_removed {
+        print_ok("speedqx binary removed", config);
     }
 
     if report.receipt_removed {
@@ -110,7 +118,7 @@ pub async fn run(config: &Config) -> i32 {
         println!(
             "  {} {}",
             color::green(success_icon(config), config),
-            color::green("nd300 has been uninstalled", config),
+            color::green("nd300 and speedqx have been uninstalled", config),
         );
         0
     } else {
@@ -130,6 +138,7 @@ async fn run_json(exe_path: &Path, config: &Config) -> i32 {
         "action": "uninstall",
         "success": report.binary_removed,
         "binary_removed": report.binary_removed,
+        "sibling_removed": report.sibling_removed,
         "receipt_removed": report.receipt_removed,
         "path_cleaned": report.path_cleaned,
         "notes": report.notes,
@@ -143,6 +152,7 @@ async fn run_json(exe_path: &Path, config: &Config) -> i32 {
 async fn do_uninstall(exe_path: &Path, _config: &Config) -> CleanupReport {
     let mut report = CleanupReport {
         binary_removed: false,
+        sibling_removed: false,
         receipt_removed: false,
         path_cleaned: false,
         notes: Vec::new(),
@@ -163,13 +173,50 @@ async fn do_uninstall(exe_path: &Path, _config: &Config) -> CleanupReport {
         }
     }
 
-    // Step 2: Clean up PATH on Windows
-    // Only remove the bin dir from PATH if nd300 is the only binary there
+    // Step 2: Remove sibling binaries (speedqx) from the same directory
+    if let Some(bin_dir) = exe_path.parent() {
+        let exe_name = exe_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+
+        for name in OUR_BINARIES {
+            let sibling = if cfg!(windows) {
+                bin_dir.join(format!("{}.exe", name))
+            } else {
+                bin_dir.join(name)
+            };
+
+            let sibling_lower = sibling
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+
+            // Skip the current exe (handled separately in step 4)
+            if sibling_lower == exe_name {
+                continue;
+            }
+
+            if sibling.exists() {
+                match std::fs::remove_file(&sibling) {
+                    Ok(_) => report.sibling_removed = true,
+                    Err(e) => report.notes.push(format!(
+                        "Could not remove {}: {}",
+                        sibling.display(),
+                        e
+                    )),
+                }
+            }
+        }
+    }
+
+    // Step 3: Clean up PATH on Windows
+    // Only remove the bin dir from PATH if only our binaries were there
     #[cfg(windows)]
     {
         let bin_dir = exe_path.parent().map(|p| p.to_path_buf());
         if let Some(ref dir) = bin_dir {
-            if is_sole_binary_in_dir(exe_path, dir) {
+            if is_sole_package_in_dir(dir) {
                 match remove_from_user_path(dir) {
                     Ok(true) => report.path_cleaned = true,
                     Ok(false) => {} // wasn't in PATH, nothing to do
@@ -183,7 +230,7 @@ async fn do_uninstall(exe_path: &Path, _config: &Config) -> CleanupReport {
         }
     }
 
-    // Step 3: Remove the binary itself (must be last)
+    // Step 4: Remove the binary itself (must be last)
     #[cfg(unix)]
     {
         // On Unix, a running binary can be unlinked — the inode persists until exit
@@ -259,14 +306,15 @@ fn get_receipt_dir() -> Option<PathBuf> {
     }
 }
 
-/// Check if nd300 is the only executable in the given directory.
+/// Check if only our package's binaries (nd300, speedqx) are in the given directory.
 /// If other binaries are present (e.g. cargo, rustup), we must NOT remove the
 /// directory from PATH — that would break the user's Rust toolchain.
 #[cfg(windows)]
-fn is_sole_binary_in_dir(exe_path: &Path, dir: &Path) -> bool {
-    let exe_name = exe_path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase());
+fn is_sole_package_in_dir(dir: &Path) -> bool {
+    let our_names: Vec<String> = OUR_BINARIES
+        .iter()
+        .map(|n| format!("{}.exe", n))
+        .collect();
 
     match std::fs::read_dir(dir) {
         Ok(entries) => {
@@ -274,14 +322,12 @@ fn is_sole_binary_in_dir(exe_path: &Path, dir: &Path) -> bool {
                 .filter_map(|e| e.ok())
                 .filter(|e| {
                     let name = e.file_name().to_string_lossy().to_lowercase();
-                    // Only count .exe files that aren't nd300
-                    name.ends_with(".exe")
-                        && Some(name.as_str().to_string()) != exe_name.as_ref().map(|n| n.to_string())
+                    name.ends_with(".exe") && !our_names.contains(&name)
                 })
                 .collect();
             other_exes.is_empty()
         }
-        Err(_) => false, // If we can't read the dir, don't touch PATH
+        Err(_) => false,
     }
 }
 

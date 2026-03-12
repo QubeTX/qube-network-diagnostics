@@ -115,7 +115,7 @@ pub struct DiagnosticResults {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_details: Option<Vec<latency::LatencyResult>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub speed_details: Option<speed::SpeedResult>,
+    pub speed_details: Option<crate::speedtest::SpeedTestResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port_details: Option<Vec<ports::PortResult>>,
 

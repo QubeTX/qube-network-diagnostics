@@ -1,6 +1,6 @@
 [package]
 name = "nd-300"
-version = "2.6.0"
+version = "2.7.0"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -20,6 +20,10 @@ eula = false
 name = "nd300"
 path = "src/main.rs"
 
+[[bin]]
+name = "speedqx"
+path = "src/bin/speedqx.rs"
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
@@ -33,6 +37,9 @@ indicatif = "0.17"
 owo-colors = "4"
 sysinfo = "0.32"
 default-net = "0.22"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+url = "2"
 
 [target.'cfg(windows)'.dependencies]
 wmi = "0.14"

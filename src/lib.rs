@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod platform;
 pub mod render;
+pub mod speedtest;
 
 pub use config::Config;
 pub use error::{AppError, Result};

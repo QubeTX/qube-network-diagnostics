@@ -3,14 +3,15 @@
 [![Build Status](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml/badge.svg)](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 
-Cross-platform network diagnostic tool for Windows, macOS, and Linux.
+Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes **SpeedQX**, a standalone dual-provider speed test.
 
 ## Features
 
 - **Two operating modes**: User mode (clean summary) and Technician mode (deep diagnostics)
 - **8 core diagnostics**: adapters, interfaces, gateway, DNS, public IP, latency, speed test, port connectivity
 - **17 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
-- **Speed test** against Cloudflare with configurable duration
+- **Dual-provider speed test** — Cloudflare + M-Lab NDT7, averaged for accuracy. Measures ping, jitter, download, upload, and packet loss.
+- **SpeedQX** standalone speed test binary — detailed results with per-provider breakdown
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
 - **Unicode box-drawing** table rendering with ASCII fallback
@@ -51,6 +52,8 @@ cargo build --release
 
 ## Usage
 
+### nd300 — Network Diagnostic
+
 ```sh
 # Default user mode — clean summary
 nd300
@@ -79,11 +82,34 @@ nd300 --no-color
 # Custom report title
 nd300 -T "Office Network Check"
 
-# Custom speed test duration (seconds)
+# Custom speed test duration per provider (seconds)
 nd300 --speed-duration 20
 
 # Show help
 nd300 --help
+```
+
+### speedqx — Standalone Speed Test
+
+```sh
+# Full dual-provider speed test (Cloudflare + NDT7)
+speedqx
+
+# Cloudflare only (skip NDT7)
+speedqx --cf-only
+
+# NDT7 only (skip Cloudflare)
+speedqx --ndt-only
+
+# Custom duration per provider (seconds or "auto")
+speedqx --duration 60
+speedqx --duration auto
+
+# JSON output
+speedqx --json
+
+# Quick test with fewer latency probes
+speedqx --latency-probes 5 --duration 10
 ```
 
 ## Example Output
@@ -124,6 +150,20 @@ nd300 --help
 | `-h, --help` | Print help |
 | `-v, --version` | Print version |
 
+## SpeedQX Options
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output results as JSON |
+| `--ascii` | Use ASCII characters instead of Unicode box-drawing |
+| `--no-color` | Disable colored output |
+| `--duration <VALUE>` | Test duration per provider: seconds or "auto" (default: 30) |
+| `--cf-only` | Use only Cloudflare (skip NDT7) |
+| `--ndt-only` | Use only M-Lab NDT7 (skip Cloudflare) |
+| `--latency-probes <N>` | Number of latency probes (default: 20) |
+| `-v, --version` | Print version |
+| `-h, --help` | Print help |
+
 ## User Mode vs Technician Mode
 
 **User mode** (default) runs 8 core diagnostics and presents a clean summary table. Ideal for quick network health checks.
@@ -139,7 +179,7 @@ nd300 --help
 4. DNS Resolution
 5. Public IP
 6. Latency
-7. Speed Test (Cloudflare)
+7. Speed Test (Cloudflare + M-Lab NDT7)
 8. Port Connectivity
 
 ### Deep Diagnostics (technician mode only)
@@ -217,7 +257,7 @@ cd qube-network-diagnostics
 cargo build --release
 ```
 
-The binary will be at `target/release/nd300` (or `nd300.exe` on Windows).
+Binaries will be at `target/release/nd300` and `target/release/speedqx` (or `.exe` on Windows).
 
 ## License
 

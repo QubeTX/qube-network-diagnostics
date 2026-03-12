@@ -1,40 +1,49 @@
 use indicatif::{ProgressBar, ProgressStyle};
-use serde::Serialize;
-use std::time::{Duration, Instant};
+
+use crate::config::Config;
+use crate::speedtest::{self, Phase, SpeedTestConfig, SpeedTestResult, TestDuration};
 
 use super::DiagnosticResult;
-use crate::config::Config;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SpeedResult {
-    pub download_mbps: f64,
-    pub upload_mbps: f64,
-    pub download_bytes: u64,
-    pub upload_bytes: u64,
-    pub download_duration_s: f64,
-    pub upload_duration_s: f64,
-    pub loaded_latency_ms: Option<f64>,
-    pub server: String,
-}
+pub async fn check(config: &Config) -> (DiagnosticResult, Option<SpeedTestResult>) {
+    let st_config = SpeedTestConfig {
+        duration: TestDuration::Seconds(config.speed_duration),
+        latency_probes: 10,
+        run_cloudflare: true,
+        run_ndt7: true,
+        use_colors: config.use_colors,
+    };
 
-pub async fn check(config: &Config) -> (DiagnosticResult, Option<SpeedResult>) {
-    let duration_secs = config.speed_duration;
+    // Single progress bar covering all phases
+    let pb = create_progress_bar(config);
+    let pb_clone = pb.clone();
 
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(duration_secs + 30))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            return (
-                DiagnosticResult::fail("Speed", "Failed to create HTTP client"),
-                None,
-            );
+    let result = speedtest::run(st_config, move |phase, progress| {
+        update_progress(&pb_clone, phase, progress);
+    })
+    .await;
+
+    pb.finish_and_clear();
+
+    // Convert to DiagnosticResult
+    let summary = format_speed_summary(&result);
+    let status = determine_speed_status(&result);
+
+    let diag = match status {
+        SpeedStatus::Good => DiagnosticResult::ok("Speed", summary),
+        SpeedStatus::Warning(note) => {
+            DiagnosticResult::warn("Speed", format!("{}\n{}", summary, note))
+        }
+        SpeedStatus::Poor(note) => {
+            DiagnosticResult::warn("Speed", format!("{}\n{}", summary, note))
         }
     };
 
-    let total_steps = 100u64;
-    let pb = ProgressBar::new(total_steps);
+    (diag, Some(result))
+}
+
+fn create_progress_bar(config: &Config) -> ProgressBar {
+    let pb = ProgressBar::new(100);
     let template = if config.use_colors {
         "  {spinner:.cyan} Speed test  [{bar:30.cyan/dim}] {pos}% {msg}"
     } else {
@@ -46,155 +55,40 @@ pub async fn check(config: &Config) -> (DiagnosticResult, Option<SpeedResult>) {
             .unwrap_or_else(|_| ProgressStyle::default_bar())
             .progress_chars("━╸─"),
     );
-    pb.set_message("Download...");
-
-    // Download test
-    let dl_duration = Duration::from_secs(duration_secs / 2);
-    let (dl_bytes, dl_time) = run_download_test(&client, dl_duration, &pb, 0, 50).await;
-
-    pb.set_position(50);
-    pb.set_message("Upload...");
-
-    // Upload test
-    let ul_duration = Duration::from_secs(duration_secs / 2);
-    let (ul_bytes, ul_time) = run_upload_test(&client, ul_duration, &pb, 50, 50).await;
-
-    pb.set_position(100);
-    pb.finish_and_clear();
-
-    let download_mbps = if dl_time > 0.0 {
-        (dl_bytes as f64 * 8.0) / (dl_time * 1_000_000.0)
-    } else {
-        0.0
-    };
-
-    let upload_mbps = if ul_time > 0.0 {
-        (ul_bytes as f64 * 8.0) / (ul_time * 1_000_000.0)
-    } else {
-        0.0
-    };
-
-    if dl_bytes == 0 && ul_bytes == 0 {
-        return (
-            DiagnosticResult::fail("Speed", "Speed test could not complete"),
-            None,
-        );
-    }
-
-    let result_data = SpeedResult {
-        download_mbps,
-        upload_mbps,
-        download_bytes: dl_bytes,
-        upload_bytes: ul_bytes,
-        download_duration_s: dl_time,
-        upload_duration_s: ul_time,
-        loaded_latency_ms: None,
-        server: "speed.cloudflare.com".to_string(),
-    };
-
-    let summary = format_speed_summary(download_mbps, upload_mbps);
-    let status = determine_speed_status(download_mbps, upload_mbps);
-
-    let result = match status {
-        SpeedStatus::Good => DiagnosticResult::ok("Speed", summary),
-        SpeedStatus::Warning(note) => {
-            DiagnosticResult::warn("Speed", format!("{}\n{}", summary, note))
-        }
-        SpeedStatus::Poor(note) => {
-            DiagnosticResult::warn("Speed", format!("{}\n{}", summary, note))
-        }
-    };
-
-    (result, Some(result_data))
+    pb.set_message("Starting...");
+    pb
 }
 
-async fn run_download_test(
-    client: &reqwest::Client,
-    duration: Duration,
-    pb: &ProgressBar,
-    pb_start: u64,
-    pb_range: u64,
-) -> (u64, f64) {
-    let start = Instant::now();
-    let mut total_bytes: u64 = 0;
-    let chunk_size = 10_000_000u64; // 10MB chunks
+fn update_progress(pb: &ProgressBar, phase: Phase, progress: f64) {
+    // Map phase + progress to overall percentage:
+    // CF latency:    0-10%
+    // CF download:  10-30%
+    // CF upload:    30-50%
+    // NDT7 discovery: 50-55%
+    // NDT7 download: 55-75%
+    // NDT7 upload:  75-100%
+    let (start, range, msg) = match phase {
+        Phase::CfLatency => (0.0, 10.0, "CF latency..."),
+        Phase::CfDownload => (10.0, 20.0, "CF download..."),
+        Phase::CfUpload => (30.0, 20.0, "CF upload..."),
+        Phase::Ndt7Discovery => (50.0, 5.0, "NDT7 discovery..."),
+        Phase::Ndt7Download => (55.0, 20.0, "NDT7 download..."),
+        Phase::Ndt7Upload => (75.0, 25.0, "NDT7 upload..."),
+        Phase::Computing => (100.0, 0.0, "Computing..."),
+    };
 
-    while start.elapsed() < duration {
-        let url = format!(
-            "https://speed.cloudflare.com/__down?bytes={}",
-            chunk_size
-        );
-
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                match resp.bytes().await {
-                    Ok(bytes) => {
-                        total_bytes += bytes.len() as u64;
-                        let progress = (start.elapsed().as_secs_f64() / duration.as_secs_f64())
-                            .min(1.0);
-                        pb.set_position(pb_start + (progress * pb_range as f64) as u64);
-                    }
-                    Err(_) => break,
-                }
-            }
-            Err(_) => break,
-        }
-    }
-
-    let elapsed = start.elapsed().as_secs_f64();
-    (total_bytes, elapsed)
+    let overall = (start + range * progress.clamp(0.0, 1.0)).min(100.0) as u64;
+    pb.set_position(overall);
+    pb.set_message(msg);
 }
 
-async fn run_upload_test(
-    client: &reqwest::Client,
-    duration: Duration,
-    pb: &ProgressBar,
-    pb_start: u64,
-    pb_range: u64,
-) -> (u64, f64) {
-    let start = Instant::now();
-    let mut total_bytes: u64 = 0;
-    let chunk_size = 2_000_000usize; // 2MB chunks for upload
-    let payload = vec![0u8; chunk_size];
+fn format_speed_summary(result: &SpeedTestResult) -> String {
+    let dl = speedtest::format_mbps(result.download_mbps);
+    let ul = speedtest::format_mbps(result.upload_mbps);
 
-    while start.elapsed() < duration {
-        match client
-            .post("https://speed.cloudflare.com/__up")
-            .body(payload.clone())
-            .send()
-            .await
-        {
-            Ok(_) => {
-                total_bytes += chunk_size as u64;
-                let progress =
-                    (start.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
-                pb.set_position(pb_start + (progress * pb_range as f64) as u64);
-            }
-            Err(_) => break,
-        }
-    }
-
-    let elapsed = start.elapsed().as_secs_f64();
-    (total_bytes, elapsed)
-}
-
-fn format_speed_summary(download: f64, upload: f64) -> String {
-    format!(
-        "{} down / {} up",
-        format_mbps(download),
-        format_mbps(upload)
-    )
-}
-
-fn format_mbps(mbps: f64) -> String {
-    if mbps >= 1000.0 {
-        format!("{:.1} Gbps", mbps / 1000.0)
-    } else if mbps >= 100.0 {
-        format!("{:.0} Mbps", mbps)
-    } else if mbps >= 10.0 {
-        format!("{:.1} Mbps", mbps)
-    } else {
-        format!("{:.2} Mbps", mbps)
+    match result.ping_ms {
+        Some(ping) => format!("{} down / {} up ({}ms)", dl, ul, ping.round() as u64),
+        None => format!("{} down / {} up", dl, ul),
     }
 }
 
@@ -204,7 +98,10 @@ enum SpeedStatus {
     Poor(String),
 }
 
-fn determine_speed_status(download: f64, upload: f64) -> SpeedStatus {
+fn determine_speed_status(result: &SpeedTestResult) -> SpeedStatus {
+    let download = result.download_mbps;
+    let upload = result.upload_mbps;
+
     if download < 5.0 {
         SpeedStatus::Poor("Download too slow for most activities".to_string())
     } else if upload < 1.0 {

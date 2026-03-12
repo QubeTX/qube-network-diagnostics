@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-03-12
+
+### Added
+- **SpeedQX** — new standalone speed test binary (`speedqx`) included in all release archives and installers alongside `nd300`
+- **Dual-provider speed testing** — both `nd300` and `speedqx` now run Cloudflare and M-Lab NDT7 tests sequentially, averaging results for more accurate measurements
+- **Latency metrics** — ping (median RTT), jitter (avg consecutive diff), and packet loss measured via Cloudflare HEAD probes; ping/jitter also extracted from NDT7 TCPInfo
+- **NDT7 integration** — WebSocket-based download/upload tests against nearest M-Lab server with automatic server discovery
+- **Per-provider breakdown** in technician mode (`nd300 -t`) — speed section now shows aggregated averages plus individual Cloudflare and NDT7 results with server info, data transferred, and durations
+- **Ping in user mode** — speed summary line now shows ping: `242 Mbps down / 30 Mbps up (12ms)`
+- **SpeedQX CLI flags** — `--cf-only`, `--ndt-only`, `--duration <secs|auto>`, `--latency-probes <N>`, `--json`, `--ascii`, `--no-color`
+- `--uninstall` now removes both `nd300` and `speedqx` binaries
+
+### Changed
+- Speed test engine extracted to shared `speedtest` module used by both binaries
+- **Breaking (JSON):** `speed_details` schema changed — now includes `ping_ms`, `jitter_ms`, `packet_loss_pct`, `providers[]` array with per-provider metrics, and `duration_s`
+- Default nd300 speed test duration (10s) now runs both providers: CF gets 5s dl + 5s ul, NDT7 runs 1 iteration (~10s dl + ~10s ul)
+
 ## [2.6.0] - 2026-02-22
 
 ### Added

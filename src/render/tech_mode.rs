@@ -230,13 +230,40 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
     if let Some(ref speed) = results.speed_details {
         let mut b = ReportBuilder::new(label_width, data_width, chars);
         b = b.full_top_border().span_row("  SPEED TEST").divider();
-        b = b.row("Server", &speed.server);
-        b = b.row("Download", &format!("{:.1} Mbps", speed.download_mbps));
-        b = b.row("Upload", &format!("{:.1} Mbps", speed.upload_mbps));
-        b = b.row("DL Duration", &format!("{:.1}s", speed.download_duration_s));
-        b = b.row("UL Duration", &format!("{:.1}s", speed.upload_duration_s));
-        b = b.row("DL Data", &format_bytes(speed.download_bytes));
-        b = b.row("UL Data", &format_bytes(speed.upload_bytes));
+
+        if let Some(ping) = speed.ping_ms {
+            b = b.row("Ping", &format!("{:.1} ms", ping));
+        }
+        if let Some(jitter) = speed.jitter_ms {
+            b = b.row("Jitter", &format!("{:.1} ms", jitter));
+        }
+        b = b.row("Download", &format!("{} (avg)", crate::speedtest::format_mbps(speed.download_mbps)));
+        b = b.row("Upload", &format!("{} (avg)", crate::speedtest::format_mbps(speed.upload_mbps)));
+        if let Some(loss) = speed.packet_loss_pct {
+            b = b.row("Packet Loss", &format!("{:.0}%", loss));
+        }
+        b = b.row("Duration", &format!("{:.1}s", speed.duration_s));
+
+        // Per-provider breakdown
+        for provider in &speed.providers {
+            if provider.error.is_some() {
+                continue;
+            }
+            b = b.section_header(&provider.provider);
+            b = b.row("Server", &provider.server);
+            if let Some(ref location) = provider.location {
+                b = b.row("Location", location);
+            }
+            if let Some(dl) = provider.download_mbps {
+                b = b.row("Download", &crate::speedtest::format_mbps(dl));
+            }
+            if let Some(ul) = provider.upload_mbps {
+                b = b.row("Upload", &crate::speedtest::format_mbps(ul));
+            }
+            b = b.row("DL Data", &format_bytes(provider.download_bytes));
+            b = b.row("UL Data", &format_bytes(provider.upload_bytes));
+        }
+
         output.push_str(&b.finish());
         output.push('\n');
     }
