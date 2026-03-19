@@ -7,8 +7,14 @@ use tokio_tungstenite::tungstenite::Message;
 const LOCATE_URL: &str =
     "https://locate.measurementlab.net/v2/nearest/ndt/ndt7";
 
-/// Upload frame size (8 KB).
-const UPLOAD_FRAME_SIZE: usize = 8192;
+/// Initial upload frame size (8 KB) — doubles up to MAX_UPLOAD_FRAME.
+const INITIAL_UPLOAD_FRAME_SIZE: usize = 8192;
+
+/// Maximum upload frame size (1 MB).
+const MAX_UPLOAD_FRAME_SIZE: usize = 1 << 20;
+
+/// Minimum remaining time to start a new iteration (3 seconds).
+const MIN_REMAINING_SECS: u64 = 3;
 
 /// Maximum duration to wait for a single download or upload test (safety cap).
 const SINGLE_TEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -101,11 +107,10 @@ where
 
     progress(Phase::Ndt7Discovery, 1.0);
 
-    // ── Determine iteration count ────────────────────────────────────
-    let iterations = match &config.duration {
-        TestDuration::Seconds(s) if *s > 20 => (*s as f64 / 20.0).ceil() as u32,
-        TestDuration::Seconds(_) => 1,
-        TestDuration::Auto => 1,
+    // ── Duration budget (per direction) ─────────────────────────────
+    let (dl_budget_secs, ul_budget_secs) = match &config.duration {
+        TestDuration::Seconds(s) => (*s, *s),
+        TestDuration::Auto => (10, 10),
     };
 
     let mut all_download_mbps: Vec<f64> = Vec::new();
@@ -117,18 +122,25 @@ where
     let mut total_dl_duration: f64 = 0.0;
     let mut total_ul_duration: f64 = 0.0;
 
-    for iter in 0..iterations {
-        let iter_frac_base = iter as f64 / iterations as f64;
-        let iter_frac_step = 1.0 / iterations as f64;
+    // ── Download: deadline-based loop ────────────────────────────────
+    let dl_phase_start = Instant::now();
+    let dl_deadline = dl_phase_start + Duration::from_secs(dl_budget_secs);
 
-        // ── Download test ────────────────────────────────────────────
-        progress(Phase::Ndt7Download, iter_frac_base);
+    progress(Phase::Ndt7Download, 0.0);
 
+    loop {
+        let remaining = dl_deadline.saturating_duration_since(Instant::now());
+        if remaining < Duration::from_secs(MIN_REMAINING_SECS) {
+            break;
+        }
+
+        let dl_budget_f64 = dl_budget_secs as f64;
         let dl_result = run_download(&download_url, download_url_ws.as_deref(), |frac| {
-            progress(
-                Phase::Ndt7Download,
-                iter_frac_base + frac * iter_frac_step,
-            );
+            // Progress based on overall deadline, not per-session
+            let elapsed = dl_phase_start.elapsed().as_secs_f64();
+            let overall_frac = (elapsed / dl_budget_f64).min(0.99);
+            // Blend: use max of overall progress and per-session fraction
+            progress(Phase::Ndt7Download, overall_frac.max(frac * 0.1));
         })
         .await?;
 
@@ -145,14 +157,30 @@ where
             all_jitter_ms.push(j);
         }
 
-        // ── Upload test ──────────────────────────────────────────────
-        progress(Phase::Ndt7Upload, iter_frac_base);
+        // Update progress based on elapsed time
+        let elapsed = dl_phase_start.elapsed().as_secs_f64();
+        progress(Phase::Ndt7Download, (elapsed / dl_budget_f64).min(0.99));
+    }
 
+    progress(Phase::Ndt7Download, 1.0);
+
+    // ── Upload: deadline-based loop ──────────────────────────────────
+    let ul_phase_start = Instant::now();
+    let ul_deadline = ul_phase_start + Duration::from_secs(ul_budget_secs);
+
+    progress(Phase::Ndt7Upload, 0.0);
+
+    loop {
+        let remaining = ul_deadline.saturating_duration_since(Instant::now());
+        if remaining < Duration::from_secs(MIN_REMAINING_SECS) {
+            break;
+        }
+
+        let ul_budget_f64 = ul_budget_secs as f64;
         let ul_result = run_upload(&upload_url, upload_url_ws.as_deref(), |frac| {
-            progress(
-                Phase::Ndt7Upload,
-                iter_frac_base + frac * iter_frac_step,
-            );
+            let elapsed = ul_phase_start.elapsed().as_secs_f64();
+            let overall_frac = (elapsed / ul_budget_f64).min(0.99);
+            progress(Phase::Ndt7Upload, overall_frac.max(frac * 0.1));
         })
         .await?;
 
@@ -162,16 +190,17 @@ where
         if ul_result.throughput_mbps > 0.0 {
             all_upload_mbps.push(ul_result.throughput_mbps);
         }
-        // Collect ping/jitter from upload too (if download didn't yield any)
         if let Some(p) = ul_result.ping_ms {
             all_ping_ms.push(p);
         }
         if let Some(j) = ul_result.jitter_ms {
             all_jitter_ms.push(j);
         }
+
+        let elapsed = ul_phase_start.elapsed().as_secs_f64();
+        progress(Phase::Ndt7Upload, (elapsed / ul_budget_f64).min(0.99));
     }
 
-    progress(Phase::Ndt7Download, 1.0);
     progress(Phase::Ndt7Upload, 1.0);
 
     // ── Aggregate across iterations ──────────────────────────────────
@@ -382,9 +411,11 @@ where
 
     let (mut write, mut read) = ws.split();
 
-    let upload_data = vec![0u8; UPLOAD_FRAME_SIZE];
+    let mut frame_size = INITIAL_UPLOAD_FRAME_SIZE;
+    let mut upload_data = vec![0u8; frame_size];
     let start = Instant::now();
     let send_deadline = start + Duration::from_secs(10);
+    let mut frame_count: u64 = 0;
 
     let mut min_rtts: Vec<f64> = Vec::new();
     let mut smoothed_rtts: Vec<f64> = Vec::new();
@@ -404,9 +435,16 @@ where
             send_result = write.send(Message::Binary(upload_data.clone())) => {
                 match send_result {
                     Ok(()) => {
-                        bytes_sent += UPLOAD_FRAME_SIZE as u64;
+                        bytes_sent += frame_size as u64;
+                        frame_count += 1;
                         let elapsed = start.elapsed().as_secs_f64();
                         progress((elapsed / 10.0).min(0.99));
+
+                        // Double frame size periodically for better saturation
+                        if frame_count % 100 == 0 && frame_size < MAX_UPLOAD_FRAME_SIZE {
+                            frame_size *= 2;
+                            upload_data = vec![0u8; frame_size];
+                        }
                     }
                     Err(_) => break,
                 }

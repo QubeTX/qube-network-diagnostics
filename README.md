@@ -3,15 +3,15 @@
 [![Build Status](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml/badge.svg)](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 
-Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes **SpeedQX**, a standalone dual-provider speed test.
+Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes **SpeedQX**, a standalone quad-provider speed test.
 
 ## Features
 
 - **Two operating modes**: User mode (clean summary) and Technician mode (deep diagnostics)
 - **8 core diagnostics**: adapters, interfaces, gateway, DNS, public IP, latency, speed test, port connectivity
 - **17 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
-- **Dual-provider speed test** — Cloudflare + M-Lab NDT7, averaged for accuracy. Measures ping, jitter, download, upload, and packet loss.
-- **SpeedQX** standalone speed test binary — detailed results with per-provider breakdown
+- **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix), volume-weighted aggregation for maximum accuracy. Measures ping, jitter, download, upload, and packet loss.
+- **SpeedQX** standalone speed test binary — all 4 providers with per-provider breakdown and real-time progress
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
 - **Unicode box-drawing** table rendering with ASCII fallback
@@ -92,24 +92,20 @@ nd300 --help
 ### speedqx — Standalone Speed Test
 
 ```sh
-# Full dual-provider speed test (Cloudflare + NDT7)
+# Full quad-provider speed test (Cloudflare + NDT7 + LibreSpeed + fast.com)
 speedqx
 
-# Cloudflare only (skip NDT7)
-speedqx --cf-only
-
-# NDT7 only (skip Cloudflare)
-speedqx --ndt-only
-
-# Custom duration per provider (seconds or "auto")
+# Custom duration per direction (30s download + 30s upload per provider)
 speedqx --duration 60
-speedqx --duration auto
+
+# Override fast.com duration (defaults to "auto")
+speedqx --fastcom-duration 30
 
 # JSON output
 speedqx --json
 
-# Quick test with fewer latency probes
-speedqx --latency-probes 5 --duration 10
+# Quick test with shorter duration
+speedqx --duration 10 --latency-probes 5
 ```
 
 ## Example Output
@@ -157,9 +153,8 @@ speedqx --latency-probes 5 --duration 10
 | `--json` | Output results as JSON |
 | `--ascii` | Use ASCII characters instead of Unicode box-drawing |
 | `--no-color` | Disable colored output |
-| `--duration <VALUE>` | Test duration per provider: seconds or "auto" (default: 30) |
-| `--cf-only` | Use only Cloudflare (skip NDT7) |
-| `--ndt-only` | Use only M-Lab NDT7 (skip Cloudflare) |
+| `--duration <VALUE>` | Test duration per direction for CF/NDT7/LS: seconds or "auto" (default: 30) |
+| `--fastcom-duration <VALUE>` | Test duration per direction for fast.com: seconds or "auto" (default: auto) |
 | `--latency-probes <N>` | Number of latency probes (default: 20) |
 | `-v, --version` | Print version |
 | `-h, --help` | Print help |
@@ -179,7 +174,7 @@ speedqx --latency-probes 5 --duration 10
 4. DNS Resolution
 5. Public IP
 6. Latency
-7. Speed Test (Cloudflare + M-Lab NDT7)
+7. Speed Test (Cloudflare + M-Lab NDT7 in nd300; all 4 providers in SpeedQX)
 8. Port Connectivity
 
 ### Deep Diagnostics (technician mode only)

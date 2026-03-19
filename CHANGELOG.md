@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-03-19
+
+### Added
+- **Quad-provider speed testing** — SpeedQX now runs 4 providers (Cloudflare, M-Lab NDT7, LibreSpeed, fast.com/Netflix) for maximum accuracy via volume-weighted aggregation
+- **LibreSpeed provider** — new open-source HTTP-based speed test with automatic server selection from global server list and concurrent latency probing
+- **fast.com (Netflix) provider** — speed test via Netflix OCA CDN with dynamic API token extraction for reliability; graceful degradation if Netflix changes their API
+- **Duration guarantee** — `--duration` now means per-direction (30s = 30s download + 30s upload per provider); NDT7 uses wall-clock deadline loops instead of iteration-count approximation
+- **Slow-start trimming** — all HTTP-based providers discard first transfer sample to exclude TCP slow-start from throughput calculations
+- **Volume-weighted aggregation** — provider results weighted by data transferred (provider with more data contributes more to aggregate); minimum ping across providers
+- **Outlier removal** — IQR-based outlier removal for throughput samples across iterations
+- **Progress UX** — provider transition banners, per-provider summary after each completes, estimated test time at start, descriptive phase messages
+- **Dynamic NDT7 upload frames** — upload frame size doubles from 8KB to 1MB during test for better saturation on fast connections
+
+### Changed
+- `--duration 30` now means 30 seconds per direction (download AND upload), not 30 seconds total split across both
+- All providers now run mandatory in SpeedQX — removed `--cf-only` and `--ndt-only` flags
+- fast.com defaults to `auto` duration; configurable via new `--fastcom-duration` flag
+- Ping calculation changed from median to minimum across all providers (consistent with NDT7 MinRTT approach)
+- nd300 diagnostic mode unchanged — still runs Cloudflare + NDT7 only for speed
+- SpeedQX CLI description updated to "Quad-provider speed test"
+
+### Fixed
+- NDT7 duration not honored — 30s request previously produced ~40s+ due to iteration-count approximation; now uses wall-clock deadline loop
+
 ## [2.7.4] - 2026-03-12
 
 ### Fixed

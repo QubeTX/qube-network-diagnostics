@@ -78,7 +78,7 @@ pub struct Nd300Cli {
 
 /// SpeedQX Internet Speed Test - QubeTX Developer Tools
 ///
-/// Dual-provider speed test using Cloudflare and M-Lab NDT7.
+/// Quad-provider speed test using Cloudflare, M-Lab NDT7, LibreSpeed, and fast.com.
 #[derive(Parser)]
 #[command(
     name = "speedqx",
@@ -87,13 +87,13 @@ pub struct Nd300Cli {
     disable_version_flag = true,
     about = "SpeedQX Internet Speed Test - QubeTX Developer Tools",
     long_about = "SpeedQX Internet Speed Test - QubeTX Developer Tools\n\n\
-        Dual-provider speed test using Cloudflare and M-Lab NDT7.",
+        Quad-provider speed test using Cloudflare, M-Lab NDT7, LibreSpeed, and fast.com (Netflix).\n\
+        All four providers run and results are aggregated for maximum accuracy.",
     after_long_help = "EXAMPLES:\n\
-        \x20 speedqx                Run full speed test (Cloudflare + NDT7)\n\
-        \x20 speedqx --cf-only      Cloudflare only\n\
-        \x20 speedqx --ndt-only     M-Lab NDT7 only\n\
-        \x20 speedqx --duration 60  60-second test per provider\n\
-        \x20 speedqx --json         Output results as JSON\n\n\
+        \x20 speedqx                     Run full speed test (all 4 providers)\n\
+        \x20 speedqx --duration 60       60s per direction for CF/NDT7/LS\n\
+        \x20 speedqx --fastcom-duration 30  Override fast.com to 30s/dir\n\
+        \x20 speedqx --json              Output results as JSON\n\n\
         Run 'speedqx --help' for full details, or 'speedqx -h' for a summary."
 )]
 pub struct SpeedQXCli {
@@ -109,7 +109,7 @@ pub struct SpeedQXCli {
     #[arg(long, help_heading = "Output")]
     pub no_color: bool,
 
-    /// Test duration per provider: seconds or "auto"
+    /// Test duration per direction for CF/NDT7/LibreSpeed: seconds or "auto"
     #[arg(
         long,
         default_value = "30",
@@ -118,13 +118,14 @@ pub struct SpeedQXCli {
     )]
     pub duration: TestDuration,
 
-    /// Use only Cloudflare (skip NDT7)
-    #[arg(long, conflicts_with = "ndt_only", help_heading = "Speed Test")]
-    pub cf_only: bool,
-
-    /// Use only M-Lab NDT7 (skip Cloudflare)
-    #[arg(long, conflicts_with = "cf_only", help_heading = "Speed Test")]
-    pub ndt_only: bool,
+    /// Test duration per direction for fast.com: seconds or "auto" (default: auto)
+    #[arg(
+        long,
+        default_value = "auto",
+        value_parser = parse_duration,
+        help_heading = "Speed Test"
+    )]
+    pub fastcom_duration: TestDuration,
 
     /// Number of latency probes
     #[arg(long, default_value = "20", help_heading = "Speed Test")]

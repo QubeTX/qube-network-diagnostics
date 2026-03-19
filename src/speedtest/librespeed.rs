@@ -1,0 +1,392 @@
+use super::{Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use reqwest::Client;
+use serde::Deserialize;
+use std::time::{Duration, Instant};
+
+const SERVER_LIST_URL: &str = "https://librespeed.org/backend-servers/servers.json";
+
+/// Maximum servers to probe for latency during selection.
+const MAX_SERVERS_TO_PROBE: usize = 5;
+
+/// Upload payload size (4 MB).
+const UPLOAD_CHUNK_SIZE: usize = 4_000_000;
+
+/// Download chunk size parameter (ckSize=100 ≈ 100MB).
+const DOWNLOAD_CHUNK_PARAM: u32 = 100;
+
+/// Fallback servers if the server list fetch fails.
+const FALLBACK_SERVERS: &[FallbackServer] = &[
+    FallbackServer {
+        name: "LibreSpeed (Frankfurt)",
+        server: "https://librespeed.raiun.de",
+        dl_url: "garbage.php",
+        ul_url: "empty.php",
+        ping_url: "empty.php",
+    },
+    FallbackServer {
+        name: "LibreSpeed (US East)",
+        server: "https://nyc.speedtest.sbg.net.au",
+        dl_url: "garbage.php",
+        ul_url: "empty.php",
+        ping_url: "empty.php",
+    },
+    FallbackServer {
+        name: "LibreSpeed (Amsterdam)",
+        server: "https://ams.host.speedtest.net",
+        dl_url: "garbage.php",
+        ul_url: "empty.php",
+        ping_url: "empty.php",
+    },
+];
+
+struct FallbackServer {
+    name: &'static str,
+    server: &'static str,
+    dl_url: &'static str,
+    ul_url: &'static str,
+    ping_url: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerEntry {
+    #[allow(dead_code)]
+    id: Option<u64>,
+    name: Option<String>,
+    server: String,
+    #[serde(rename = "dlURL")]
+    dl_url: String,
+    #[serde(rename = "ulURL")]
+    ul_url: String,
+    #[serde(rename = "pingURL")]
+    ping_url: String,
+    #[serde(rename = "getIpURL")]
+    #[allow(dead_code)]
+    get_ip_url: Option<String>,
+}
+
+struct SelectedServer {
+    name: String,
+    base_url: String,
+    dl_url: String,
+    ul_url: String,
+    ping_url: String,
+    #[allow(dead_code)]
+    ping_ms: f64,
+}
+
+/// Run the LibreSpeed speed test: server discovery, latency, download, upload.
+pub async fn run<F>(config: &SpeedTestConfig, progress: F) -> ProviderResult
+where
+    F: Fn(Phase, f64) + Send + Sync,
+{
+    match run_inner(config, &progress).await {
+        Ok(result) => result,
+        Err(e) => error_result(format!("{e}")),
+    }
+}
+
+async fn run_inner<F>(
+    config: &SpeedTestConfig,
+    progress: &F,
+) -> Result<ProviderResult, String>
+where
+    F: Fn(Phase, f64) + Send + Sync,
+{
+    let client = Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    // ── Server discovery ─────────────────────────────────────────────
+    progress(Phase::LsDiscovery, 0.0);
+
+    let servers = fetch_server_list(&client).await;
+    let selected = select_best_server(&client, &servers, progress).await?;
+
+    progress(Phase::LsDiscovery, 1.0);
+
+    // ── Duration split ───────────────────────────────────────────────
+    let (dl_secs, ul_secs) = match &config.duration {
+        TestDuration::Seconds(s) => (*s, *s),
+        TestDuration::Auto => (15, 15),
+    };
+
+    // ── Latency probes ───────────────────────────────────────────────
+    let probes = config.latency_probes.max(4);
+    let mut rtts: Vec<f64> = Vec::with_capacity(probes as usize);
+    let mut failures: u32 = 0;
+
+    for i in 0..probes {
+        let ping_url = format!("{}/{}", selected.base_url, selected.ping_url);
+        let start = Instant::now();
+        match client.head(&ping_url).send().await {
+            Ok(_) => {
+                rtts.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            Err(_) => {
+                failures += 1;
+            }
+        }
+        let _ = i; // suppress unused warning
+    }
+
+    // Discard first 2 warmup probes
+    let warmup_skip = 2.min(rtts.len());
+    let trimmed: Vec<f64> = rtts[warmup_skip..].to_vec();
+
+    let ping_ms = if trimmed.is_empty() {
+        None
+    } else {
+        trimmed
+            .iter()
+            .copied()
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    };
+
+    let jitter_ms = if trimmed.len() >= 2 {
+        Some(avg_consecutive_diff(&trimmed))
+    } else {
+        None
+    };
+
+    let packet_loss_pct = if probes > 0 {
+        Some(failures as f64 / probes as f64 * 100.0)
+    } else {
+        None
+    };
+
+    // ── Download phase ───────────────────────────────────────────────
+    progress(Phase::LsDownload, 0.0);
+
+    let dl_url = format!(
+        "{}/{}?ckSize={}",
+        selected.base_url, selected.dl_url, DOWNLOAD_CHUNK_PARAM
+    );
+    let dl_deadline = Instant::now() + Duration::from_secs(dl_secs);
+    let mut dl_bytes: u64 = 0;
+    let dl_start = Instant::now();
+    let mut dl_samples: Vec<(u64, f64)> = Vec::new(); // (bytes, duration)
+
+    while Instant::now() < dl_deadline {
+        let req_start = Instant::now();
+        match client.get(&dl_url).send().await {
+            Ok(resp) => match resp.bytes().await {
+                Ok(body) => {
+                    let req_bytes = body.len() as u64;
+                    let req_duration = req_start.elapsed().as_secs_f64();
+                    dl_bytes += req_bytes;
+                    dl_samples.push((req_bytes, req_duration));
+                    let elapsed = dl_start.elapsed().as_secs_f64();
+                    let frac = (elapsed / dl_secs as f64).min(1.0);
+                    progress(Phase::LsDownload, frac);
+                }
+                Err(_) => {}
+            },
+            Err(_) => {}
+        }
+    }
+
+    let dl_elapsed = dl_start.elapsed().as_secs_f64();
+    progress(Phase::LsDownload, 1.0);
+
+    // Slow-start trimming: discard first sample if we have enough
+    let download_mbps = compute_trimmed_throughput(&dl_samples, dl_bytes, dl_elapsed);
+
+    // ── Upload phase ─────────────────────────────────────────────────
+    progress(Phase::LsUpload, 0.0);
+
+    let ul_url = format!("{}/{}", selected.base_url, selected.ul_url);
+    let upload_payload = vec![0u8; UPLOAD_CHUNK_SIZE];
+    let ul_deadline = Instant::now() + Duration::from_secs(ul_secs);
+    let mut ul_bytes: u64 = 0;
+    let ul_start = Instant::now();
+    let mut ul_samples: Vec<(u64, f64)> = Vec::new();
+
+    while Instant::now() < ul_deadline {
+        let req_start = Instant::now();
+        match client
+            .post(&ul_url)
+            .body(upload_payload.clone())
+            .send()
+            .await
+        {
+            Ok(_) => {
+                let req_duration = req_start.elapsed().as_secs_f64();
+                ul_bytes += UPLOAD_CHUNK_SIZE as u64;
+                ul_samples.push((UPLOAD_CHUNK_SIZE as u64, req_duration));
+                let elapsed = ul_start.elapsed().as_secs_f64();
+                let frac = (elapsed / ul_secs as f64).min(1.0);
+                progress(Phase::LsUpload, frac);
+            }
+            Err(_) => {}
+        }
+    }
+
+    let ul_elapsed = ul_start.elapsed().as_secs_f64();
+    progress(Phase::LsUpload, 1.0);
+
+    let upload_mbps = compute_trimmed_throughput(&ul_samples, ul_bytes, ul_elapsed);
+
+    Ok(ProviderResult {
+        provider: "LibreSpeed".to_string(),
+        server: selected.name.clone(),
+        location: Some(selected.base_url.clone()),
+        ping_ms,
+        jitter_ms,
+        download_mbps,
+        upload_mbps,
+        download_bytes: dl_bytes,
+        upload_bytes: ul_bytes,
+        download_duration_s: dl_elapsed,
+        upload_duration_s: ul_elapsed,
+        packet_loss_pct,
+        error: None,
+    })
+}
+
+/// Fetch the public LibreSpeed server list. Falls back to hardcoded servers.
+async fn fetch_server_list(client: &Client) -> Vec<ServerEntry> {
+    match client
+        .get(SERVER_LIST_URL)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(resp) => match resp.json::<Vec<ServerEntry>>().await {
+            Ok(servers) if !servers.is_empty() => servers,
+            _ => fallback_servers(),
+        },
+        Err(_) => fallback_servers(),
+    }
+}
+
+fn fallback_servers() -> Vec<ServerEntry> {
+    FALLBACK_SERVERS
+        .iter()
+        .enumerate()
+        .map(|(i, s)| ServerEntry {
+            id: Some(i as u64 + 900),
+            name: Some(s.name.to_string()),
+            server: s.server.to_string(),
+            dl_url: s.dl_url.to_string(),
+            ul_url: s.ul_url.to_string(),
+            ping_url: s.ping_url.to_string(),
+            get_ip_url: None,
+        })
+        .collect()
+}
+
+/// Select the best server by probing latency on up to MAX_SERVERS_TO_PROBE servers.
+async fn select_best_server<F>(
+    client: &Client,
+    servers: &[ServerEntry],
+    progress: &F,
+) -> Result<SelectedServer, String>
+where
+    F: Fn(Phase, f64) + Send + Sync,
+{
+    let candidates: Vec<&ServerEntry> = servers.iter().take(MAX_SERVERS_TO_PROBE).collect();
+
+    if candidates.is_empty() {
+        return Err("LibreSpeed: no servers available".to_string());
+    }
+
+    // Probe all candidates concurrently
+    let mut handles = Vec::new();
+    for entry in &candidates {
+        let ping_url = format!("{}/{}", entry.server, entry.ping_url);
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            let start = Instant::now();
+            match client
+                .head(&ping_url)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+            {
+                Ok(_) => Some(start.elapsed().as_secs_f64() * 1000.0),
+                Err(_) => None,
+            }
+        }));
+    }
+
+    let mut best_idx = 0;
+    let mut best_rtt = f64::MAX;
+
+    for (i, handle) in handles.into_iter().enumerate() {
+        if let Ok(Some(rtt)) = handle.await {
+            if rtt < best_rtt {
+                best_rtt = rtt;
+                best_idx = i;
+            }
+        }
+        let frac = (i + 1) as f64 / candidates.len() as f64;
+        progress(Phase::LsDiscovery, frac * 0.9); // 0-90% for probing
+    }
+
+    if best_rtt == f64::MAX {
+        return Err("LibreSpeed: all server probes failed".to_string());
+    }
+
+    let entry = candidates[best_idx];
+    Ok(SelectedServer {
+        name: entry
+            .name
+            .clone()
+            .unwrap_or_else(|| entry.server.clone()),
+        base_url: entry.server.clone(),
+        dl_url: entry.dl_url.clone(),
+        ul_url: entry.ul_url.clone(),
+        ping_url: entry.ping_url.clone(),
+        ping_ms: best_rtt,
+    })
+}
+
+/// Compute throughput with slow-start trimming.
+/// If there are 4+ samples, discard the first one (TCP slow-start).
+fn compute_trimmed_throughput(samples: &[(u64, f64)], total_bytes: u64, total_elapsed: f64) -> Option<f64> {
+    if total_elapsed <= 0.0 || total_bytes == 0 {
+        return None;
+    }
+
+    if samples.len() >= 4 {
+        // Discard first sample (slow-start)
+        let trimmed_bytes: u64 = samples[1..].iter().map(|(b, _)| *b).sum();
+        let trimmed_duration: f64 = samples[1..].iter().map(|(_, d)| *d).sum();
+        if trimmed_duration > 0.0 {
+            return Some((trimmed_bytes as f64 * 8.0) / (trimmed_duration * 1_000_000.0));
+        }
+    }
+
+    Some((total_bytes as f64 * 8.0) / (total_elapsed * 1_000_000.0))
+}
+
+/// Average absolute difference between consecutive samples.
+fn avg_consecutive_diff(values: &[f64]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let sum: f64 = values
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .sum();
+    sum / (values.len() - 1) as f64
+}
+
+fn error_result(msg: String) -> ProviderResult {
+    ProviderResult {
+        provider: "LibreSpeed".to_string(),
+        server: "unknown".to_string(),
+        location: None,
+        ping_ms: None,
+        jitter_ms: None,
+        download_mbps: None,
+        upload_mbps: None,
+        download_bytes: 0,
+        upload_bytes: 0,
+        download_duration_s: 0.0,
+        upload_duration_s: 0.0,
+        packet_loss_pct: None,
+        error: Some(msg),
+    }
+}

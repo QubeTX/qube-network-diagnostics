@@ -54,7 +54,12 @@ where
     let (ping_ms, jitter_ms) = if trimmed.is_empty() {
         (None, None)
     } else {
-        let ping = median(&trimmed);
+        // Minimum RTT: best represents physical link latency (consistent with NDT7)
+        let ping = trimmed
+            .iter()
+            .copied()
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(0.0);
         let jitter = avg_consecutive_diff(&trimmed);
         (Some(ping), Some(jitter))
     };
@@ -65,13 +70,10 @@ where
         None
     };
 
-    // ── Duration split ───────────────────────────────────────────────
+    // ── Duration per direction ──────────────────────────────────────
+    // Duration is per direction: 30s means 30s download + 30s upload
     let (dl_secs, ul_secs) = match &config.duration {
-        TestDuration::Seconds(s) => {
-            let dl = s / 2;
-            let ul = s - dl;
-            (dl, ul)
-        }
+        TestDuration::Seconds(s) => (*s, *s),
         TestDuration::Auto => (15, 15),
     };
 
@@ -81,12 +83,17 @@ where
     let dl_deadline = Instant::now() + Duration::from_secs(dl_secs);
     let mut dl_bytes: u64 = 0;
     let dl_start = Instant::now();
+    let mut dl_samples: Vec<(u64, f64)> = Vec::new(); // (bytes, duration) per request
 
     while Instant::now() < dl_deadline {
+        let req_start = Instant::now();
         match client.get(DOWNLOAD_URL).send().await {
             Ok(resp) => match resp.bytes().await {
                 Ok(body) => {
-                    dl_bytes += body.len() as u64;
+                    let req_bytes = body.len() as u64;
+                    let req_duration = req_start.elapsed().as_secs_f64();
+                    dl_bytes += req_bytes;
+                    dl_samples.push((req_bytes, req_duration));
                     let elapsed = dl_start.elapsed().as_secs_f64();
                     let total_duration = dl_secs as f64;
                     let frac = (elapsed / total_duration).min(1.0);
@@ -101,11 +108,8 @@ where
     let dl_elapsed = dl_start.elapsed().as_secs_f64();
     progress(Phase::CfDownload, 1.0);
 
-    let download_mbps = if dl_elapsed > 0.0 {
-        Some((dl_bytes as f64 * 8.0) / (dl_elapsed * 1_000_000.0))
-    } else {
-        None
-    };
+    // Slow-start trimming: discard first sample if we have enough
+    let download_mbps = compute_trimmed_throughput(&dl_samples, dl_bytes, dl_elapsed);
 
     // ── Upload phase ─────────────────────────────────────────────────
     progress(Phase::CfUpload, 0.0);
@@ -114,8 +118,10 @@ where
     let ul_deadline = Instant::now() + Duration::from_secs(ul_secs);
     let mut ul_bytes: u64 = 0;
     let ul_start = Instant::now();
+    let mut ul_samples: Vec<(u64, f64)> = Vec::new();
 
     while Instant::now() < ul_deadline {
+        let req_start = Instant::now();
         match client
             .post(UPLOAD_URL)
             .body(upload_payload.clone())
@@ -123,7 +129,9 @@ where
             .await
         {
             Ok(_) => {
+                let req_duration = req_start.elapsed().as_secs_f64();
                 ul_bytes += UPLOAD_CHUNK_SIZE as u64;
+                ul_samples.push((UPLOAD_CHUNK_SIZE as u64, req_duration));
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let total_duration = ul_secs as f64;
                 let frac = (elapsed / total_duration).min(1.0);
@@ -136,11 +144,7 @@ where
     let ul_elapsed = ul_start.elapsed().as_secs_f64();
     progress(Phase::CfUpload, 1.0);
 
-    let upload_mbps = if ul_elapsed > 0.0 {
-        Some((ul_bytes as f64 * 8.0) / (ul_elapsed * 1_000_000.0))
-    } else {
-        None
-    };
+    let upload_mbps = compute_trimmed_throughput(&ul_samples, ul_bytes, ul_elapsed);
 
     ProviderResult {
         provider: "Cloudflare".to_string(),
@@ -159,19 +163,22 @@ where
     }
 }
 
-/// Compute the median of a slice. The slice is cloned and sorted internally.
-fn median(values: &[f64]) -> f64 {
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = sorted.len();
-    if n == 0 {
-        return 0.0;
+/// Compute throughput with slow-start trimming.
+/// If there are 4+ samples, discard the first one (TCP slow-start).
+fn compute_trimmed_throughput(samples: &[(u64, f64)], total_bytes: u64, total_elapsed: f64) -> Option<f64> {
+    if total_elapsed <= 0.0 || total_bytes == 0 {
+        return None;
     }
-    if n % 2 == 1 {
-        sorted[n / 2]
-    } else {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+
+    if samples.len() >= 4 {
+        let trimmed_bytes: u64 = samples[1..].iter().map(|(b, _)| *b).sum();
+        let trimmed_duration: f64 = samples[1..].iter().map(|(_, d)| *d).sum();
+        if trimmed_duration > 0.0 {
+            return Some((trimmed_bytes as f64 * 8.0) / (trimmed_duration * 1_000_000.0));
+        }
     }
+
+    Some((total_bytes as f64 * 8.0) / (total_elapsed * 1_000_000.0))
 }
 
 /// Average absolute difference between consecutive samples.
