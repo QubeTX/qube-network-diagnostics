@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH speedqx 1  "speedqx 2.8.0" 
+.TH speedqx 1  "speedqx 2.9.0" 
 .SH NAME
 speedqx \- SpeedQX Internet Speed Test \- QubeTX Developer Tools
 .SH SYNOPSIS
-\fBspeedqx\fR [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-duration\fR] [\fB\-\-fastcom\-duration\fR] [\fB\-\-latency\-probes\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBspeedqx\fR [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-duration\fR] [\fB\-\-fastcom\-duration\fR] [\fB\-\-latency\-probes\fR] [\fB\-\-update\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 SpeedQX Internet Speed Test \- QubeTX Developer Tools
 .PP
@@ -37,6 +37,10 @@ Test duration per direction for fast.com: seconds or "auto" (default: auto)
 .TP
 \fB\-\-latency\-probes\fR \fI<LATENCY_PROBES>\fR [default: 20]
 Number of latency probes
+.SH ACTIONS
+.TP
+\fB\-\-update\fR
+Check for updates and install the latest version
 .SH EXTRA
 EXAMPLES:
   speedqx                     Run full speed test (all 4 providers)
@@ -46,6 +50,6 @@ EXAMPLES:
 
 Run \*(Aqspeedqx \-\-help\*(Aq for full details, or \*(Aqspeedqx \-h\*(Aq for a summary.
 .SH VERSION
-v2.8.0
+v2.9.0
 .SH AUTHORS
 Emmett S <hey@emmetts.dev>

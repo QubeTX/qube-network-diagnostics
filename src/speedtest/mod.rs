@@ -3,6 +3,7 @@ pub mod display;
 pub mod fastcom;
 pub mod librespeed;
 pub mod ndt7;
+pub mod statistics;
 
 use serde::Serialize;
 use std::sync::Arc;
@@ -71,6 +72,30 @@ pub enum Phase {
     Computing,
 }
 
+/// Raw per-request Mbps samples for statistical post-processing.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BandwidthSamples {
+    pub download: Vec<f64>,
+    pub upload: Vec<f64>,
+}
+
+/// Connection stability metrics (coefficient of variation).
+#[derive(Debug, Clone, Serialize)]
+pub struct StabilityMetrics {
+    pub download_cv: f64,
+    pub upload_cv: f64,
+    pub download_stable: bool,
+    pub upload_stable: bool,
+}
+
+/// Provider divergence detection.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderDivergence {
+    pub download: f64,
+    pub upload: f64,
+    pub significant: bool,
+}
+
 /// Per-provider speed test result
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderResult {
@@ -94,6 +119,8 @@ pub struct ProviderResult {
     pub packet_loss_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bandwidth_samples: Option<BandwidthSamples>,
 }
 
 /// Aggregated speed test result (used by both speedqx and nd300)
@@ -109,104 +136,146 @@ pub struct SpeedTestResult {
     pub packet_loss_pct: Option<f64>,
     pub providers: Vec<ProviderResult>,
     pub duration_s: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stability: Option<StabilityMetrics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_divergence: Option<ProviderDivergence>,
 }
 
-/// Remove outliers from a sample set using the IQR method.
-pub fn remove_outliers(values: &[f64]) -> Vec<f64> {
-    if values.len() < 4 {
-        return values.to_vec();
+/// Latency weight for Cloudflare (NDT7 gets 1 - this).
+/// NDT7's MinRTT from TCP kernel is structurally superior, not just lower-variance.
+const CF_LATENCY_WEIGHT: f64 = 0.4;
+
+/// Divergence threshold: flag when providers differ by more than this fraction.
+const DIVERGENCE_THRESHOLD: f64 = 0.3;
+
+fn divergence_ratio(a: f64, b: f64) -> f64 {
+    if a <= 0.0 || b <= 0.0 {
+        return 0.0;
     }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let q1 = sorted[sorted.len() / 4];
-    let q3 = sorted[3 * sorted.len() / 4];
-    let iqr = q3 - q1;
-    let lower = q1 - 1.5 * iqr;
-    let upper = q3 + 1.5 * iqr;
-    sorted
-        .into_iter()
-        .filter(|v| *v >= lower && *v <= upper)
-        .collect()
+    (a - b).abs() / a.max(b)
 }
 
-/// Volume-weighted aggregation across providers.
-/// Uses minimum ping, mean jitter, volume-weighted download/upload.
-fn aggregate(providers: &[ProviderResult]) -> (Option<f64>, Option<f64>, f64, f64, Option<f64>) {
+/// Aggregation result including new metrics.
+struct AggregateResult {
+    ping: Option<f64>,
+    jitter: Option<f64>,
+    download: f64,
+    upload: f64,
+    packet_loss: Option<f64>,
+    stability: Option<StabilityMetrics>,
+    divergence: Option<ProviderDivergence>,
+}
+
+/// Inverse-variance weighted aggregation across providers.
+/// Uses accurate bandwidth pipeline on raw samples, fixed latency weights,
+/// stability metrics, and divergence detection.
+fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
     let successful: Vec<&ProviderResult> = providers.iter().filter(|p| p.error.is_none()).collect();
 
     if successful.is_empty() {
-        return (None, None, 0.0, 0.0, None);
+        return AggregateResult {
+            ping: None, jitter: None, download: 0.0, upload: 0.0,
+            packet_loss: None, stability: None, divergence: None,
+        };
     }
 
-    // Ping: minimum across all providers (best represents physical link latency)
-    let pings: Vec<f64> = successful
-        .iter()
-        .filter_map(|p| p.ping_ms)
-        .filter(|p| *p > 0.0)
-        .collect();
+    // ── Compute accurate bandwidth per provider from raw samples ────
+    let mut provider_dl: Vec<(f64, f64)> = Vec::new(); // (accurate_mbps, variance)
+    let mut provider_ul: Vec<(f64, f64)> = Vec::new();
+    let mut all_dl_samples: Vec<f64> = Vec::new();
+    let mut all_ul_samples: Vec<f64> = Vec::new();
 
-    let ping = if pings.is_empty() {
-        None
+    for p in &successful {
+        if let Some(ref samples) = p.bandwidth_samples {
+            if !samples.download.is_empty() {
+                let acc = statistics::accurate_bandwidth(&samples.download);
+                let var = statistics::variance(&samples.download);
+                if acc > 0.0 {
+                    provider_dl.push((acc, var));
+                }
+                all_dl_samples.extend_from_slice(&samples.download);
+            }
+            if !samples.upload.is_empty() {
+                let acc = statistics::accurate_upload_bandwidth(&samples.upload);
+                let var = statistics::variance(&samples.upload);
+                if acc > 0.0 {
+                    provider_ul.push((acc, var));
+                }
+                all_ul_samples.extend_from_slice(&samples.upload);
+            }
+        }
+        // Fallback: use provider-reported value if no raw samples
+        if p.bandwidth_samples.is_none() || p.bandwidth_samples.as_ref().map_or(true, |s| s.download.is_empty()) {
+            if let Some(dl) = p.download_mbps {
+                if dl > 0.0 {
+                    provider_dl.push((dl, 0.0));
+                }
+            }
+        }
+        if p.bandwidth_samples.is_none() || p.bandwidth_samples.as_ref().map_or(true, |s| s.upload.is_empty()) {
+            if let Some(ul) = p.upload_mbps {
+                if ul > 0.0 {
+                    provider_ul.push((ul, 0.0));
+                }
+            }
+        }
+    }
+
+    // ── Merge bandwidth via inverse-variance weighting ─────────────
+    let download = if provider_dl.is_empty() {
+        0.0
+    } else if provider_dl.len() == 1 {
+        provider_dl[0].0
     } else {
-        pings
-            .iter()
-            .copied()
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        // Pairwise merge
+        let mut acc = provider_dl[0];
+        for pair in &provider_dl[1..] {
+            let merged = statistics::inverse_variance_merge(acc.0, acc.1, pair.0, pair.1);
+            acc = (merged.value, 0.0); // variance of merged not needed for further pairwise
+        }
+        acc.0
     };
 
-    // Jitter: mean across providers
-    let jitters: Vec<f64> = successful
-        .iter()
-        .filter_map(|p| p.jitter_ms)
-        .filter(|j| *j > 0.0)
-        .collect();
-
-    let jitter = if jitters.is_empty() {
-        None
+    let upload = if provider_ul.is_empty() {
+        0.0
+    } else if provider_ul.len() == 1 {
+        provider_ul[0].0
     } else {
-        Some(jitters.iter().sum::<f64>() / jitters.len() as f64)
+        let mut acc = provider_ul[0];
+        for pair in &provider_ul[1..] {
+            let merged = statistics::inverse_variance_merge(acc.0, acc.1, pair.0, pair.1);
+            acc = (merged.value, 0.0);
+        }
+        acc.0
     };
 
-    // Download: volume-weighted average (weight by bytes transferred)
-    let download = {
-        let pairs: Vec<(f64, u64)> = successful
-            .iter()
-            .filter_map(|p| p.download_mbps.map(|dl| (dl, p.download_bytes)))
-            .filter(|(dl, _)| *dl > 0.0)
-            .collect();
-        let total_bytes: u64 = pairs.iter().map(|(_, b)| *b).sum();
-        if total_bytes > 0 {
-            pairs
-                .iter()
-                .map(|(dl, b)| dl * *b as f64)
-                .sum::<f64>()
-                / total_bytes as f64
-        } else if !pairs.is_empty() {
-            // Fallback to simple mean if no byte data
-            pairs.iter().map(|(dl, _)| dl).sum::<f64>() / pairs.len() as f64
-        } else {
-            0.0
+    // ── Latency: confidence-weighted merge (CF 0.4 / NDT7 0.6) ─────
+    let cf_ping = successful.iter().find(|p| p.provider == "Cloudflare").and_then(|p| p.ping_ms);
+    let ndt_ping = successful.iter().find(|p| p.provider == "M-Lab NDT7").and_then(|p| p.ping_ms);
+    let cf_jitter = successful.iter().find(|p| p.provider == "Cloudflare").and_then(|p| p.jitter_ms);
+    let ndt_jitter = successful.iter().find(|p| p.provider == "M-Lab NDT7").and_then(|p| p.jitter_ms);
+
+    let ping = match (cf_ping, ndt_ping) {
+        (Some(cf), Some(ndt)) => Some(statistics::weighted_merge(cf, ndt, CF_LATENCY_WEIGHT)),
+        (Some(cf), None) => Some(cf),
+        (None, Some(ndt)) => Some(ndt),
+        (None, None) => {
+            // Fallback: minimum across all providers
+            successful.iter()
+                .filter_map(|p| p.ping_ms)
+                .filter(|p| *p > 0.0)
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         }
     };
 
-    // Upload: volume-weighted average
-    let upload = {
-        let pairs: Vec<(f64, u64)> = successful
-            .iter()
-            .filter_map(|p| p.upload_mbps.map(|ul| (ul, p.upload_bytes)))
-            .filter(|(ul, _)| *ul > 0.0)
-            .collect();
-        let total_bytes: u64 = pairs.iter().map(|(_, b)| *b).sum();
-        if total_bytes > 0 {
-            pairs
-                .iter()
-                .map(|(ul, b)| ul * *b as f64)
-                .sum::<f64>()
-                / total_bytes as f64
-        } else if !pairs.is_empty() {
-            pairs.iter().map(|(ul, _)| ul).sum::<f64>() / pairs.len() as f64
-        } else {
-            0.0
+    let jitter = match (cf_jitter, ndt_jitter) {
+        (Some(cf), Some(ndt)) => Some(statistics::weighted_merge(cf, ndt, CF_LATENCY_WEIGHT)),
+        (Some(cf), None) => Some(cf),
+        (None, Some(ndt)) => Some(ndt),
+        (None, None) => {
+            let jitters: Vec<f64> = successful.iter().filter_map(|p| p.jitter_ms).filter(|j| *j > 0.0).collect();
+            if jitters.is_empty() { None } else { Some(statistics::mean(&jitters)) }
         }
     };
 
@@ -216,7 +285,44 @@ fn aggregate(providers: &[ProviderResult]) -> (Option<f64>, Option<f64>, f64, f6
         .find(|p| p.provider == "Cloudflare")
         .and_then(|p| p.packet_loss_pct);
 
-    (ping, jitter, download, upload, packet_loss)
+    // ── Stability metrics ──────────────────────────────────────────
+    let stability = if all_dl_samples.len() > 2 || all_ul_samples.len() > 2 {
+        let dl_cv = statistics::coefficient_of_variation(&all_dl_samples);
+        let ul_cv = statistics::coefficient_of_variation(&all_ul_samples);
+        Some(StabilityMetrics {
+            download_cv: dl_cv,
+            upload_cv: ul_cv,
+            download_stable: dl_cv < 0.15,
+            upload_stable: ul_cv < 0.15,
+        })
+    } else {
+        None
+    };
+
+    // ── Provider divergence ────────────────────────────────────────
+    let divergence = if provider_dl.len() >= 2 || provider_ul.len() >= 2 {
+        let dl_div = if provider_dl.len() >= 2 {
+            divergence_ratio(provider_dl[0].0, provider_dl[1].0)
+        } else {
+            0.0
+        };
+        let ul_div = if provider_ul.len() >= 2 {
+            divergence_ratio(provider_ul[0].0, provider_ul[1].0)
+        } else {
+            0.0
+        };
+        Some(ProviderDivergence {
+            download: dl_div,
+            upload: ul_div,
+            significant: dl_div > DIVERGENCE_THRESHOLD || ul_div > DIVERGENCE_THRESHOLD,
+        })
+    } else {
+        None
+    };
+
+    AggregateResult {
+        ping, jitter, download, upload, packet_loss, stability, divergence,
+    }
 }
 
 /// Callback type for provider completion notifications.
@@ -280,17 +386,19 @@ where
 
     progress(Phase::Computing, 1.0);
 
-    let (ping, jitter, download, upload, packet_loss) = aggregate(&providers);
+    let agg = aggregate(&providers);
     let duration = start.elapsed().as_secs_f64();
 
     SpeedTestResult {
-        ping_ms: ping,
-        jitter_ms: jitter,
-        download_mbps: download,
-        upload_mbps: upload,
-        packet_loss_pct: packet_loss,
+        ping_ms: agg.ping,
+        jitter_ms: agg.jitter,
+        download_mbps: agg.download,
+        upload_mbps: agg.upload,
+        packet_loss_pct: agg.packet_loss,
         providers,
         duration_s: duration,
+        stability: agg.stability,
+        provider_divergence: agg.divergence,
     }
 }
 

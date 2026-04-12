@@ -157,6 +157,36 @@ fn render_multi_provider(
     // Duration
     builder = builder.row("Duration", &format!("{:.1}s", result.duration_s));
 
+    // Stability metrics
+    if let Some(ref stability) = result.stability {
+        let dl_label = if stability.download_stable { "Stable" } else { "Variable" };
+        let ul_label = if stability.upload_stable { "Stable" } else { "Variable" };
+        builder = builder.row(
+            "Stability",
+            &format!(
+                "DL: {} (CV {:.0}%) / UL: {} (CV {:.0}%)",
+                dl_label,
+                stability.download_cv * 100.0,
+                ul_label,
+                stability.upload_cv * 100.0,
+            ),
+        );
+    }
+
+    // Provider divergence warning
+    if let Some(ref div) = result.provider_divergence {
+        if div.significant {
+            builder = builder.row(
+                "Divergence",
+                &format!(
+                    "DL {:.0}% / UL {:.0}% (significant)",
+                    div.download * 100.0,
+                    div.upload * 100.0,
+                ),
+            );
+        }
+    }
+
     // Per-provider sections
     for provider in &result.providers {
         builder = render_provider_section(builder, provider);

@@ -1,4 +1,4 @@
-use super::{Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::{BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration, statistics};
 use futures_util::{SinkExt, StreamExt};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -116,7 +116,7 @@ where
     let mut all_download_mbps: Vec<f64> = Vec::new();
     let mut all_upload_mbps: Vec<f64> = Vec::new();
     let mut all_ping_ms: Vec<f64> = Vec::new();
-    let mut all_jitter_ms: Vec<f64> = Vec::new();
+    let mut all_smoothed_rtts: Vec<f64> = Vec::new();
     let mut total_dl_bytes: u64 = 0;
     let mut total_ul_bytes: u64 = 0;
     let mut total_dl_duration: f64 = 0.0;
@@ -153,9 +153,7 @@ where
         if let Some(p) = dl_result.ping_ms {
             all_ping_ms.push(p);
         }
-        if let Some(j) = dl_result.jitter_ms {
-            all_jitter_ms.push(j);
-        }
+        all_smoothed_rtts.extend_from_slice(&dl_result.smoothed_rtts);
 
         // Update progress based on elapsed time
         let elapsed = dl_phase_start.elapsed().as_secs_f64();
@@ -193,9 +191,7 @@ where
         if let Some(p) = ul_result.ping_ms {
             all_ping_ms.push(p);
         }
-        if let Some(j) = ul_result.jitter_ms {
-            all_jitter_ms.push(j);
-        }
+        all_smoothed_rtts.extend_from_slice(&ul_result.smoothed_rtts);
 
         let elapsed = ul_phase_start.elapsed().as_secs_f64();
         progress(Phase::Ndt7Upload, (elapsed / ul_budget_f64).min(0.99));
@@ -203,21 +199,17 @@ where
 
     progress(Phase::Ndt7Upload, 1.0);
 
-    // ── Aggregate across iterations ──────────────────────────────────
+    // ── Aggregate across iterations using statistics pipeline ───────
     let download_mbps = if all_download_mbps.is_empty() {
         None
     } else {
-        Some(
-            all_download_mbps.iter().sum::<f64>() / all_download_mbps.len() as f64,
-        )
+        Some(statistics::accurate_bandwidth(&all_download_mbps))
     };
 
     let upload_mbps = if all_upload_mbps.is_empty() {
         None
     } else {
-        Some(
-            all_upload_mbps.iter().sum::<f64>() / all_upload_mbps.len() as f64,
-        )
+        Some(statistics::accurate_upload_bandwidth(&all_upload_mbps))
     };
 
     let ping_ms = if all_ping_ms.is_empty() {
@@ -230,12 +222,11 @@ where
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
     };
 
-    let jitter_ms = if all_jitter_ms.is_empty() {
-        None
+    // RFC 3550 jitter from all smoothed RTT samples
+    let jitter_ms = if all_smoothed_rtts.len() >= 2 {
+        Some(statistics::jitter_rfc3550(&all_smoothed_rtts))
     } else {
-        Some(
-            all_jitter_ms.iter().sum::<f64>() / all_jitter_ms.len() as f64,
-        )
+        None
     };
 
     Ok(ProviderResult {
@@ -252,6 +243,10 @@ where
         upload_duration_s: total_ul_duration,
         packet_loss_pct: None,
         error: None,
+        bandwidth_samples: Some(BandwidthSamples {
+            download: all_download_mbps,
+            upload: all_upload_mbps,
+        }),
     })
 }
 
@@ -261,7 +256,7 @@ struct SubTestResult {
     bytes: u64,
     duration_s: f64,
     ping_ms: Option<f64>,
-    jitter_ms: Option<f64>,
+    smoothed_rtts: Vec<f64>,
 }
 
 /// Connect to an NDT7 WebSocket endpoint with the required subprotocol header.
@@ -390,15 +385,12 @@ where
         .copied()
         .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Jitter = avg abs diff of consecutive SmoothedRTT
-    let jitter_ms = avg_consecutive_diff(&smoothed_rtts);
-
     Ok(SubTestResult {
         throughput_mbps,
         bytes: if final_bytes > 0 { final_bytes } else { total_received },
         duration_s,
         ping_ms,
-        jitter_ms,
+        smoothed_rtts,
     })
 }
 
@@ -535,28 +527,13 @@ where
         .copied()
         .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    let jitter_ms = avg_consecutive_diff(&smoothed_rtts);
-
     Ok(SubTestResult {
         throughput_mbps,
         bytes: if final_bytes > 0 { final_bytes } else { bytes_sent },
         duration_s,
         ping_ms,
-        jitter_ms,
+        smoothed_rtts,
     })
-}
-
-/// Average absolute difference between consecutive samples.
-/// Returns `None` if fewer than 2 samples.
-fn avg_consecutive_diff(values: &[f64]) -> Option<f64> {
-    if values.len() < 2 {
-        return None;
-    }
-    let sum: f64 = values
-        .windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .sum();
-    Some(sum / (values.len() - 1) as f64)
 }
 
 /// Build an error ProviderResult with zeroed metrics.
@@ -575,5 +552,6 @@ fn error_result(msg: String) -> ProviderResult {
         upload_duration_s: 0.0,
         packet_loss_pct: None,
         error: Some(msg),
+        bandwidth_samples: None,
     }
 }

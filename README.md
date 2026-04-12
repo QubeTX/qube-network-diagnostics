@@ -10,7 +10,8 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **Two operating modes**: User mode (clean summary) and Technician mode (deep diagnostics)
 - **8 core diagnostics**: adapters, interfaces, gateway, DNS, public IP, latency, speed test, port connectivity
 - **17 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
-- **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix), volume-weighted aggregation for maximum accuracy. Measures ping, jitter, download, upload, and packet loss.
+- **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) with inverse-variance weighted aggregation, modified trimean (Ookla-style), and RFC 3550 jitter for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
+- **Self-update** — `nd300 --update` / `speedqx --update` checks GitHub for the latest release and reinstalls automatically
 - **SpeedQX** standalone speed test binary — all 4 providers with per-provider breakdown and real-time progress
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
@@ -85,6 +86,9 @@ nd300 -T "Office Network Check"
 # Custom speed test duration per provider (seconds)
 nd300 --speed-duration 20
 
+# Check for updates and install the latest version
+nd300 --update
+
 # Show help
 nd300 --help
 ```
@@ -143,6 +147,7 @@ speedqx --duration 10 --latency-probes 5
 | `-f, --fix` | Run the multi-stage network fix flow (requires elevated privileges) |
 | `-c, --clear-dns` | Flush the system DNS cache |
 | `--uninstall` | Remove nd300 from the system (binary, install receipt, PATH entry) |
+| `--update` | Check for updates and install the latest version |
 | `-h, --help` | Print help |
 | `-v, --version` | Print version |
 
@@ -156,6 +161,7 @@ speedqx --duration 10 --latency-probes 5
 | `--duration <VALUE>` | Test duration per direction for CF/NDT7/LS: seconds or "auto" (default: 30) |
 | `--fastcom-duration <VALUE>` | Test duration per direction for fast.com: seconds or "auto" (default: auto) |
 | `--latency-probes <N>` | Number of latency probes (default: 20) |
+| `--update` | Check for updates and install the latest version |
 | `-v, --version` | Print version |
 | `-h, --help` | Print help |
 
@@ -265,6 +271,35 @@ cargo build --release
 ```
 
 Binaries will be at `target/release/nd300` and `target/release/speedqx` (or `.exe` on Windows).
+
+## Self-Update
+
+Both binaries support self-updating to the latest release:
+
+```sh
+nd300 --update
+speedqx --update
+```
+
+The update command:
+1. Checks the latest release on GitHub
+2. Compares against the current version
+3. Downloads and runs the appropriate installer for your platform (shell script on macOS/Linux, PowerShell on Windows, or `cargo install` if installed via Cargo)
+
+## Speed Test Methodology
+
+The speed test uses a technician-grade accuracy pipeline matching the [SpeedQX web speed test](https://speedqx.com/how-it-works):
+
+- **Modified trimean** (Ookla-style): `(P10 + 8*P50 + P90) / 10` for robust central tendency
+- **30% slow-start discard**: eliminates TCP ramp-up contamination
+- **IQR outlier filtering**: removes transient congestion and measurement artifacts
+- **Winsorized cross-validation**: catches edge cases where IQR filtering is too aggressive
+- **Upload-specific pipeline**: keeps fastest 50% of post-warmup samples (following Speedtest.net methodology)
+- **RFC 3550 jitter**: exponentially weighted moving average, the standard used by VoIP and real-time media
+- **Inverse-variance weighted aggregation**: statistically optimal combination of Cloudflare and NDT7 results
+- **Provider divergence detection**: flags when results differ by >30%, indicating possible throttling or QoS
+
+For a full technical breakdown, see the [SpeedQX Technical Report](https://speedqx.com/how-it-works).
 
 ## License
 

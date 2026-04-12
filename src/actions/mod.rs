@@ -2,6 +2,7 @@ pub mod clear_dns;
 pub mod dns;
 pub mod fix;
 pub mod uninstall;
+pub mod update;
 
 use crate::config::{Config, OutputFormat};
 use std::io::IsTerminal;

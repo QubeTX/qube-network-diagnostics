@@ -1,4 +1,4 @@
-use super::{Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::{BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration, statistics};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
@@ -144,7 +144,7 @@ where
     };
 
     let jitter_ms = if trimmed.len() >= 2 {
-        Some(avg_consecutive_diff(&trimmed))
+        Some(statistics::jitter_rfc3550(&trimmed))
     } else {
         None
     };
@@ -165,7 +165,7 @@ where
     let dl_deadline = Instant::now() + Duration::from_secs(dl_secs);
     let mut dl_bytes: u64 = 0;
     let dl_start = Instant::now();
-    let mut dl_samples: Vec<(u64, f64)> = Vec::new(); // (bytes, duration)
+    let mut dl_mbps_samples: Vec<f64> = Vec::new();
 
     while Instant::now() < dl_deadline {
         let req_start = Instant::now();
@@ -175,7 +175,9 @@ where
                     let req_bytes = body.len() as u64;
                     let req_duration = req_start.elapsed().as_secs_f64();
                     dl_bytes += req_bytes;
-                    dl_samples.push((req_bytes, req_duration));
+                    if req_duration > 0.0 {
+                        dl_mbps_samples.push((req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0));
+                    }
                     let elapsed = dl_start.elapsed().as_secs_f64();
                     let frac = (elapsed / dl_secs as f64).min(1.0);
                     progress(Phase::LsDownload, frac);
@@ -189,8 +191,11 @@ where
     let dl_elapsed = dl_start.elapsed().as_secs_f64();
     progress(Phase::LsDownload, 1.0);
 
-    // Slow-start trimming: discard first sample if we have enough
-    let download_mbps = compute_trimmed_throughput(&dl_samples, dl_bytes, dl_elapsed);
+    let download_mbps = if dl_mbps_samples.is_empty() {
+        None
+    } else {
+        Some(statistics::accurate_bandwidth(&dl_mbps_samples))
+    };
 
     // ── Upload phase ─────────────────────────────────────────────────
     progress(Phase::LsUpload, 0.0);
@@ -200,7 +205,7 @@ where
     let ul_deadline = Instant::now() + Duration::from_secs(ul_secs);
     let mut ul_bytes: u64 = 0;
     let ul_start = Instant::now();
-    let mut ul_samples: Vec<(u64, f64)> = Vec::new();
+    let mut ul_mbps_samples: Vec<f64> = Vec::new();
 
     while Instant::now() < ul_deadline {
         let req_start = Instant::now();
@@ -213,7 +218,9 @@ where
             Ok(_) => {
                 let req_duration = req_start.elapsed().as_secs_f64();
                 ul_bytes += UPLOAD_CHUNK_SIZE as u64;
-                ul_samples.push((UPLOAD_CHUNK_SIZE as u64, req_duration));
+                if req_duration > 0.0 {
+                    ul_mbps_samples.push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
+                }
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let frac = (elapsed / ul_secs as f64).min(1.0);
                 progress(Phase::LsUpload, frac);
@@ -225,7 +232,11 @@ where
     let ul_elapsed = ul_start.elapsed().as_secs_f64();
     progress(Phase::LsUpload, 1.0);
 
-    let upload_mbps = compute_trimmed_throughput(&ul_samples, ul_bytes, ul_elapsed);
+    let upload_mbps = if ul_mbps_samples.is_empty() {
+        None
+    } else {
+        Some(statistics::accurate_upload_bandwidth(&ul_mbps_samples))
+    };
 
     Ok(ProviderResult {
         provider: "LibreSpeed".to_string(),
@@ -241,6 +252,10 @@ where
         upload_duration_s: ul_elapsed,
         packet_loss_pct,
         error: None,
+        bandwidth_samples: Some(BandwidthSamples {
+            download: dl_mbps_samples,
+            upload: ul_mbps_samples,
+        }),
     })
 }
 
@@ -342,37 +357,6 @@ where
     })
 }
 
-/// Compute throughput with slow-start trimming.
-/// If there are 4+ samples, discard the first one (TCP slow-start).
-fn compute_trimmed_throughput(samples: &[(u64, f64)], total_bytes: u64, total_elapsed: f64) -> Option<f64> {
-    if total_elapsed <= 0.0 || total_bytes == 0 {
-        return None;
-    }
-
-    if samples.len() >= 4 {
-        // Discard first sample (slow-start)
-        let trimmed_bytes: u64 = samples[1..].iter().map(|(b, _)| *b).sum();
-        let trimmed_duration: f64 = samples[1..].iter().map(|(_, d)| *d).sum();
-        if trimmed_duration > 0.0 {
-            return Some((trimmed_bytes as f64 * 8.0) / (trimmed_duration * 1_000_000.0));
-        }
-    }
-
-    Some((total_bytes as f64 * 8.0) / (total_elapsed * 1_000_000.0))
-}
-
-/// Average absolute difference between consecutive samples.
-fn avg_consecutive_diff(values: &[f64]) -> f64 {
-    if values.len() < 2 {
-        return 0.0;
-    }
-    let sum: f64 = values
-        .windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .sum();
-    sum / (values.len() - 1) as f64
-}
-
 fn error_result(msg: String) -> ProviderResult {
     ProviderResult {
         provider: "LibreSpeed".to_string(),
@@ -388,5 +372,6 @@ fn error_result(msg: String) -> ProviderResult {
         upload_duration_s: 0.0,
         packet_loss_pct: None,
         error: Some(msg),
+        bandwidth_samples: None,
     }
 }

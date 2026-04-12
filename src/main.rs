@@ -34,6 +34,10 @@ async fn main() {
     config = config.with_speed_duration(cli.speed_duration);
 
     // Action flags: exit early without running diagnostics
+    if cli.update {
+        let exit_code = nd_300::actions::update::run(&config).await;
+        std::process::exit(exit_code);
+    }
     if cli.uninstall {
         let exit_code = nd_300::actions::uninstall::run(&config).await;
         std::process::exit(exit_code);

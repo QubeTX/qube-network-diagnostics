@@ -17,6 +17,7 @@ cargo run -- -t                # Technician mode (deep diagnostics)
 cargo run -- --json            # JSON output
 cargo run -- -f                # Run fix flow (requires elevation)
 cargo run -- --fast            # Skip speed test
+cargo run -- --update          # Self-update to latest release
 ```
 
 There are no tests or linting commands configured. Validation happens via CI release builds across 6 platform targets.
@@ -41,9 +42,9 @@ main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
 ### Module Layout
 
 - **`src/cli.rs`** — Shared clap derive definitions (`Nd300Cli`, `SpeedQXCli`) used by both binaries and by `build.rs` for man page generation.
-- **`src/actions/`** — Exit-early operations (`--fix`, `--clear-dns`, `--uninstall`, `--dns`). The fix flow (`actions/fix/`) implements 3-stage graduated network recovery with VPN detection, connectivity checks between stages, Wi-Fi reconnection, and report generation (`report.rs` saves Markdown to `~/Downloads/`).
+- **`src/actions/`** — Exit-early operations (`--fix`, `--clear-dns`, `--uninstall`, `--dns`, `--update`). The fix flow (`actions/fix/`) implements 3-stage graduated network recovery with VPN detection, connectivity checks between stages, Wi-Fi reconnection, and report generation (`report.rs` saves Markdown to `~/Downloads/`).
 - **`src/diagnostics/`** — All diagnostic modules. Each is self-contained with platform-specific code via `#[cfg]` attributes. Each returns `(DiagnosticResult, Option<DetailStruct>)` — the detail struct carries rich data for rendering. `shared_cache.rs` pre-fetches subprocess outputs to deduplicate calls across tech-mode modules.
-- **`src/speedtest/`** — Dual-provider speed test engine (Cloudflare + M-Lab NDT7). `cloudflare.rs` and `ndt7.rs` are the provider clients; `display.rs` handles speedqx-specific progress rendering. Both binaries share this module.
+- **`src/speedtest/`** — Quad-provider speed test engine (Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com). Provider clients: `cloudflare.rs`, `ndt7.rs`, `librespeed.rs`, `fastcom.rs`. `statistics.rs` implements the accuracy pipeline (trimean, IQR filter, slow-start discard, inverse-variance merge, bootstrap CI). `display.rs` handles speedqx-specific progress rendering. Both binaries share this module.
 - **`src/render/`** — Output formatting. `table.rs` builds Unicode/ASCII box-drawing tables with ANSI-aware string functions (`visible_len`, `truncate_visible`). `color.rs` centralizes ANSI color output. `progress.rs` handles spinners.
 - **`src/config.rs`** — Config builder with fluent API. The Config object threads through the entire render pipeline.
 - **`src/error.rs`** — Unified `AppError` enum via `thiserror`.
@@ -101,3 +102,91 @@ Releases are automated via `cargo-dist` v0.31.0. Push a version tag (e.g., `v2.7
 3. **Stage 3** (Warned): Network stack reset, profile deletion, Wi-Fi reconnect
 
 Connectivity is checked between stages; stops as soon as connectivity is restored. Enterprise VPNs (Cisco, Zscaler, GlobalProtect) are never auto-disabled. Fix reports are saved to `~/Downloads/nd300-fix-report-*.md`.
+
+## Self-Update Implementation (`--update`)
+
+**Reference implementation for other QubeTX tools.** This pattern can be copied to any Rust CLI that uses cargo-dist for releases.
+
+### Architecture
+
+The self-update feature lives in `src/actions/update.rs` and follows the same pattern as `--uninstall` (exit-early action, Config-aware, JSON support).
+
+### Flow
+
+```
+1. GET https://api.github.com/repos/{OWNER}/{REPO}/releases/latest
+   - Header: User-Agent: {binary}/{VERSION}
+   - Header: Accept: application/vnd.github+json
+   - Parse JSON → tag_name (e.g. "v2.9.0")
+2. Strip 'v' prefix, compare semver numerically against current VERSION
+3. If current >= latest → print "Already on latest" → exit 0
+4. Detect installation method:
+   - If binary path contains ".cargo" + "bin" → cargo install
+   - Otherwise → cargo-dist installer (shell/PowerShell)
+5. Execute platform-specific update:
+   - Windows: powershell -ExecutionPolicy ByPass -c "irm {PS_INSTALLER_URL} | iex"
+   - macOS/Linux: sh -c 'curl --proto "=https" --tlsv1.2 -LsSf {SHELL_INSTALLER_URL} | sh'
+   - Cargo: cargo install {CRATE_NAME} --force
+6. Report success/failure → exit code
+```
+
+### Key Constants (to customize per tool)
+
+```rust
+const RELEASES_URL: &str = "https://api.github.com/repos/{OWNER}/{REPO}/releases/latest";
+const SHELL_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/download/{NAME}-installer.sh";
+const PS_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/download/{NAME}-installer.ps1";
+```
+
+### Wiring
+
+1. Add `--update` flag to clap struct(s) in `cli.rs`:
+   ```rust
+   #[arg(long = "update", help_heading = "Actions")]
+   pub update: bool,
+   ```
+2. Add `pub mod update;` to `actions/mod.rs`
+3. In `main.rs`, add exit-early handler (before `--fix`, after `--uninstall`):
+   ```rust
+   if cli.update {
+       let exit_code = nd_300::actions::update::run(&config).await;
+       std::process::exit(exit_code);
+   }
+   ```
+4. For additional binaries (e.g. speedqx), add the same handler after CLI parsing
+
+### Platform Notes
+
+- **Windows**: The running `.exe` cannot be replaced in place. The PowerShell installer from cargo-dist handles this correctly (downloads to temp, replaces after process exit).
+- **macOS/Linux**: Shell installer can replace the running binary since Unix allows unlinking running executables.
+- **Cargo**: `cargo install --force` handles everything.
+- **`#[cfg(not(windows))]`** on the `SHELL_INSTALLER` constant to suppress dead code warnings on Windows builds.
+
+### JSON Output
+
+Supports `--json` mode with structured output matching the uninstall pattern:
+```json
+{
+  "action": "update",
+  "success": true,
+  "current_version": "2.8.0",
+  "latest_version": "2.9.0",
+  "update_available": true,
+  "method": "installer"
+}
+```
+
+## Speed Test Accuracy Pipeline
+
+The statistics module (`src/speedtest/statistics.rs`) implements a multi-stage accuracy pipeline matching the [SpeedQX web speed test](https://speedqx.com/how-it-works):
+
+1. **Collect raw samples**: Each HTTP request / WebSocket measurement yields an individual Mbps value
+2. **Discard slow-start** (30%): First 30% of samples removed to eliminate TCP ramp-up
+3. **Upload-specific**: Keep only fastest 50% of post-warmup samples (upload ramp-up is slower)
+4. **IQR outlier filter**: Remove values outside Q1 - 1.5*IQR to Q3 + 1.5*IQR
+5. **Modified trimean**: `(P10 + 8*P50 + P90) / 10` — Ookla-style, heavily median-weighted
+6. **Winsorized cross-validation**: If Winsorized trimean diverges from IQR trimean by >15%, average both
+7. **Inverse-variance merge**: Combine providers using `1/variance` weighting, clamped to [0.3, 0.7]
+8. **Latency**: Fixed 0.4 CF / 0.6 NDT7 weights (NDT7's kernel MinRTT is structurally superior)
+9. **Divergence detection**: Flag when providers differ by >30%
+10. **Stability**: Coefficient of variation on combined samples (stable = CV < 0.15)

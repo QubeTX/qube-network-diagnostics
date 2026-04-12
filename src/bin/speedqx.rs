@@ -166,6 +166,18 @@ async fn main() {
     #[cfg(windows)]
     enable_utf8_console();
 
+    // Exit-early action: --update
+    if cli.update {
+        let config = nd_300::config::Config::new().with_colors(!cli.no_color);
+        if cli.json {
+            let config = config.with_json();
+            let exit_code = nd_300::actions::update::run(&config).await;
+            std::process::exit(exit_code);
+        }
+        let exit_code = nd_300::actions::update::run(&config).await;
+        std::process::exit(exit_code);
+    }
+
     let use_ascii = cli.ascii;
     let use_colors = !cli.no_color;
     let json_mode = cli.json;

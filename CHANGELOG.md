@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-04-12
+
+### Added
+- **`--update` self-update command** — checks GitHub releases for newer versions and re-runs the platform-appropriate installer (shell script, PowerShell, or `cargo install`). Works from both `nd300 --update` and `speedqx --update`. Supports `--json` output.
+- **Statistics module** (`src/speedtest/statistics.rs`) — full accuracy pipeline ported from the QubeTX web speed test:
+  - **Modified trimean** (Ookla-style): `(P10 + 8*P50 + P90) / 10` — heavily median-weighted, robust against outliers
+  - **30% slow-start discard** — eliminates TCP ramp-up contamination (up from 1-sample discard)
+  - **IQR outlier filtering** with linear-interpolation percentiles
+  - **Winsorized cross-validation** — caps extremes at 5th/95th percentiles and averages with IQR result if they diverge >15%
+  - **Upload-specific pipeline** — keeps only fastest 50% of post-warmup samples before trimean (following Speedtest.net methodology)
+  - **RFC 3550 jitter** — exponentially weighted moving average `J += (|D| - J) / 16` (replaces simple consecutive-diff)
+  - **Bootstrap confidence intervals** — 1000-resample percentile method for download/upload uncertainty estimation
+- **Inverse-variance weighted aggregation** — statistically optimal combination of provider bandwidth results, with weights clamped to [0.3, 0.7] to prevent degenerate cases
+- **Confidence-weighted latency merge** — Cloudflare 40% / NDT7 60% (NDT7's kernel-level MinRTT is structurally superior)
+- **Connection stability metrics** — coefficient of variation (CV) for download and upload, with stable/variable classification (threshold: CV < 15%)
+- **Provider divergence detection** — flags when Cloudflare and NDT7 bandwidth results differ by more than 30%, indicating possible throttling or QoS policies
+
+### Changed
+- Slow-start discard increased from 1 sample to 30% of all samples across all providers
+- Bandwidth aggregation changed from volume-weighted to inverse-variance weighted merge
+- Jitter calculation changed from mean absolute consecutive difference to RFC 3550 exponentially weighted moving average
+- IQR outlier filter now uses linear-interpolation percentiles instead of array-index quartiles
+- All 4 providers now collect per-request Mbps samples for post-processing through the full statistics pipeline
+
 ## [2.8.0] - 2026-03-19
 
 ### Added

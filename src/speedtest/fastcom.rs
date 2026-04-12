@@ -1,4 +1,4 @@
-use super::{Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::{BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration, statistics};
 use reqwest::Client;
 use std::time::{Duration, Instant};
 
@@ -110,7 +110,7 @@ where
     let dl_deadline = Instant::now() + Duration::from_secs(dl_secs);
     let mut dl_bytes: u64 = 0;
     let dl_start = Instant::now();
-    let mut dl_samples: Vec<(u64, f64)> = Vec::new();
+    let mut dl_mbps_samples: Vec<f64> = Vec::new();
     let mut url_idx = 0;
 
     // Measure latency with a small initial request (1 byte range)
@@ -135,7 +135,9 @@ where
                     let req_bytes = body.len() as u64;
                     let req_duration = req_start.elapsed().as_secs_f64();
                     dl_bytes += req_bytes;
-                    dl_samples.push((req_bytes, req_duration));
+                    if req_duration > 0.0 {
+                        dl_mbps_samples.push((req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0));
+                    }
 
                     let elapsed = dl_start.elapsed().as_secs_f64();
                     let frac = (elapsed / dl_secs as f64).min(1.0);
@@ -150,7 +152,11 @@ where
     let dl_elapsed = dl_start.elapsed().as_secs_f64();
     progress(Phase::FcDownload, 1.0);
 
-    let download_mbps = compute_trimmed_throughput(&dl_samples, dl_bytes, dl_elapsed);
+    let download_mbps = if dl_mbps_samples.is_empty() {
+        None
+    } else {
+        Some(statistics::accurate_bandwidth(&dl_mbps_samples))
+    };
 
     // ── Upload phase ─────────────────────────────────────────────────
     // fast.com upload is less documented; attempt POST to the same URLs
@@ -160,7 +166,7 @@ where
     let ul_deadline = Instant::now() + Duration::from_secs(ul_secs);
     let mut ul_bytes: u64 = 0;
     let ul_start = Instant::now();
-    let mut ul_samples: Vec<(u64, f64)> = Vec::new();
+    let mut ul_mbps_samples: Vec<f64> = Vec::new();
     url_idx = 0;
 
     let mut upload_failures = 0u32;
@@ -179,7 +185,9 @@ where
             Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
                 let req_duration = req_start.elapsed().as_secs_f64();
                 ul_bytes += UPLOAD_CHUNK_SIZE as u64;
-                ul_samples.push((UPLOAD_CHUNK_SIZE as u64, req_duration));
+                if req_duration > 0.0 {
+                    ul_mbps_samples.push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
+                }
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let frac = (elapsed / ul_secs as f64).min(1.0);
                 progress(Phase::FcUpload, frac);
@@ -198,10 +206,10 @@ where
     let ul_elapsed = ul_start.elapsed().as_secs_f64();
     progress(Phase::FcUpload, 1.0);
 
-    let upload_mbps = if ul_bytes > 0 {
-        compute_trimmed_throughput(&ul_samples, ul_bytes, ul_elapsed)
+    let upload_mbps = if ul_mbps_samples.is_empty() {
+        None
     } else {
-        None // Upload not supported — other providers cover this
+        Some(statistics::accurate_upload_bandwidth(&ul_mbps_samples))
     };
 
     Ok(ProviderResult {
@@ -218,24 +226,11 @@ where
         upload_duration_s: ul_elapsed,
         packet_loss_pct: None,
         error: None,
+        bandwidth_samples: Some(BandwidthSamples {
+            download: dl_mbps_samples,
+            upload: ul_mbps_samples,
+        }),
     })
-}
-
-/// Compute throughput with slow-start trimming.
-fn compute_trimmed_throughput(samples: &[(u64, f64)], total_bytes: u64, total_elapsed: f64) -> Option<f64> {
-    if total_elapsed <= 0.0 || total_bytes == 0 {
-        return None;
-    }
-
-    if samples.len() >= 4 {
-        let trimmed_bytes: u64 = samples[1..].iter().map(|(b, _)| *b).sum();
-        let trimmed_duration: f64 = samples[1..].iter().map(|(_, d)| *d).sum();
-        if trimmed_duration > 0.0 {
-            return Some((trimmed_bytes as f64 * 8.0) / (trimmed_duration * 1_000_000.0));
-        }
-    }
-
-    Some((total_bytes as f64 * 8.0) / (total_elapsed * 1_000_000.0))
 }
 
 /// Dynamically extract the API token from fast.com's JS bundle.
@@ -320,5 +315,6 @@ fn error_result(msg: String) -> ProviderResult {
         upload_duration_s: 0.0,
         packet_loss_pct: None,
         error: Some(msg),
+        bandwidth_samples: None,
     }
 }

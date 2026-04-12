@@ -71,6 +71,10 @@ pub struct Nd300Cli {
     #[arg(long = "uninstall", help_heading = "Actions")]
     pub uninstall: bool,
 
+    /// Check for updates and install the latest version
+    #[arg(long = "update", help_heading = "Actions")]
+    pub update: bool,
+
     /// Print version
     #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
     pub version: (),
@@ -130,6 +134,10 @@ pub struct SpeedQXCli {
     /// Number of latency probes
     #[arg(long, default_value = "20", help_heading = "Speed Test")]
     pub latency_probes: u32,
+
+    /// Check for updates and install the latest version
+    #[arg(long = "update", help_heading = "Actions")]
+    pub update: bool,
 
     /// Print version
     #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
