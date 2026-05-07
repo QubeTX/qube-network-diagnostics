@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.2] - 2026-05-07
+
+### Fixed
+- **`nd300 update` no longer crashes with `Failed to run cargo install: No such file or directory (os error 2)`** when the binary lives under `~/.cargo/bin/` but no Rust toolchain is installed. The previous detection assumed any binary path containing `.cargo` + `bin` meant "user installed via `cargo install`," but the cargo-dist shell installer also defaults to that location whenever `CARGO_HOME` or rustup is present — so users who installed via the official shell installer were misclassified and the updater tried to spawn `cargo`, which doesn't exist on their system. Bug has shipped silently since v2.9.0.
+
+### Changed
+- **Update logic is now a probe-and-retry chain** instead of a single dispatched method. Cargo first when `cargo --version` succeeds, cargo-dist installer as universal fallback (curl → wget on macOS/Linux, `powershell.exe` → `pwsh.exe` on Windows). When cargo isn't invokable it's pruned from the candidate list entirely, so the ENOENT crash can't recur. Failures fall through to the next candidate; the chain only stops on first success. When every strategy fails, both pretty and `--json` output now show a per-attempt diagnostic block listing what was tried and why each failed.
+- Hardened the installer pipelines: `set -e -o pipefail` and `curl -fLsS` on Unix (a 404 or DNS error now fails loudly instead of being silently swallowed by `sh` exiting 0 on empty input); `$ErrorActionPreference='Stop'` plus `-NoProfile -NonInteractive` on Windows. These are latent silent-success bugs in the same code path, fixed alongside the main issue.
+- `--json` output gains a `"strategy"` field (precise variant) and an `"attempts"` array on failure. `"method"` continues to map to `"cargo"` or `"installer"` for backward compatibility.
+
 ## [3.0.1] - 2026-05-07
 
 ### Fixed
