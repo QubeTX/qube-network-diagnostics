@@ -96,7 +96,33 @@ Triggers in user prompts: "release", "ship it", "tag the release", "push it out"
 9. **Tag** `git tag vX.Y.Z`.
 10. **Push commit + tag** with `git push origin main --follow-tags`.
 11. **VERIFY the tag actually pushed** with `git ls-remote --tags origin | grep vX.Y.Z`. On Windows, `--follow-tags` sometimes silently skips the tag push — if missing, run `git push origin vX.Y.Z` explicitly. The release CI only triggers on tag push, so a missing tag = no release.
-12. **Watch CI** with `gh run watch <run-id> --exit-status` (or `gh run list --workflow=release.yml --limit 1` to pick up the queued run id). Typical run time is 5–7 minutes across all 6 targets.
+12. **Watch CI via Monitor — never foreground `gh run watch`.** A foreground watch burns 5+ minutes of context blocking on the run. Instead, pick up the run id (`gh run list --workflow=release.yml --limit 1`) and arm the `Monitor` tool with a poll loop that emits **one notification per job state-change** plus a terminal `RUN_DONE` line. You keep working (or hand back to the user) while CI runs; events arrive as chat notifications.
+
+    Pattern (parameterize `RUN_ID`, `timeout_ms` ~1500000 for 25 min headroom, `persistent: false`):
+
+    ```bash
+    prev=""
+    while true; do
+      state=$(gh run view RUN_ID --json status,conclusion,jobs 2>/dev/null || echo '{}')
+      cur=$(echo "$state" | jq -r '.jobs[]? | select(.status=="completed") | "\(.name): \(.conclusion)"' | sort)
+      comm -13 <(echo "$prev") <(echo "$cur")
+      prev=$cur
+      status=$(echo "$state" | jq -r '.status // "unknown"')
+      conclusion=$(echo "$state" | jq -r '.conclusion // ""')
+      if [ "$status" = "completed" ]; then
+        echo "RUN_DONE: $conclusion"
+        break
+      fi
+      sleep 30
+    done
+    ```
+
+    Why this shape:
+    - `comm -13 <(prev) <(cur)` against sorted lists emits only *new* completions per poll, so each finished job arrives as exactly one notification (not the cumulative list every 30s).
+    - Polling `gh run view --json` (not `gh pr checks`) works for tag-triggered runs that have no associated PR.
+    - Selecting `status=="completed"` covers every terminal state (`success`, `failure`, `cancelled`, `skipped`, `timed_out`) — silence ≠ progress, so don't filter to `success` only.
+    - 30s poll matches GitHub Actions API rate limits comfortably; total run is 5–7 minutes across all 6 targets.
+    - `RUN_DONE: <conclusion>` is your verdict marker — surface it to the user. If `conclusion` is `failure`, dive straight into `gh run view RUN_ID --log-failed` and start the patch-bump loop.
 
 ### Patch-bump loop (when CI fails)
 
