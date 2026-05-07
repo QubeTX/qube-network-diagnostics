@@ -157,7 +157,7 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
 }
 
 /// Restart platform networking services.
-async fn restart_services() -> Result<String, String> {
+pub async fn restart_services() -> Result<String, String> {
     #[cfg(windows)]
     {
         let mut restarted = Vec::new();
@@ -394,7 +394,7 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
     (steps, dns_fixed)
 }
 
-async fn disable_interface(iface: &str) -> Result<(), String> {
+pub async fn disable_interface(iface: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
         let mut cmd = tokio::process::Command::new("netsh");
@@ -441,7 +441,7 @@ async fn disable_interface(iface: &str) -> Result<(), String> {
     }
 }
 
-async fn enable_interface(iface: &str) -> Result<(), String> {
+pub async fn enable_interface(iface: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
         let mut cmd = tokio::process::Command::new("netsh");
@@ -596,7 +596,7 @@ fn platform_stage3_warning() -> &'static str {
     { "This will delete and recreate your network connection profile." }
 }
 
-async fn platform_stage3(config: &Config, saved_ssid: &Option<String>) -> Result<Vec<String>, String> {
+pub async fn platform_stage3(config: &Config, saved_ssid: &Option<String>) -> Result<Vec<String>, String> {
     #[cfg(windows)]
     { stage3_windows(config, saved_ssid).await }
 

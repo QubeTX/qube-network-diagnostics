@@ -1,25 +1,54 @@
+//! Diagnostic-driven fix loop entry point.
+//!
+//! `nd300 fix` (and the legacy `nd300 -f` flag form) lands here. The actual
+//! work is split across:
+//!
+//! - [`action`] — the [`Action`] type system and registry of every fix
+//!   primitive available on the current platform.
+//! - [`triage`] — pure planning logic: pick which actions to apply for the
+//!   current failure set, ordered by cost/risk.
+//! - [`session`] — per-run state (attempts, effectiveness, snapshots) and the
+//!   plain-language Reporter that drives terminal output.
+//! - [`loop_runner`] — the bounded triage → apply → re-test loop that
+//!   composes the three above.
+//!
+//! Stages 1 / 2 / 3 of the previous design have been replaced by the
+//! diagnostic-driven loop. The platform-specific primitives the old stages
+//! called still live in [`stages`] and are wrapped as [`Action`]s in
+//! [`action::all_actions`].
+
+pub mod action;
 pub mod adapters;
 pub mod arp;
 pub mod cmd;
 pub mod connectivity;
 pub mod dhcp;
 pub mod dns;
+pub mod loop_runner;
 pub mod report;
+pub mod session;
 pub mod stages;
+pub mod triage;
 pub mod vpn;
 pub mod wifi;
 
-use crate::config::{Config, OutputFormat};
+use crate::config::Config;
 use crate::render::color;
 
-use super::{fail_icon, print_elevation_hint, success_icon};
+use super::{fail_icon, success_icon};
 
+/// Legacy step-result type used by the platform primitives in [`stages`]
+/// (interface bounce, Stage 3 stack reset). Retained during the v3 transition
+/// so we don't have to rewrite every primitive at once. The triage loop
+/// itself does not use this type directly.
 pub struct StepResult {
     pub name: &'static str,
     pub success: bool,
     pub message: String,
 }
 
+/// Legacy step-success printer. Used by primitives in [`stages`]. The new
+/// loop's plain-language output lives in [`session::Reporter`].
 pub fn print_step_ok(label: &str, config: &Config) {
     println!(
         "  {} {}",
@@ -28,6 +57,7 @@ pub fn print_step_ok(label: &str, config: &Config) {
     );
 }
 
+/// Legacy step-failure printer. See [`print_step_ok`].
 pub fn print_step_fail(label: &str, detail: &str, config: &Config) {
     println!(
         "  {} {}",
@@ -47,216 +77,12 @@ pub fn warn_icon(config: &Config) -> &'static str {
     }
 }
 
-pub async fn run(config: &Config) -> i32 {
-    if config.format == OutputFormat::Json {
-        return run_json(config).await;
-    }
-
-    println!();
-
-    // Elevation check: all fix stages require root/admin on macOS/Linux
-    if !crate::platform::is_elevated() {
-        println!();
-        println!(
-            "  {}",
-            color::red("The fix flow requires elevated privileges.", config),
-        );
-        print_elevation_hint(config);
-        return 2;
-    }
-
-    let mut fix_report = report::FixReport::new();
-
-    // Step 0: Capture current SSID for potential Stage 3 reconnection
-    let saved_ssid = wifi::capture_current_ssid().await;
-
-    // Step 0b: VPN detection and disable
-    let disabled_vpns = vpn::detect_and_disable(config).await;
-    fix_report.vpn_names = disabled_vpns.iter().map(|v| v.name.clone()).collect();
-
-    // ── Stage 1: Service Restart (automatic) ────────────────────────────────
-    println!();
-    println!(
-        "  {} {}",
-        color::cyan("Stage 1:", config),
-        color::cyan("Service Restart", config),
-    );
-
-    let (stage1_steps, connected) = stages::run_stage1(config).await;
-    fix_report.push_stage(1, "Service Restart", stage1_steps, connected);
-
-    if connected {
-        println!();
-        println!(
-            "  {} {}",
-            color::green(success_icon(config), config),
-            color::green("Connectivity restored at Stage 1", config),
-        );
-        vpn::offer_reenable(&disabled_vpns, config).await;
-        fix_report.mark_resolved(1);
-        fix_report.finalize();
-        let saved_path = report::save_report(&fix_report);
-        report::print_terminal_summary(&fix_report, saved_path.as_deref(), config);
-        return 0;
-    }
-
-    // ── Stage 2: Interface Reset (prompted) ─────────────────────────────────
-    println!();
-    println!(
-        "  {} {}",
-        color::cyan("Stage 2:", config),
-        color::cyan("Interface Reset", config),
-    );
-
-    let (stage2_steps, connected) = stages::run_stage2(config).await;
-    fix_report.push_stage(2, "Interface Reset", stage2_steps, connected);
-
-    if connected {
-        println!();
-        println!(
-            "  {} {}",
-            color::green(success_icon(config), config),
-            color::green("Connectivity restored at Stage 2", config),
-        );
-        vpn::offer_reenable(&disabled_vpns, config).await;
-        fix_report.mark_resolved(2);
-        fix_report.finalize();
-        let saved_path = report::save_report(&fix_report);
-        report::print_terminal_summary(&fix_report, saved_path.as_deref(), config);
-        return 0;
-    }
-
-    // ── Stage 3: Network Stack Reset (strong warning) ───────────────────────
-    println!();
-    println!(
-        "  {} {}",
-        color::cyan("Stage 3:", config),
-        color::cyan("Network Stack Reset", config),
-    );
-
-    let (stage3_steps, connected) = stages::run_stage3(config, &saved_ssid).await;
-    fix_report.push_stage(3, "Network Stack Reset", stage3_steps, connected);
-
-    vpn::offer_reenable(&disabled_vpns, config).await;
-
-    println!();
-    let exit_code = if connected {
-        println!(
-            "  {} {}",
-            color::green(success_icon(config), config),
-            color::green("Connectivity restored at Stage 3", config),
-        );
-        fix_report.mark_resolved(3);
-        0
-    } else {
-        println!(
-            "  {} {}",
-            color::red(fail_icon(config), config),
-            color::red("Network fix completed but connectivity was not restored", config),
-        );
-        println!(
-            "    {}",
-            color::dim("The issue may require manual intervention or a system reboot.", config),
-        );
-        2
-    };
-
-    fix_report.finalize();
-    let saved_path = report::save_report(&fix_report);
-    report::print_terminal_summary(&fix_report, saved_path.as_deref(), config);
-    exit_code
-}
-
-async fn run_json(config: &Config) -> i32 {
-    // Elevation check: all fix stages require root/admin
-    if !crate::platform::is_elevated() {
-        let output = serde_json::json!({
-            "action": "fix",
-            "error": "elevated_privileges_required",
-            "message": "Run with sudo (Unix) or as Administrator (Windows).",
-            "stages": [],
-            "resolved_at_stage": null,
-            "requires_interaction": false,
-            "vpn": null,
-            "report_path": null,
-        });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
-        return 2;
-    }
-
-    let mut fix_report = report::FixReport::new();
-
-    let saved_ssid = wifi::capture_current_ssid().await;
-    let _ = saved_ssid; // Stage 3 is skipped in JSON mode
-
-    // VPN: auto-disable consumer VPNs
-    let disabled_vpns = vpn::detect_and_disable(config).await;
-    fix_report.vpn_names = disabled_vpns.iter().map(|v| v.name.clone()).collect();
-
-    // Stage 1
-    let (stage1_steps, connected_s1) = stages::run_stage1(config).await;
-    let stage1_json = steps_to_json(&stage1_steps);
-    fix_report.push_stage(1, "Service Restart", stage1_steps, connected_s1);
-
-    let mut stages = vec![serde_json::json!({
-        "stage": 1,
-        "name": "service_restart",
-        "steps": stage1_json,
-        "connectivity_restored": connected_s1,
-    })];
-
-    let mut resolved_at: Option<u8> = if connected_s1 { Some(1) } else { None };
-
-    // Stage 2 (auto in JSON, no prompt)
-    if resolved_at.is_none() {
-        let (stage2_steps, connected_s2) = stages::run_stage2(config).await;
-        let stage2_json = steps_to_json(&stage2_steps);
-        fix_report.push_stage(2, "Interface Reset", stage2_steps, connected_s2);
-        stages.push(serde_json::json!({
-            "stage": 2,
-            "name": "interface_reset",
-            "steps": stage2_json,
-            "connectivity_restored": connected_s2,
-        }));
-        if connected_s2 {
-            resolved_at = Some(2);
-        }
-    }
-
-    if let Some(stage) = resolved_at {
-        fix_report.mark_resolved(stage);
-    }
-    fix_report.finalize();
-
-    // Save Markdown report (best-effort)
-    let saved_path = report::save_report(&fix_report);
-    let report_path_str = saved_path.as_ref().map(|p| p.display().to_string());
-
-    // Stage 3 is SKIPPED in JSON mode
-    let requires_interaction = resolved_at.is_none();
-
-    let vpn_json = vpn::vpn_json(&disabled_vpns);
-
-    let output = serde_json::json!({
-        "action": "fix",
-        "stages": stages,
-        "resolved_at_stage": resolved_at,
-        "requires_interaction": requires_interaction,
-        "vpn": vpn_json,
-        "report_path": report_path_str,
-    });
-
-    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
-
-    if resolved_at.is_some() { 0 } else { 2 }
-}
-
-fn steps_to_json(steps: &[StepResult]) -> Vec<serde_json::Value> {
-    steps.iter().map(|s| {
-        serde_json::json!({
-            "name": s.name,
-            "success": s.success,
-            "message": s.message,
-        })
-    }).collect()
+/// Entry point for `nd300 fix` / `nd300 -f`. Dispatches to the diagnostic-
+/// driven triage loop.
+///
+/// `_args` is currently a placeholder — the `--yes` flag lives at the
+/// top-level of `Nd300Cli` (global). Future fix-only options will be threaded
+/// through here.
+pub async fn run(config: &Config, _args: crate::cli::FixArgs) -> i32 {
+    loop_runner::run_and_finalize(config).await
 }

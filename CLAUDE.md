@@ -15,12 +15,14 @@ cargo run -- [OPTIONS]         # Run nd300 with arguments
 cargo run --bin speedqx -- [OPTIONS]  # Run speedqx with arguments
 cargo run -- -t                # Technician mode (deep diagnostics)
 cargo run -- --json            # JSON output
-cargo run -- -f                # Run fix flow (requires elevation)
+cargo run -- fix               # Run triage-loop fix (requires elevation; subcommand form, v3+)
+cargo run -- -f                # Same as `cargo run -- fix` (legacy flag form, still works)
 cargo run -- --fast            # Skip speed test
-cargo run -- --update          # Self-update to latest release
+cargo run -- update            # Self-update to latest release (also `--update`)
+cargo test --lib actions::fix::triage  # Triage planner unit tests
 ```
 
-There are no tests or linting commands configured. Validation happens via CI release builds across 6 platform targets.
+Tests: only the triage planner (`src/actions/fix/triage.rs`) currently has unit tests; the rest is validated by CI release builds across 6 platform targets.
 
 ## Architecture
 
@@ -28,7 +30,8 @@ There are no tests or linting commands configured. Validation happens via CI rel
 
 ```
 main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
-  → Exit-early actions: --fix, --clear-dns, --uninstall
+  → Subcommand dispatch (nd300 fix | update | clear-dns | uninstall) — preferred form
+  → Falls through to legacy flag dispatch (--fix, --update, --clear-dns, --uninstall, -d/--dns)
   → Conditional exit: --dns (exits on failure, falls through to diagnostics on success)
   → config.rs (Config builder: colors, unicode, mode, format)
   → diagnostics/mod.rs (concurrent runner via tokio::join!)
@@ -38,6 +41,8 @@ main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
   → render/ (user_mode | tech_mode | json — selected by format + mode)
   → Exit code: 0=OK, 1=Warn, 2=Fail
 ```
+
+`Nd300Cli` defines a `command: Option<Nd300Command>` field alongside the legacy boolean flags. If a subcommand is given, it takes precedence; otherwise the flag-form dispatch runs. Both forms produce identical behavior. Output flags (`--json`, `--ascii`, `--no-color`, `--verbose`) and `--yes` are marked `global = true` so they work in both positions.
 
 ### Module Layout
 
@@ -95,13 +100,46 @@ Releases are automated via `cargo-dist` v0.31.0. Push a version tag (e.g., `v2.7
 | `nix` 0.29 | Unix system calls |
 | `clap_mangen` 0.2 | Man page generation (build-dep only) |
 
-## Fix Flow Stages
+## Fix Flow — Diagnostic-Driven Triage Loop (v3.0+)
 
-1. **Stage 1** (Automatic): DNS reset to DHCP, DNS flush, ARP flush, service restart, DHCP renew
-2. **Stage 2** (Prompted): Interface disable/re-enable, targeted DHCP
-3. **Stage 3** (Warned): Network stack reset, profile deletion, Wi-Fi reconnect
+`nd300 fix` (and the legacy `nd300 -f` flag) is no longer a fixed Stage 1 → Stage 2 → Stage 3 sequence. It runs an iterative **triage loop** in `src/actions/fix/loop_runner.rs`:
 
-Connectivity is checked between stages; stops as soon as connectivity is restored. Enterprise VPNs (Cisco, Zscaler, GlobalProtect) are never auto-disabled. Fix reports are saved to `~/Downloads/nd300-fix-report-*.md`.
+```
+1. Run baseline diagnostics (diagnostics::run_all)
+2. If everything passes → exit 0 ("nothing to fix")
+3. Detect hard-block patterns (no link / ISP outage / enterprise VPN) → exit with guidance
+4. Compute actionable failures, group by root cause, build_plan() returns ordered Vec<Action>
+5. For each action in plan:
+     - High-risk actions: render structured RiskExplanation prompt; require explicit 'y'
+     - Apply, capture ActionOutcome, sleep stabilization window
+     - If fatal_environment_change → break out of plan, re-probe immediately
+6. Re-run diagnostics. If now passing → done. Else continue to next iteration.
+7. Bounded by: ≤6 iterations, ≤4-min wall clock, per-action max_attempts
+```
+
+### Module layout under `src/actions/fix/`
+
+- **`action.rs`** — `Action`, `ActionId`, `Cost`, `Risk`, `Reversibility`, `RiskExplanation` types. The registry (`all_actions()`) returns every `Action` available on the current platform. `Action::apply` dispatches to a free function per `ActionId` via match. `Risk::High(RiskExplanation)` is a sealed enum variant: a high-risk Action *cannot* be constructed without a complete plain-language explanation.
+- **`triage.rs`** — Pure planning. `actionable_failures()`, `group_by_root_cause()` (walks the hardcoded dependency DAG), `hard_block_detected()`, `build_plan()`. No IO. Unit-tested via `cargo test --lib actions::fix::triage`.
+- **`session.rs`** — `Session` (per-run state: attempts, effectiveness, snapshots, action_log) + `Reporter` (plain-language output for stdout) + `FinalOutcome`. `WALL_CLOCK_CAP = 240s`.
+- **`loop_runner.rs`** — `run_and_finalize(config) -> i32`: pre-flight elevation check, runs the loop, persists Markdown report, returns exit code. Handles JSON output via `print_json_outcome`.
+- **`report.rs`** — Iteration-oriented Markdown report. Saves to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`.
+- **`stages.rs`** — Platform primitives (`disable_interface`, `enable_interface`, `restart_services`, `platform_stage3`, etc.) — kept and made `pub` so the action registry calls them directly. The legacy `run_stage1/2/3` orchestrators are still in this file but unused; safe to remove in a follow-up.
+- **`cmd.rs`** — `run_cmd` (legacy, returns `Result<Output, String>`) + `run_cmd_capture` (new, returns structured `CmdOutcome` with stdout/stderr/exit/duration). Reports render `CmdOutcome` payloads.
+
+### High-risk prompts
+
+In interactive mode, every High-risk Action renders a multi-line block with `what`, `why`, side-effects, reversibility, and typical duration before running. Requires an **explicit `y`** — Enter alone, blank, or any non-`y` is treated as N. **`--yes` does NOT bypass these prompts** (by design — protects non-technicians from accidentally OK'ing destructive actions). In `--json` / non-interactive contexts, High-risk Actions are *skipped* (not auto-applied) with a clear marker in the report.
+
+### What to do when adding a new fix primitive
+
+1. Add an `ActionId` variant in `action.rs`.
+2. Add a free `apply_*` function for it.
+3. Add a match arm in `Action::apply`.
+4. Append an `Action { ... }` entry in `all_actions()` declaring `targets`, `cost`, `risk`, `max_attempts`, `stabilization`. For `Risk::High`, attach a complete `RiskExplanation`.
+5. Triage planning picks it up automatically — no changes needed in `triage.rs`.
+
+Enterprise VPNs (Cisco, Zscaler, Palo Alto / GlobalProtect, F5, Check Point, Juniper) are never auto-disabled. Fix reports always go to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`.
 
 ## Self-Update Implementation (`--update`)
 

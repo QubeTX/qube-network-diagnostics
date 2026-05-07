@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH nd300 1  "nd300 2.9.0" 
+.TH nd300 1  "nd300 3.0.0" 
 .SH NAME
 nd300 \- ND\-300 Network Diagnostic \- QubeTX Developer Tools
 .SH SYNOPSIS
-\fBnd300\fR [\fB\-t\fR|\fB\-\-tech\fR] [\fB\-T\fR|\fB\-\-title\fR] [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-verbose\fR] [\fB\-\-fast\fR] [\fB\-\-speed\-duration\fR] [\fB\-d\fR|\fB\-\-dns\fR] [\fB\-f\fR|\fB\-\-fix\fR] [\fB\-c\fR|\fB\-\-clear\-dns\fR] [\fB\-\-uninstall\fR] [\fB\-\-update\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBnd300\fR [\fB\-t\fR|\fB\-\-tech\fR] [\fB\-T\fR|\fB\-\-title\fR] [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-verbose\fR] [\fB\-\-fast\fR] [\fB\-\-speed\-duration\fR] [\fB\-d\fR|\fB\-\-dns\fR] [\fB\-f\fR|\fB\-\-fix\fR] [\fB\-c\fR|\fB\-\-clear\-dns\fR] [\fB\-\-uninstall\fR] [\fB\-\-update\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 ND\-300 Network Diagnostic \- QubeTX Developer Tools
 .PP
@@ -50,27 +50,50 @@ Speed test duration in seconds
 Change DNS servers and verify connectivity
 .TP
 \fB\-f\fR, \fB\-\-fix\fR
-Multi\-stage network fix: graduated recovery from service restart to stack reset
+Diagnostic\-driven triage and recovery loop (legacy flag form of `nd300 fix`)
 .TP
 \fB\-c\fR, \fB\-\-clear\-dns\fR
-Clear DNS cache and exit
+Clear DNS cache and exit (legacy flag form of `nd300 clear\-dns`)
 .TP
 \fB\-\-uninstall\fR
-Uninstall nd300 from this system
+Uninstall nd300 from this system (legacy flag form of `nd300 uninstall`)
 .TP
 \fB\-\-update\fR
-Check for updates and install the latest version
+Check for updates and install the latest version (legacy flag form of `nd300 update`)
+.TP
+\fB\-y\fR, \fB\-\-yes\fR
+Auto\-confirm Medium\-cost prompts when running the fix flow. Does NOT bypass High\-risk action prompts (Y/N is always required for those)
+.SH SUBCOMMANDS
+.TP
+nd300\-fix(1)
+Diagnostic\-driven triage loop: tests → identifies failures → applies targeted fixes → re\-tests → repeats. Bounded by iteration count, wall clock, and per\-action attempt caps. Works for technical and non\-technical users; high\-risk actions always require Y/N confirmation
+.TP
+nd300\-update(1)
+Check for updates and install the latest release
+.TP
+nd300\-clear\-dns(1)
+Clear the DNS cache and exit
+.TP
+nd300\-uninstall(1)
+Uninstall nd300 from this system
+.TP
+nd300\-help(1)
+Print this message or the help of the given subcommand(s)
 .SH EXTRA
 EXAMPLES:
   nd300              Run standard diagnostics
   nd300 \-t           Technician mode (deep diagnostics)
   nd300 \-d           Change DNS configuration
-  nd300 \-f           Multi\-stage network fix
+  nd300 fix          Diagnostic\-driven triage and recovery loop
+  nd300 \-f           Same as \*(Aqnd300 fix\*(Aq (legacy flag form)
+  nd300 update       Check for updates and install
+  nd300 clear\-dns    Reset DNS cache
+  nd300 uninstall    Remove nd300 from this system
   nd300 \-\-fast       Skip speed test for faster execution
   nd300 \-\-json       Output results as JSON
 
 Run \*(Aqnd300 \-\-help\*(Aq for full details, or \*(Aqnd300 \-h\*(Aq for a summary.
 .SH VERSION
-v2.9.0
+v3.0.0
 .SH AUTHORS
 Emmett S <hey@emmetts.dev>

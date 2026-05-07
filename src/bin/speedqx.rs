@@ -1,5 +1,5 @@
 use clap::Parser;
-use nd_300::cli::SpeedQXCli;
+use nd_300::cli::{SpeedQXCli, SpeedQXCommand};
 use nd_300::speedtest::display::{render_results, SpeedQXDisplay};
 use nd_300::speedtest::{format_mbps, Phase, ProviderCompleteCallback, SpeedTestConfig, TestDuration};
 use std::sync::{Arc, Mutex};
@@ -166,13 +166,25 @@ async fn main() {
     #[cfg(windows)]
     enable_utf8_console();
 
-    // Exit-early action: --update
+    // Subcommand form takes precedence over the legacy --update flag.
+    if let Some(cmd) = cli.command.clone() {
+        match cmd {
+            SpeedQXCommand::Update => {
+                let mut config = nd_300::config::Config::new().with_colors(!cli.no_color);
+                if cli.json {
+                    config = config.with_json();
+                }
+                let exit_code = nd_300::actions::update::run(&config).await;
+                std::process::exit(exit_code);
+            }
+        }
+    }
+
+    // Legacy flag form: `speedqx --update`.
     if cli.update {
-        let config = nd_300::config::Config::new().with_colors(!cli.no_color);
+        let mut config = nd_300::config::Config::new().with_colors(!cli.no_color);
         if cli.json {
-            let config = config.with_json();
-            let exit_code = nd_300::actions::update::run(&config).await;
-            std::process::exit(exit_code);
+            config = config.with_json();
         }
         let exit_code = nd_300::actions::update::run(&config).await;
         std::process::exit(exit_code);

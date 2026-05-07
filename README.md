@@ -10,8 +10,9 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **Two operating modes**: User mode (clean summary) and Technician mode (deep diagnostics)
 - **8 core diagnostics**: adapters, interfaces, gateway, DNS, public IP, latency, speed test, port connectivity
 - **17 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
+- **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Re-tests after each step and repeats until everything passes or no further actions remain. Works for technical and non-technical users; high-risk recovery steps always require Y/N confirmation with a plain-language explanation.
 - **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) with inverse-variance weighted aggregation, modified trimean (Ookla-style), and RFC 3550 jitter for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
-- **Self-update** — `nd300 --update` / `speedqx --update` checks GitHub for the latest release and reinstalls automatically
+- **Self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and reinstalls automatically
 - **SpeedQX** standalone speed test binary — all 4 providers with per-provider breakdown and real-time progress
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
@@ -55,6 +56,8 @@ cargo build --release
 
 ### nd300 — Network Diagnostic
 
+As of v3.0.0, every action command is available **either as a subcommand or as a flag** — both forms are first-class and produce identical behavior. Pick whichever you prefer.
+
 ```sh
 # Default user mode — clean summary
 nd300
@@ -65,14 +68,23 @@ nd300 -t
 # Change DNS configuration (interactive)
 nd300 -d
 
-# Multi-stage network fix
+# Diagnostic-driven fix loop (subcommand form, recommended)
+nd300 fix
+
+# Same thing — legacy flag forms (still supported)
 nd300 -f
+nd300 --fix
+
+# Auto-confirm Medium-cost prompts (does NOT bypass High-risk Y/N)
+nd300 fix --yes
+nd300 -f -y
 
 # Skip the speed test for faster execution
 nd300 --fast
 
 # JSON output for scripting
 nd300 --json
+nd300 fix --json    # JSON works after subcommands too (global flag)
 
 # ASCII characters instead of Unicode
 nd300 --ascii
@@ -86,11 +98,22 @@ nd300 -T "Office Network Check"
 # Custom speed test duration per provider (seconds)
 nd300 --speed-duration 20
 
-# Check for updates and install the latest version
+# Self-update — both forms work
+nd300 update
 nd300 --update
+
+# Reset DNS cache — both forms work
+nd300 clear-dns
+nd300 --clear-dns
+nd300 -c
+
+# Uninstall — both forms work
+nd300 uninstall
+nd300 --uninstall
 
 # Show help
 nd300 --help
+nd300 fix --help    # subcommand-specific help
 ```
 
 ### speedqx — Standalone Speed Test
@@ -144,12 +167,22 @@ speedqx --duration 10 --latency-probes 5
 | `--speed-duration <SECS>` | Speed test duration in seconds (default: 10, min: 4) |
 | `--verbose` | Show additional debug/trace information |
 | `-d, --dns` | Change DNS servers and verify connectivity (requires elevated privileges) |
-| `-f, --fix` | Run the multi-stage network fix flow (requires elevated privileges) |
-| `-c, --clear-dns` | Flush the system DNS cache |
-| `--uninstall` | Remove nd300 from the system (binary, install receipt, PATH entry) |
-| `--update` | Check for updates and install the latest version |
+| `-f, --fix` | Run the diagnostic-driven triage / fix loop (requires elevated privileges). Equivalent to `nd300 fix`. |
+| `-c, --clear-dns` | Flush the system DNS cache. Equivalent to `nd300 clear-dns`. |
+| `--uninstall` | Remove nd300 from the system. Equivalent to `nd300 uninstall`. |
+| `--update` | Check for updates and install the latest version. Equivalent to `nd300 update`. |
+| `-y, --yes` | Auto-confirm Medium-cost prompts when running the fix flow. Does **not** bypass High-risk Y/N. |
 | `-h, --help` | Print help |
 | `-v, --version` | Print version |
+
+### Subcommands
+
+| Subcommand | Equivalent flag | Description |
+|------------|-----------------|-------------|
+| `nd300 fix [-y]` | `nd300 -f` / `nd300 --fix` | Diagnostic-driven triage and recovery loop |
+| `nd300 update` | `nd300 --update` | Self-update to the latest release |
+| `nd300 clear-dns` | `nd300 -c` / `nd300 --clear-dns` | Flush the DNS cache and exit |
+| `nd300 uninstall` | `nd300 --uninstall` | Uninstall nd300 from this system |
 
 ## SpeedQX Options
 
@@ -202,35 +235,94 @@ speedqx --duration 10 --latency-probes 5
 24. Reverse DNS
 25. TLS Inspection
 
-## Fix Flow (`--fix`)
+## Fix Flow (`nd300 fix` / `nd300 -f`)
 
-The fix flow (`nd300 -f`) runs a multi-stage network recovery process. Requires elevated privileges (`sudo` on macOS/Linux, Administrator on Windows).
+The fix flow runs a **diagnostic-driven triage loop**: it tests the network, looks at what actually failed, applies only the recovery actions that target those specific failures, re-tests, and repeats. Requires elevated privileges (`sudo` on macOS/Linux, Administrator on Windows).
 
-| Stage | Action | Behavior |
-|-------|--------|----------|
-| **1** | Service Restart | Reset DNS to automatic (DHCP), DNS flush, ARP flush, service restart, DHCP renew. Automatic — no prompts. |
-| **2** | Interface Reset | Disable/re-enable network interface, targeted DHCP renew. Prompted before starting. |
-| **3** | Stack Reset | Full network service recreation (macOS), Winsock/TCP reset (Windows), profile reset (Linux). Strong warning before starting. |
+A clean network completes `nd300 fix` in under 8 seconds and applies zero actions. A real failure usually clears in 1–2 iterations.
 
-Each stage verifies both HTTP connectivity and DNS resolution before declaring success. If DNS fails, the tool offers a choice of DNS servers:
+### How it works
 
-- **Cloudflare** (recommended) — 1.1.1.1, 1.0.0.1 (privacy-focused)
-- **Google** — 8.8.8.8, 8.8.4.4 (reliability)
-- **Automatic** — DHCP-provided servers
-- **Hybrid** (not recommended) — Cloudflare primary + Google secondary (mixed providers cause sticky failover)
+```text
+1. Run baseline diagnostics
+2. If everything passes → done.
+3. Look at which specific diagnostics failed.
+4. Group them by root cause (e.g. interface-down ⇒ skip DNS/gateway/IP — they cascade).
+5. Pick the cheapest action that targets a remaining failure and apply it.
+6. Wait for the system to stabilize.
+7. Re-run the diagnostics.
+8. Repeat until everything passes, or no further actions are available.
+```
 
-The tool tests DNS server reachability before applying changes, automatically falling back if a server is blocked by corporate firewalls or ISP restrictions.
+The loop is bounded by **three independent caps** so it always terminates:
+
+- ≤ 6 iterations
+- ≤ 4 minutes wall clock
+- Per-action attempt cap (typically 1 — failed actions are not retried)
+
+### Action ladder
+
+Actions are tried in cost order: cheap first, expensive last. Each action declares which failure categories it can address; only relevant actions run for any given failure set.
+
+| Cost / risk | Action | Targets |
+|---|---|---|
+| Cheap / Low | Flush DNS cache | DNS |
+| Cheap / Low | Switch DNS to Cloudflare 1.1.1.1 | DNS |
+| Cheap / Low | Reset DNS to router defaults | DNS |
+| Cheap / Low | Flush ARP cache | Gateway, latency |
+| Medium / Low | Restart networking services | DNS, gateway, public IP |
+| Medium / Low | Renew DHCP lease | Gateway, public IP, adapters, interfaces |
+| Medium / Medium | Temporarily disable consumer VPNs | Public IP, latency, DNS |
+| Expensive / Medium | Restart the network adapter | Adapters, interfaces, gateway, DNS, public IP, latency |
+| Expensive / **High** | Deep stack reset (Winsock / TCP-IP / IPv6 on Windows; recreate network service on macOS; recreate NetworkManager profile on Linux) | Last-resort recovery |
+
+Enterprise VPNs (Cisco AnyConnect, Zscaler, Palo Alto / GlobalProtect, F5, Check Point, Juniper) are **never** auto-disabled.
+
+### High-risk action prompts
+
+The deep stack reset is gated behind a structured plain-language prompt:
+
+```text
+┌─ Escalating: Reset Windows networking stack ──────────────────────────────
+Why I want to do this:
+  Gateway and DNS are still failing after DHCP renew and ARP flush.
+  Resetting the networking stack rebuilds Windows' TCP/IP, Winsock,
+  and IPv6 catalogs from scratch — the standard fix when simpler
+  steps haven't recovered the connection.
+
+What will happen:
+  • You will lose internet for ~10–15 seconds.
+  • Open VPN sessions and SSH connections will drop.
+  • A reboot is recommended afterward; nd300 will remind you at the end.
+
+Reversible: requires reboot to fully revert
+Typical duration: 10–15 seconds
+
+Continue? Type 'y' to proceed, anything else to skip:
+```
+
+`--yes` does **not** bypass these prompts — they always require an explicit `y`. Anything else (including a blank Enter) is treated as N. In `--json` / non-interactive contexts, high-risk actions are skipped, not auto-applied, with a clear marker in the report.
+
+### Hard-block detection
+
+Some failure shapes can't be auto-fixed. The loop short-circuits cleanly with guidance instead of thrashing:
+
+- **No physical link** — no cable / Wi-Fi.
+- **ISP outage shape** — local network healthy, public internet failing.
+- **Enterprise VPN active** — diagnostics shaped by a managed VPN we won't disable.
 
 ### Fix Report
 
-After the fix flow completes, a detailed Markdown report is automatically saved to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`. The report includes:
+Every run produces a Markdown report at `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`:
 
-- **Summary** — resolved or not, at which stage, and the likely root cause
-- **Per-stage step tables** — every action taken with OK/FAIL status and details
-- **VPN activity** — any VPNs that were disabled during the fix
-- **Recommendations** — context-aware next steps based on what was fixed
+- **Verdict** — Fixed, Partially fixed, Couldn't fix, Cannot fix from here, Timed out, or Stopped at your request.
+- **Baseline diagnostics** — full table snapshot before any action ran.
+- **Iteration timeline** — for each loop pass: which actions ran, captured stdout/stderr/exit/duration, and the diagnostic delta after.
+- **Final diagnostics** — same table as baseline so you can see what changed.
+- **Environment** — OS, version, elevation status, VPNs detected.
+- **What to try next** — concrete suggestions when the fix didn't fully succeed (restart router, contact ISP, check for driver updates, etc.).
 
-A concise terminal summary is also printed showing the result, likely cause, and report file path. In JSON mode (`--fix --json`), the `report_path` field points to the saved file.
+In JSON mode (`nd300 fix --json`), the schema reports the same data as `outcome`, `iterations`, `applied_actions[]`, `remaining_failures[]`, `hard_block`, and `report_path`.
 
 ## DNS Configuration (`--dns`)
 

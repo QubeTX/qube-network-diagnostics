@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH speedqx 1  "speedqx 2.9.0" 
+.TH speedqx 1  "speedqx 3.0.0" 
 .SH NAME
 speedqx \- SpeedQX Internet Speed Test \- QubeTX Developer Tools
 .SH SYNOPSIS
-\fBspeedqx\fR [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-duration\fR] [\fB\-\-fastcom\-duration\fR] [\fB\-\-latency\-probes\fR] [\fB\-\-update\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBspeedqx\fR [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-duration\fR] [\fB\-\-fastcom\-duration\fR] [\fB\-\-latency\-probes\fR] [\fB\-\-update\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 SpeedQX Internet Speed Test \- QubeTX Developer Tools
 .PP
@@ -40,16 +40,25 @@ Number of latency probes
 .SH ACTIONS
 .TP
 \fB\-\-update\fR
-Check for updates and install the latest version
+Check for updates and install the latest version (legacy flag form of `speedqx update`)
+.SH SUBCOMMANDS
+.TP
+speedqx\-update(1)
+Check for updates and install the latest release
+.TP
+speedqx\-help(1)
+Print this message or the help of the given subcommand(s)
 .SH EXTRA
 EXAMPLES:
   speedqx                     Run full speed test (all 4 providers)
   speedqx \-\-duration 60       60s per direction for CF/NDT7/LS
   speedqx \-\-fastcom\-duration 30  Override fast.com to 30s/dir
+  speedqx update              Check for updates and install
+  speedqx \-\-update            Same as \*(Aqspeedqx update\*(Aq (legacy flag form)
   speedqx \-\-json              Output results as JSON
 
 Run \*(Aqspeedqx \-\-help\*(Aq for full details, or \*(Aqspeedqx \-h\*(Aq for a summary.
 .SH VERSION
-v2.9.0
+v3.0.0
 .SH AUTHORS
 Emmett S <hey@emmetts.dev>

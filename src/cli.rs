@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 
 use crate::speedtest::TestDuration;
 
@@ -17,34 +17,38 @@ use crate::speedtest::TestDuration;
         \x20 nd300              Run standard diagnostics\n\
         \x20 nd300 -t           Technician mode (deep diagnostics)\n\
         \x20 nd300 -d           Change DNS configuration\n\
-        \x20 nd300 -f           Multi-stage network fix\n\
+        \x20 nd300 fix          Diagnostic-driven triage and recovery loop\n\
+        \x20 nd300 -f           Same as 'nd300 fix' (legacy flag form)\n\
+        \x20 nd300 update       Check for updates and install\n\
+        \x20 nd300 clear-dns    Reset DNS cache\n\
+        \x20 nd300 uninstall    Remove nd300 from this system\n\
         \x20 nd300 --fast       Skip speed test for faster execution\n\
         \x20 nd300 --json       Output results as JSON\n\n\
         Run 'nd300 --help' for full details, or 'nd300 -h' for a summary."
 )]
 pub struct Nd300Cli {
     /// Technician mode - full technical report with deep diagnostics
-    #[arg(short = 't', long = "tech", alias = "technician", help_heading = "Modes")]
+    #[arg(short = 't', long = "tech", alias = "technician", help_heading = "Modes", global = true)]
     pub tech: bool,
 
     /// Custom title for the report header
-    #[arg(short = 'T', long, help_heading = "Modes")]
+    #[arg(short = 'T', long, help_heading = "Modes", global = true)]
     pub title: Option<String>,
 
     /// Output results as JSON
-    #[arg(long, help_heading = "Output")]
+    #[arg(long, help_heading = "Output", global = true)]
     pub json: bool,
 
     /// Use ASCII characters instead of Unicode box-drawing
-    #[arg(long, help_heading = "Output")]
+    #[arg(long, help_heading = "Output", global = true)]
     pub ascii: bool,
 
     /// Disable colored output
-    #[arg(long, help_heading = "Output")]
+    #[arg(long, help_heading = "Output", global = true)]
     pub no_color: bool,
 
     /// Show additional debug/trace information
-    #[arg(long, help_heading = "Output")]
+    #[arg(long, help_heading = "Output", global = true)]
     pub verbose: bool,
 
     /// Skip the speed test (faster execution)
@@ -59,26 +63,66 @@ pub struct Nd300Cli {
     #[arg(short = 'd', long = "dns", help_heading = "Actions")]
     pub dns: bool,
 
-    /// Multi-stage network fix: graduated recovery from service restart to stack reset
+    /// Diagnostic-driven triage and recovery loop (legacy flag form of `nd300 fix`)
     #[arg(short = 'f', long = "fix", help_heading = "Actions")]
     pub fix: bool,
 
-    /// Clear DNS cache and exit
+    /// Clear DNS cache and exit (legacy flag form of `nd300 clear-dns`)
     #[arg(short = 'c', long = "clear-dns", help_heading = "Actions")]
     pub clear_dns: bool,
 
-    /// Uninstall nd300 from this system
+    /// Uninstall nd300 from this system (legacy flag form of `nd300 uninstall`)
     #[arg(long = "uninstall", help_heading = "Actions")]
     pub uninstall: bool,
 
-    /// Check for updates and install the latest version
+    /// Check for updates and install the latest version (legacy flag form of `nd300 update`)
     #[arg(long = "update", help_heading = "Actions")]
     pub update: bool,
+
+    /// Auto-confirm Medium-cost prompts when running the fix flow. Does NOT
+    /// bypass High-risk action prompts (Y/N is always required for those).
+    #[arg(short = 'y', long = "yes", alias = "non-interactive", help_heading = "Actions", global = true)]
+    pub yes: bool,
 
     /// Print version
     #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
     pub version: (),
+
+    /// Action subcommand. If present, takes precedence over the legacy action flags.
+    #[command(subcommand)]
+    pub command: Option<Nd300Command>,
 }
+
+/// Action subcommands. These are equivalent to the long-running action flags
+/// (`-f`, `--update`, `--clear-dns`, `--uninstall`) — both forms are supported and
+/// mean the same thing. The subcommand form is the preferred way going forward;
+/// the flag form is kept so existing scripts continue to work.
+#[derive(Subcommand, Debug, Clone)]
+pub enum Nd300Command {
+    /// Diagnostic-driven triage loop: tests → identifies failures → applies
+    /// targeted fixes → re-tests → repeats. Bounded by iteration count, wall
+    /// clock, and per-action attempt caps. Works for technical and non-technical
+    /// users; high-risk actions always require Y/N confirmation.
+    Fix(FixArgs),
+
+    /// Check for updates and install the latest release.
+    Update,
+
+    /// Clear the DNS cache and exit.
+    #[command(name = "clear-dns")]
+    ClearDns,
+
+    /// Uninstall nd300 from this system.
+    Uninstall,
+}
+
+/// Per-subcommand arguments for `fix`. Currently a placeholder — the `--yes`
+/// flag lives at the top level (global), so `nd300 fix --yes`,
+/// `nd300 --yes fix`, `nd300 -f -y`, and `nd300 -y -f` all work and share the
+/// same field on `Nd300Cli`. New fix-specific options can be added here later
+/// without affecting the legacy `-f` flag form.
+#[derive(Args, Debug, Clone, Default)]
+pub struct FixArgs {}
 
 /// SpeedQX Internet Speed Test - QubeTX Developer Tools
 ///
@@ -97,20 +141,22 @@ pub struct Nd300Cli {
         \x20 speedqx                     Run full speed test (all 4 providers)\n\
         \x20 speedqx --duration 60       60s per direction for CF/NDT7/LS\n\
         \x20 speedqx --fastcom-duration 30  Override fast.com to 30s/dir\n\
+        \x20 speedqx update              Check for updates and install\n\
+        \x20 speedqx --update            Same as 'speedqx update' (legacy flag form)\n\
         \x20 speedqx --json              Output results as JSON\n\n\
         Run 'speedqx --help' for full details, or 'speedqx -h' for a summary."
 )]
 pub struct SpeedQXCli {
     /// Output results as JSON
-    #[arg(long, help_heading = "Output")]
+    #[arg(long, help_heading = "Output", global = true)]
     pub json: bool,
 
     /// Use ASCII characters instead of Unicode box-drawing
-    #[arg(long, help_heading = "Output")]
+    #[arg(long, help_heading = "Output", global = true)]
     pub ascii: bool,
 
     /// Disable colored output
-    #[arg(long, help_heading = "Output")]
+    #[arg(long, help_heading = "Output", global = true)]
     pub no_color: bool,
 
     /// Test duration per direction for CF/NDT7/LibreSpeed: seconds or "auto"
@@ -135,13 +181,25 @@ pub struct SpeedQXCli {
     #[arg(long, default_value = "20", help_heading = "Speed Test")]
     pub latency_probes: u32,
 
-    /// Check for updates and install the latest version
+    /// Check for updates and install the latest version (legacy flag form of `speedqx update`)
     #[arg(long = "update", help_heading = "Actions")]
     pub update: bool,
 
     /// Print version
     #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
     pub version: (),
+
+    /// Action subcommand. If present, takes precedence over the legacy `--update` flag.
+    #[command(subcommand)]
+    pub command: Option<SpeedQXCommand>,
+}
+
+/// Action subcommands for `speedqx`. Mirrors the `nd300` pattern: subcommand
+/// form is preferred, legacy `--update` flag is kept so existing scripts work.
+#[derive(Subcommand, Debug, Clone)]
+pub enum SpeedQXCommand {
+    /// Check for updates and install the latest release.
+    Update,
 }
 
 fn parse_duration(s: &str) -> Result<TestDuration, String> {

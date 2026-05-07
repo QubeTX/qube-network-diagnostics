@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-05-07
+
+### Added
+- **Subcommand syntax for action commands** — `nd300 fix`, `nd300 update`, `nd300 clear-dns`, `nd300 uninstall` now work in addition to the legacy flag forms (`nd300 -f`, `nd300 --update`, `nd300 --clear-dns`, `nd300 --uninstall`). The legacy flags continue to work — both forms produce identical behavior. `speedqx update` mirrors the same pattern alongside `speedqx --update`.
+- **Diagnostic-driven triage loop in `nd300 fix`** (replaces the fixed three-stage script): tests the network, identifies which specific diagnostics failed, applies only the fix actions that target those failures, re-tests, and repeats until everything passes or no further actions are available. Bounded by three independent caps (≤6 iterations, ≤4 minute wall clock, per-action `max_attempts`) — the loop always terminates.
+- **Causal grouping in triage** — when a failure cluster (e.g. interface down → adapters/gateway/DNS/public-IP all fail) traces back to a common ancestor in the dependency DAG, the loop fixes the ancestor first instead of wasting steps on cascading symptoms.
+- **High-risk action prompts** — destructive actions (Winsock reset, recreate macOS network service, delete NetworkManager profile) now render a structured plain-language explanation block before running: what the action does, why it's being attempted right now, what the user will experience, reversibility, typical duration. **An explicit `y` is required** to proceed — Enter alone, blank input, or anything else is treated as No. **`--yes` does not bypass these prompts** — they always require interactive confirmation, by design. Written for both technical and non-technical users.
+- **Hard-block detection** — the loop short-circuits cleanly with guidance (instead of thrashing) for failure shapes that can't be auto-fixed: no physical link, ISP-side outage, active enterprise VPN.
+- **Effectiveness scoring within a session** — when two candidate actions both target the same failure, the one that has already shown improvement is preferred.
+- **Comprehensive Markdown reports** at `~/Downloads/nd300-fix-report-<timestamp>.md` containing: plain-summary verdict, baseline diagnostics snapshot, per-iteration timeline (action + captured stdout/stderr/exit/duration + diagnostic delta), final snapshot, environment block, and a "what to try next" section keyed off the remaining failure set.
+- **`-y` / `--yes` global flag** — auto-confirms Medium-cost prompts in CI / scripted use. Reserved for future Medium-risk confirmations; explicitly does **not** auto-accept High-risk prompts.
+- New module layout under `src/actions/fix/`: `action.rs` (Action types + registry), `triage.rs` (pure planning logic, fully unit-tested), `session.rs` (state + plain-language Reporter), `loop_runner.rs` (loop driver). `report.rs` rewritten for the new iteration-oriented timeline.
+- New `CmdOutcome` capturing struct in `cmd.rs` with `run_cmd_capture()` for richer subprocess forensics in reports.
+
+### Changed
+- **`nd300 -f` / `nd300 fix` no longer follow a fixed Stage 1 → Stage 2 → Stage 3 sequence.** It now runs diagnostics first and applies only the actions that target the actual failures.
+- A clean network completes `nd300 fix` in under 8 seconds and applies zero actions (was previously a full Stage 1 sequence regardless).
+- `--json` output schema for the fix action is restructured around the new triage loop (outcome, iterations, applied_actions, remaining_failures, hard_block, etc.). Existing scripts that read `stages[]` and `resolved_at_stage` will need updating.
+- Output flags (`--json`, `--ascii`, `--no-color`, `--verbose`) marked global so they work both before and after a subcommand: `nd300 fix --json` and `nd300 --json fix` both work.
+
+### Backwards compatibility
+- Every existing flag still works exactly as before: `-f`, `--fix`, `--update`, `--clear-dns`, `--uninstall`, `-t`, `-T`, `--fast`, `--json`, `--ascii`, `--no-color`, `--verbose`, `--speed-duration`, `-d`, `--dns`. The subcommand form is purely additive.
+
+### Migration notes
+- If you parsed the old fix `--json` output's `stages[]` array, switch to `applied_actions[]` (one entry per action attempted, with `iteration`, `action`, `label`, `ok`, `message`, `duration_ms`).
+- If you depended on the fixed Stage 1 / Stage 2 / Stage 3 boundaries for telemetry, the new schema reports per-iteration boundaries instead — `iterations` is the number of triage cycles run.
+
 ## [2.9.0] - 2026-04-12
 
 ### Added

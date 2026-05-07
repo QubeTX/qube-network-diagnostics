@@ -1,5 +1,5 @@
 use clap::Parser;
-use nd_300::cli::Nd300Cli;
+use nd_300::cli::{FixArgs, Nd300Cli, Nd300Command};
 use nd_300::config::{Config, OutputFormat};
 use nd_300::diagnostics::{self, DiagnosticResults, DiagnosticStatus};
 use nd_300::render;
@@ -28,12 +28,27 @@ async fn main() {
     if cli.verbose {
         config = config.with_verbose();
     }
-    if let Some(title) = cli.title {
+    if let Some(title) = cli.title.clone() {
         config = config.with_title(title);
     }
     config = config.with_speed_duration(cli.speed_duration);
 
-    // Action flags: exit early without running diagnostics
+    // Subcommand form takes precedence over the legacy action flags.
+    // Both forms produce identical behavior — the subcommand is the preferred
+    // surface going forward; flags remain so older scripts keep working.
+    if let Some(cmd) = cli.command.clone() {
+        let exit_code = match cmd {
+            Nd300Command::Fix(args) => {
+                nd_300::actions::fix::run(&config, args).await
+            }
+            Nd300Command::Update => nd_300::actions::update::run(&config).await,
+            Nd300Command::ClearDns => nd_300::actions::clear_dns::run(&config).await,
+            Nd300Command::Uninstall => nd_300::actions::uninstall::run(&config).await,
+        };
+        std::process::exit(exit_code);
+    }
+
+    // Legacy flag form: `nd300 -f`, `nd300 --update`, etc. Identical effects.
     if cli.update {
         let exit_code = nd_300::actions::update::run(&config).await;
         std::process::exit(exit_code);
@@ -43,7 +58,7 @@ async fn main() {
         std::process::exit(exit_code);
     }
     if cli.fix {
-        let exit_code = nd_300::actions::fix::run(&config).await;
+        let exit_code = nd_300::actions::fix::run(&config, FixArgs::default()).await;
         std::process::exit(exit_code);
     }
     if cli.clear_dns {
