@@ -103,13 +103,12 @@ Triggers in user prompts: "release", "ship it", "tag the release", "push it out"
     ```bash
     prev=""
     while true; do
-      state=$(gh run view RUN_ID --json status,conclusion,jobs 2>/dev/null || echo '{}')
-      cur=$(echo "$state" | jq -r '.jobs[]? | select(.status=="completed") | "\(.name): \(.conclusion)"' | sort)
+      cur=$(gh run view RUN_ID --json jobs --jq '.jobs[]? | select(.status=="completed") | "\(.name): \(.conclusion)"' 2>/dev/null | sort)
       comm -13 <(echo "$prev") <(echo "$cur")
       prev=$cur
-      status=$(echo "$state" | jq -r '.status // "unknown"')
-      conclusion=$(echo "$state" | jq -r '.conclusion // ""')
+      status=$(gh run view RUN_ID --json status --jq '.status' 2>/dev/null)
       if [ "$status" = "completed" ]; then
+        conclusion=$(gh run view RUN_ID --json conclusion --jq '.conclusion' 2>/dev/null)
         echo "RUN_DONE: $conclusion"
         break
       fi
@@ -117,11 +116,15 @@ Triggers in user prompts: "release", "ship it", "tag the release", "push it out"
     done
     ```
 
+    **Critical: use `gh --jq`, never pipe to `jq`.** `jq` is not on PATH in the Bash tool's shell on this Windows machine — piping through `jq` makes the script silently loop forever (errors go to stderr → output file, not stdout → events; status never parses, terminal check never fires). `gh` ships its own jq filter via the `--jq` flag, which works everywhere `gh` does.
+
+    **After arming, verify liveness within 60s.** Read the Monitor's `.output` file once (path is in the start-monitor result). If it's empty or stderr-only, the script is broken — stop and re-arm. Don't trust silence: a broken Monitor and a working-but-quiet one look identical from the outside.
+
     Why this shape:
     - `comm -13 <(prev) <(cur)` against sorted lists emits only *new* completions per poll, so each finished job arrives as exactly one notification (not the cumulative list every 30s).
-    - Polling `gh run view --json` (not `gh pr checks`) works for tag-triggered runs that have no associated PR.
-    - Selecting `status=="completed"` covers every terminal state (`success`, `failure`, `cancelled`, `skipped`, `timed_out`) — silence ≠ progress, so don't filter to `success` only.
-    - 30s poll matches GitHub Actions API rate limits comfortably; total run is 5–7 minutes across all 6 targets.
+    - `gh run view --json` (not `gh pr checks`) works for tag-triggered runs that have no associated PR.
+    - `status=="completed"` covers every terminal state (`success`, `failure`, `cancelled`, `skipped`, `timed_out`) — silence ≠ progress, so don't filter to `success` only.
+    - 30s poll matches GitHub Actions API rate limits comfortably; total run is 5–7 minutes across all 6 targets, ~12 polls × 3 `gh` calls = under 40 API calls per release.
     - `RUN_DONE: <conclusion>` is your verdict marker — surface it to the user. If `conclusion` is `failure`, dive straight into `gh run view RUN_ID --log-failed` and start the patch-bump loop.
 
 ### Patch-bump loop (when CI fails)

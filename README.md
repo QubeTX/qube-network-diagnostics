@@ -12,7 +12,7 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **17 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Re-tests after each step and repeats until everything passes or no further actions remain. Works for technical and non-technical users; high-risk recovery steps always require Y/N confirmation with a plain-language explanation.
 - **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) with inverse-variance weighted aggregation, modified trimean (Ookla-style), and RFC 3550 jitter for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
-- **Self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and reinstalls automatically
+- **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and runs a probe-and-retry chain: cargo first when available, cargo-dist installer as universal fallback (curl → wget on macOS/Linux, PowerShell → pwsh on Windows). When one strategy can't run, the next is tried automatically; failures from every strategy are surfaced together with specific reasons.
 - **SpeedQX** standalone speed test binary — all 4 providers with per-provider breakdown and real-time progress
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
@@ -366,17 +366,24 @@ Binaries will be at `target/release/nd300` and `target/release/speedqx` (or `.ex
 
 ## Self-Update
 
-Both binaries support self-updating to the latest release:
+Both binaries support self-updating to the latest release. Either form works:
 
 ```sh
-nd300 --update
+nd300 update          # subcommand form (recommended)
+nd300 --update        # legacy flag form (still supported)
+speedqx update
 speedqx --update
 ```
 
-The update command:
-1. Checks the latest release on GitHub
-2. Compares against the current version
-3. Downloads and runs the appropriate installer for your platform (shell script on macOS/Linux, PowerShell on Windows, or `cargo install` if installed via Cargo)
+The updater runs a **probe-and-retry chain** so missing tools don't block the update:
+
+1. Checks the latest release on GitHub. If you're already on it, exits 0 with no action.
+2. Tries `cargo install nd-300 --force` first when `cargo --version` succeeds on your system.
+3. If cargo isn't available (or fails), falls through to the cargo-dist installer for your platform — `curl | sh` then `wget | sh` on macOS/Linux, `powershell.exe` then `pwsh.exe` on Windows. The installer URL uses GitHub's `releases/latest` redirect, so it always resolves to the newest release.
+4. Whichever strategy succeeds first wins; the chain stops there.
+5. If every strategy fails, both pretty and `--json` output show a per-attempt diagnostic block listing what was tried and why each failed, so you can fix the environment manually.
+
+In `--json` mode, the response includes `"strategy"` (the precise variant that ran or was attempted) and, on failure, an `"attempts"` array. The legacy `"method"` field still maps to `"cargo"` or `"installer"` for backward compatibility.
 
 ## Speed Test Methodology
 
