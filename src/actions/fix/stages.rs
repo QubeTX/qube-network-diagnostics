@@ -805,7 +805,7 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
 }
 
 #[cfg(target_os = "macos")]
-async fn detect_macos_service(iface: &str) -> Option<String> {
+pub async fn detect_macos_service(iface: &str) -> Option<String> {
     let mut cmd = tokio::process::Command::new("networksetup");
     cmd.args(["-listallhardwareports"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
