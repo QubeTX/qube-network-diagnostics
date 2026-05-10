@@ -102,7 +102,11 @@ pub fn filter_outliers_iqr(values: &[f64], k: f64) -> Vec<f64> {
     let iqr = q3 - q1;
     let lo = q1 - k * iqr;
     let hi = q3 + k * iqr;
-    values.iter().copied().filter(|v| *v >= lo && *v <= hi).collect()
+    values
+        .iter()
+        .copied()
+        .filter(|v| *v >= lo && *v <= hi)
+        .collect()
 }
 
 // ── Slow-start discard ──────────────────────────────────────────────────
@@ -238,10 +242,7 @@ pub fn jitter_mad(samples: &[f64]) -> f64 {
     if samples.len() < 2 {
         return 0.0;
     }
-    let sum: f64 = samples
-        .windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .sum();
+    let sum: f64 = samples.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
     sum / (samples.len() - 1) as f64
 }
 
@@ -284,29 +285,48 @@ pub struct InverseVarianceResult {
 /// Inverse-variance weighted merge of two estimates.
 /// Minimum-variance unbiased estimator for combining independent measurements.
 /// Weights clamped to [0.3, 0.7] to prevent one source from dominating.
-pub fn inverse_variance_merge(
-    a: f64,
-    var_a: f64,
-    b: f64,
-    var_b: f64,
-) -> InverseVarianceResult {
+pub fn inverse_variance_merge(a: f64, var_a: f64, b: f64, var_b: f64) -> InverseVarianceResult {
     if a <= 0.0 && b <= 0.0 {
-        return InverseVarianceResult { value: 0.0, weight_a: 0.5, weight_b: 0.5 };
+        return InverseVarianceResult {
+            value: 0.0,
+            weight_a: 0.5,
+            weight_b: 0.5,
+        };
     }
     if a <= 0.0 {
-        return InverseVarianceResult { value: b, weight_a: 0.0, weight_b: 1.0 };
+        return InverseVarianceResult {
+            value: b,
+            weight_a: 0.0,
+            weight_b: 1.0,
+        };
     }
     if b <= 0.0 {
-        return InverseVarianceResult { value: a, weight_a: 1.0, weight_b: 0.0 };
+        return InverseVarianceResult {
+            value: a,
+            weight_a: 1.0,
+            weight_b: 0.0,
+        };
     }
     if var_a <= 0.0 && var_b <= 0.0 {
-        return InverseVarianceResult { value: (a + b) / 2.0, weight_a: 0.5, weight_b: 0.5 };
+        return InverseVarianceResult {
+            value: (a + b) / 2.0,
+            weight_a: 0.5,
+            weight_b: 0.5,
+        };
     }
     if var_a <= 0.0 {
-        return InverseVarianceResult { value: a, weight_a: 1.0, weight_b: 0.0 };
+        return InverseVarianceResult {
+            value: a,
+            weight_a: 1.0,
+            weight_b: 0.0,
+        };
     }
     if var_b <= 0.0 {
-        return InverseVarianceResult { value: b, weight_a: 0.0, weight_b: 1.0 };
+        return InverseVarianceResult {
+            value: b,
+            weight_a: 0.0,
+            weight_b: 1.0,
+        };
     }
 
     let w_a = 1.0 / var_a;
@@ -375,14 +395,20 @@ pub fn bootstrap_ci(
 ) -> BootstrapCI {
     if samples.len() < 4 {
         let est = stat_fn(samples);
-        return BootstrapCI { estimate: est, lower: est, upper: est, margin: 0.0 };
+        return BootstrapCI {
+            estimate: est,
+            lower: est,
+            upper: est,
+            margin: 0.0,
+        };
     }
 
     let estimate = stat_fn(samples);
 
     // Seed from sample data for deterministic results
     let seed = samples.iter().fold(0u64, |acc, v| {
-        acc.wrapping_add(v.to_bits()).wrapping_mul(6364136223846793005)
+        acc.wrapping_add(v.to_bits())
+            .wrapping_mul(6364136223846793005)
     });
     let mut rng = Xorshift64::new(seed);
 

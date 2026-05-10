@@ -105,13 +105,21 @@ fn parse_vpn_from_ipconfig(text: &str, vpns: &mut Vec<VpnAdapter>) {
         if !line.starts_with(' ') && !line.starts_with('\t') && line.contains("adapter") {
             let name = line.trim().trim_end_matches(':');
             let lower = name.to_lowercase();
-            if lower.contains("vpn") || lower.contains("tap") || lower.contains("tun")
-                || lower.contains("wireguard") || lower.contains("wintun")
-                || lower.contains("fortinet") || lower.contains("cisco")
-                || lower.contains("palo alto") || lower.contains("global protect")
-                || lower.contains("nordlynx") || lower.contains("expressvpn")
-                || lower.contains("mullvad") || lower.contains("tailscale")
-                || lower.contains("zscaler") || lower.contains("pulse")
+            if lower.contains("vpn")
+                || lower.contains("tap")
+                || lower.contains("tun")
+                || lower.contains("wireguard")
+                || lower.contains("wintun")
+                || lower.contains("fortinet")
+                || lower.contains("cisco")
+                || lower.contains("palo alto")
+                || lower.contains("global protect")
+                || lower.contains("nordlynx")
+                || lower.contains("expressvpn")
+                || lower.contains("mullvad")
+                || lower.contains("tailscale")
+                || lower.contains("zscaler")
+                || lower.contains("pulse")
             {
                 if !current_name.is_empty() {
                     let vendor = detect_vendor(&current_name);
@@ -119,7 +127,12 @@ fn parse_vpn_from_ipconfig(text: &str, vpns: &mut Vec<VpnAdapter>) {
                     vpns.push(VpnAdapter {
                         name: current_name.clone(),
                         adapter_type: detect_vpn_type(&current_name),
-                        status: if current_ip.is_some() { "Connected" } else { "Disconnected" }.to_string(),
+                        status: if current_ip.is_some() {
+                            "Connected"
+                        } else {
+                            "Disconnected"
+                        }
+                        .to_string(),
                         ip_address: current_ip.take(),
                         vendor,
                         is_enterprise,
@@ -133,10 +146,13 @@ fn parse_vpn_from_ipconfig(text: &str, vpns: &mut Vec<VpnAdapter>) {
             }
         } else if !current_name.is_empty() {
             let trimmed = line.trim();
-            if trimmed.contains("IPv4 Address") || (trimmed.contains("IP Address") && !trimmed.contains("Autoconfiguration")) {
-                current_ip = trimmed.split(':').nth(1).map(|s| {
-                    s.trim().trim_end_matches("(Preferred)").trim().to_string()
-                });
+            if trimmed.contains("IPv4 Address")
+                || (trimmed.contains("IP Address") && !trimmed.contains("Autoconfiguration"))
+            {
+                current_ip = trimmed
+                    .split(':')
+                    .nth(1)
+                    .map(|s| s.trim().trim_end_matches("(Preferred)").trim().to_string());
             }
         }
     }
@@ -147,7 +163,12 @@ fn parse_vpn_from_ipconfig(text: &str, vpns: &mut Vec<VpnAdapter>) {
         vpns.push(VpnAdapter {
             name: current_name.clone(),
             adapter_type: detect_vpn_type(&current_name),
-            status: if current_ip.is_some() { "Connected" } else { "Disconnected" }.to_string(),
+            status: if current_ip.is_some() {
+                "Connected"
+            } else {
+                "Disconnected"
+            }
+            .to_string(),
             ip_address: current_ip,
             vendor,
             is_enterprise,
@@ -210,7 +231,10 @@ async fn collect_windows_wmi(vpns: &mut Vec<VpnAdapter>) {
     for (description, net_id, status_val) in wmi_rows {
         // Skip if we already have this from ipconfig
         let name_for_check = net_id.clone().unwrap_or_else(|| description.clone());
-        if vpns.iter().any(|v| v.name == name_for_check || v.name == description) {
+        if vpns
+            .iter()
+            .any(|v| v.name == name_for_check || v.name == description)
+        {
             continue;
         }
 
@@ -220,7 +244,12 @@ async fn collect_windows_wmi(vpns: &mut Vec<VpnAdapter>) {
         vpns.push(VpnAdapter {
             name: name_for_check,
             adapter_type: detect_vpn_type(&description),
-            status: if status_val == 2 { "Connected" } else { "Disconnected" }.to_string(),
+            status: if status_val == 2 {
+                "Connected"
+            } else {
+                "Disconnected"
+            }
+            .to_string(),
             ip_address: None,
             vendor,
             is_enterprise,
@@ -233,10 +262,7 @@ async fn collect_windows_wmi(vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos_ifconfig(vpns: &mut Vec<VpnAdapter>) {
-    if let Ok(output) = tokio::process::Command::new("ifconfig")
-        .output()
-        .await
-    {
+    if let Ok(output) = tokio::process::Command::new("ifconfig").output().await {
         let text = String::from_utf8_lossy(&output.stdout);
         let mut current_iface = String::new();
         let mut current_ip = None;
@@ -249,7 +275,12 @@ async fn collect_macos_ifconfig(vpns: &mut Vec<VpnAdapter>) {
                     vpns.push(VpnAdapter {
                         name: current_iface.clone(),
                         adapter_type: detect_vpn_type(&current_iface),
-                        status: if current_ip.is_some() { "Connected" } else { "Disconnected" }.to_string(),
+                        status: if current_ip.is_some() {
+                            "Connected"
+                        } else {
+                            "Disconnected"
+                        }
+                        .to_string(),
                         ip_address: current_ip.take(),
                         vendor,
                         is_enterprise,
@@ -269,7 +300,12 @@ async fn collect_macos_ifconfig(vpns: &mut Vec<VpnAdapter>) {
             vpns.push(VpnAdapter {
                 name: current_iface.clone(),
                 adapter_type: detect_vpn_type(&current_iface),
-                status: if current_ip.is_some() { "Connected" } else { "Disconnected" }.to_string(),
+                status: if current_ip.is_some() {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                }
+                .to_string(),
                 ip_address: current_ip,
                 vendor,
                 is_enterprise,
@@ -374,7 +410,14 @@ async fn collect_linux_ip_link(vpns: &mut Vec<VpnAdapter>) {
 #[cfg(target_os = "linux")]
 async fn collect_linux_nmcli(vpns: &mut Vec<VpnAdapter>) {
     if let Ok(output) = tokio::process::Command::new("nmcli")
-        .args(["-t", "-f", "TYPE,NAME,DEVICE", "connection", "show", "--active"])
+        .args([
+            "-t",
+            "-f",
+            "TYPE,NAME,DEVICE",
+            "connection",
+            "show",
+            "--active",
+        ])
         .output()
         .await
     {
@@ -384,7 +427,11 @@ async fn collect_linux_nmcli(vpns: &mut Vec<VpnAdapter>) {
             if parts.len() >= 2 {
                 let conn_type = parts[0];
                 let conn_name = parts[1];
-                let device = if parts.len() >= 3 { Some(parts[2]) } else { None };
+                let device = if parts.len() >= 3 {
+                    Some(parts[2])
+                } else {
+                    None
+                };
 
                 // NM VPN connection types
                 if conn_type.contains("vpn") || conn_type.contains("wireguard") {
@@ -418,7 +465,10 @@ async fn collect_linux_wireguard(vpns: &mut Vec<VpnAdapter>) {
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
             for iface in text.split_whitespace() {
-                if vpns.iter().any(|v| v.interface_name.as_deref() == Some(iface)) {
+                if vpns
+                    .iter()
+                    .any(|v| v.interface_name.as_deref() == Some(iface))
+                {
                     continue;
                 }
                 vpns.push(VpnAdapter {
@@ -464,7 +514,10 @@ fn detect_vpn_type(name: &str) -> String {
         "Cisco AnyConnect".to_string()
     } else if lower.contains("fortinet") || lower.contains("forticlient") {
         "FortiClient".to_string()
-    } else if lower.contains("global protect") || lower.contains("globalprotect") || lower.contains("palo alto") {
+    } else if lower.contains("global protect")
+        || lower.contains("globalprotect")
+        || lower.contains("palo alto")
+    {
         "GlobalProtect".to_string()
     } else if lower.contains("zscaler") {
         "Zscaler".to_string()
@@ -477,17 +530,32 @@ fn detect_vpn_type(name: &str) -> String {
 
 fn detect_vendor(name: &str) -> Option<String> {
     let lower = name.to_lowercase();
-    if lower.contains("nord") || lower.contains("nordlynx") { Some("NordVPN".to_string()) }
-    else if lower.contains("expressvpn") { Some("ExpressVPN".to_string()) }
-    else if lower.contains("mullvad") { Some("Mullvad".to_string()) }
-    else if lower.contains("tailscale") { Some("Tailscale".to_string()) }
-    else if lower.contains("wireguard") || lower.starts_with("wg") { Some("WireGuard".to_string()) }
-    else if lower.contains("cisco") || lower.contains("anyconnect") { Some("Cisco".to_string()) }
-    else if lower.contains("globalprotect") || lower.contains("global protect") || lower.contains("palo alto") { Some("Palo Alto".to_string()) }
-    else if lower.contains("fortinet") || lower.contains("forticlient") { Some("Fortinet".to_string()) }
-    else if lower.contains("zscaler") { Some("Zscaler".to_string()) }
-    else if lower.contains("pulse") { Some("Pulse Secure".to_string()) }
-    else { None }
+    if lower.contains("nord") || lower.contains("nordlynx") {
+        Some("NordVPN".to_string())
+    } else if lower.contains("expressvpn") {
+        Some("ExpressVPN".to_string())
+    } else if lower.contains("mullvad") {
+        Some("Mullvad".to_string())
+    } else if lower.contains("tailscale") {
+        Some("Tailscale".to_string())
+    } else if lower.contains("wireguard") || lower.starts_with("wg") {
+        Some("WireGuard".to_string())
+    } else if lower.contains("cisco") || lower.contains("anyconnect") {
+        Some("Cisco".to_string())
+    } else if lower.contains("globalprotect")
+        || lower.contains("global protect")
+        || lower.contains("palo alto")
+    {
+        Some("Palo Alto".to_string())
+    } else if lower.contains("fortinet") || lower.contains("forticlient") {
+        Some("Fortinet".to_string())
+    } else if lower.contains("zscaler") {
+        Some("Zscaler".to_string())
+    } else if lower.contains("pulse") {
+        Some("Pulse Secure".to_string())
+    } else {
+        None
+    }
 }
 
 fn is_enterprise_vendor(name: &str, vendor: Option<&str>) -> bool {
@@ -495,10 +563,25 @@ fn is_enterprise_vendor(name: &str, vendor: Option<&str>) -> bool {
     let vendor_lower = vendor.unwrap_or("").to_lowercase();
 
     let enterprise_patterns = [
-        "cisco", "anyconnect", "globalprotect", "palo alto", "zscaler",
-        "forticlient", "fortinet", "pulse secure", "juniper", "f5 ",
-        "big-ip", "checkpoint", "corp", "enterprise", "mdm", "company",
+        "cisco",
+        "anyconnect",
+        "globalprotect",
+        "palo alto",
+        "zscaler",
+        "forticlient",
+        "fortinet",
+        "pulse secure",
+        "juniper",
+        "f5 ",
+        "big-ip",
+        "checkpoint",
+        "corp",
+        "enterprise",
+        "mdm",
+        "company",
     ];
 
-    enterprise_patterns.iter().any(|p| lower.contains(p) || vendor_lower.contains(p))
+    enterprise_patterns
+        .iter()
+        .any(|p| lower.contains(p) || vendor_lower.contains(p))
 }

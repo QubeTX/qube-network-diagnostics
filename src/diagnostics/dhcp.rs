@@ -82,9 +82,8 @@ fn parse_dhcp_from_ipconfig(text: &str) -> Option<Vec<DhcpLease>> {
             continue;
         }
 
-        let get_val = |l: &str| -> Option<String> {
-            l.split(':').nth(1).map(|s| s.trim().to_string())
-        };
+        let get_val =
+            |l: &str| -> Option<String> { l.split(':').nth(1).map(|s| s.trim().to_string()) };
 
         if line_trimmed.contains("DHCP Enabled") {
             current.dhcp_enabled = line_trimmed.contains("Yes");
@@ -95,7 +94,8 @@ fn parse_dhcp_from_ipconfig(text: &str) -> Option<Vec<DhcpLease>> {
         } else if line_trimmed.contains("Lease Expires") {
             current.lease_expires = get_val(line_trimmed);
         } else if line_trimmed.contains("IPv4 Address") || line_trimmed.contains("IP Address") {
-            current.ip_address = get_val(line_trimmed).map(|s| s.trim_end_matches("(Preferred)").trim().to_string());
+            current.ip_address =
+                get_val(line_trimmed).map(|s| s.trim_end_matches("(Preferred)").trim().to_string());
         } else if line_trimmed.contains("Subnet Mask") {
             current.subnet_mask = get_val(line_trimmed);
         } else if line_trimmed.contains("Default Gateway") {
@@ -163,9 +163,13 @@ async fn collect_macos() -> Option<Vec<DhcpLease>> {
                     } else if line.starts_with("subnet_mask") {
                         lease.subnet_mask = line.split(':').nth(1).map(|s| s.trim().to_string());
                     } else if line.starts_with("router") {
-                        lease.default_gateway = line.split(':').nth(1).map(|s| s.trim().to_string());
+                        lease.default_gateway =
+                            line.split(':').nth(1).map(|s| s.trim().to_string());
                     } else if line.starts_with("lease_time") {
-                        lease.lease_expires = line.split(':').nth(1).map(|s| format!("{}s from now", s.trim()));
+                        lease.lease_expires = line
+                            .split(':')
+                            .nth(1)
+                            .map(|s| format!("{}s from now", s.trim()));
                     }
                 }
 

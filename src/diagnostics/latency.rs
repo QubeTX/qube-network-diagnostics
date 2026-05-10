@@ -35,16 +35,19 @@ pub async fn check() -> (DiagnosticResult, Vec<LatencyResult>) {
         DiagnosticResult::fail("Latency", "All endpoints unreachable")
     } else {
         // Check average latencies
-        let avg_latency: f64 = results
-            .iter()
-            .filter_map(|r| r.avg_ms)
-            .sum::<f64>()
-            / reachable as f64;
+        let avg_latency: f64 =
+            results.iter().filter_map(|r| r.avg_ms).sum::<f64>() / reachable as f64;
 
         if avg_latency > 200.0 {
-            DiagnosticResult::warn("Latency", format!("High latency (~{:.0}ms avg)", avg_latency))
+            DiagnosticResult::warn(
+                "Latency",
+                format!("High latency (~{:.0}ms avg)", avg_latency),
+            )
         } else if avg_latency > 100.0 {
-            DiagnosticResult::warn("Latency", format!("Moderate latency (~{:.0}ms avg)", avg_latency))
+            DiagnosticResult::warn(
+                "Latency",
+                format!("Moderate latency (~{:.0}ms avg)", avg_latency),
+            )
         } else if reachable < total {
             DiagnosticResult::warn(
                 "Latency",
@@ -59,15 +62,8 @@ pub async fn check() -> (DiagnosticResult, Vec<LatencyResult>) {
 }
 
 async fn ping_multiple(host: &str, label: &str, count: u32) -> LatencyResult {
-    #[cfg(windows)]
     let output = tokio::process::Command::new("ping")
-        .args(["-n", &count.to_string(), "-w", "2000", host])
-        .output()
-        .await;
-
-    #[cfg(unix)]
-    let output = tokio::process::Command::new("ping")
-        .args(["-c", &count.to_string(), "-W", "2", host])
+        .args(ping_args(host, count))
         .output()
         .await;
 
@@ -86,6 +82,41 @@ async fn ping_multiple(host: &str, label: &str, count: u32) -> LatencyResult {
             jitter_ms: None,
             packet_loss: 100.0,
         },
+    }
+}
+
+fn ping_args(host: &str, count: u32) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec![
+            "-n".to_string(),
+            count.to_string(),
+            "-w".to_string(),
+            "2000".to_string(),
+            host.to_string(),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            "-c".to_string(),
+            count.to_string(),
+            "-W".to_string(),
+            "2000".to_string(),
+            host.to_string(),
+        ]
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        vec![
+            "-c".to_string(),
+            count.to_string(),
+            "-W".to_string(),
+            "2".to_string(),
+            host.to_string(),
+        ]
     }
 }
 
@@ -180,4 +211,36 @@ fn extract_loss_pct(line: &str) -> Option<f64> {
         return num_str.parse().ok();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_ping_timeout_uses_milliseconds() {
+        assert_eq!(
+            ping_args("1.1.1.1", 4),
+            vec!["-c", "4", "-W", "2000", "1.1.1.1"]
+        );
+    }
+
+    #[test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn linux_ping_timeout_uses_seconds() {
+        assert_eq!(
+            ping_args("1.1.1.1", 4),
+            vec!["-c", "4", "-W", "2", "1.1.1.1"]
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_ping_timeout_uses_milliseconds() {
+        assert_eq!(
+            ping_args("1.1.1.1", 4),
+            vec!["-n", "4", "-w", "2000", "1.1.1.1"]
+        );
+    }
 }

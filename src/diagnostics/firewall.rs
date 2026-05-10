@@ -95,7 +95,11 @@ async fn collect_windows() -> Option<FirewallInfo> {
     let summary = if profiles.is_empty() {
         "Could not determine firewall status".to_string()
     } else if any_enabled {
-        let enabled: Vec<&str> = profiles.iter().filter(|p| p.enabled).map(|p| p.name.as_str()).collect();
+        let enabled: Vec<&str> = profiles
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| p.name.as_str())
+            .collect();
         format!("Active: {}", enabled.join(", "))
     } else {
         "All profiles disabled".to_string()
@@ -120,10 +124,11 @@ async fn collect_macos() -> Option<FirewallInfo> {
     let enabled = text.contains("enabled");
 
     let mut stealth = false;
-    if let Ok(output) = tokio::process::Command::new("/usr/libexec/ApplicationFirewall/socketfilterfw")
-        .args(["--getstealthmode"])
-        .output()
-        .await
+    if let Ok(output) =
+        tokio::process::Command::new("/usr/libexec/ApplicationFirewall/socketfilterfw")
+            .args(["--getstealthmode"])
+            .output()
+            .await
     {
         let text = String::from_utf8_lossy(&output.stdout);
         stealth = text.contains("enabled");
@@ -170,7 +175,11 @@ async fn collect_linux() -> Option<FirewallInfo> {
                     default_inbound: None,
                     default_outbound: None,
                 }],
-                summary: if enabled { "UFW active".to_string() } else { "UFW inactive".to_string() },
+                summary: if enabled {
+                    "UFW active".to_string()
+                } else {
+                    "UFW inactive".to_string()
+                },
             });
         }
     }
@@ -182,7 +191,10 @@ async fn collect_linux() -> Option<FirewallInfo> {
         .await
     {
         let text = String::from_utf8_lossy(&output.stdout);
-        let rule_count = text.lines().filter(|l| l.starts_with(char::is_numeric)).count();
+        let rule_count = text
+            .lines()
+            .filter(|l| l.starts_with(char::is_numeric))
+            .count();
         return Some(FirewallInfo {
             enabled: rule_count > 0,
             profiles: vec![FirewallProfile {

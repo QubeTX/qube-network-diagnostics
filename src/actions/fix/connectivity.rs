@@ -47,7 +47,11 @@ pub async fn check_connectivity() -> bool {
         Err(_) => return false,
     };
 
-    match client.get("http://detectportal.firefox.com/success.txt").send().await {
+    match client
+        .get("http://detectportal.firefox.com/success.txt")
+        .send()
+        .await
+    {
         Ok(resp) => {
             if let Ok(body) = resp.text().await {
                 body.trim() == "success"

@@ -1,4 +1,4 @@
-use super::{BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration, statistics};
+use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
 use reqwest::Client;
 use std::time::{Duration, Instant};
 
@@ -14,10 +14,7 @@ pub async fn run<F>(config: &SpeedTestConfig, progress: F) -> ProviderResult
 where
     F: Fn(Phase, f64) + Send + Sync,
 {
-    let client = match Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-    {
+    let client = match Client::builder().timeout(Duration::from_secs(120)).build() {
         Ok(c) => c,
         Err(e) => return error_result(format!("Failed to build HTTP client: {e}")),
     };
@@ -88,21 +85,22 @@ where
     while Instant::now() < dl_deadline {
         let req_start = Instant::now();
         match client.get(DOWNLOAD_URL).send().await {
-            Ok(resp) => match resp.bytes().await {
-                Ok(body) => {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(body) = resp.bytes().await {
                     let req_bytes = body.len() as u64;
                     let req_duration = req_start.elapsed().as_secs_f64();
                     dl_bytes += req_bytes;
                     if req_duration > 0.0 {
-                        dl_mbps_samples.push((req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0));
+                        dl_mbps_samples
+                            .push((req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0));
                     }
                     let elapsed = dl_start.elapsed().as_secs_f64();
                     let frac = (elapsed / dl_secs as f64).min(1.0);
                     progress(Phase::CfDownload, frac);
                 }
-                Err(_) => {}
-            },
+            }
             Err(_) => {}
+            _ => {}
         }
     }
 
@@ -132,17 +130,19 @@ where
             .send()
             .await
         {
-            Ok(_) => {
+            Ok(resp) if resp.status().is_success() => {
                 let req_duration = req_start.elapsed().as_secs_f64();
                 ul_bytes += UPLOAD_CHUNK_SIZE as u64;
                 if req_duration > 0.0 {
-                    ul_mbps_samples.push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
+                    ul_mbps_samples
+                        .push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
                 }
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let frac = (elapsed / ul_secs as f64).min(1.0);
                 progress(Phase::CfUpload, frac);
             }
             Err(_) => {}
+            _ => {}
         }
     }
 

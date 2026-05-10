@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.3] - 2026-05-10
+
+### Fixed
+- `nd300 fix` is now evidence-staged instead of status-only for common healthy or near-healthy networks: clean networks produce no actions, latency-only findings are advisory, DNS failures start with cache flush, and public DNS is considered only after safer DNS-specific repair has failed.
+- `--yes` now reaches the runtime `Config`, so scripted runs can auto-confirm medium-risk repair actions while high-risk actions still require an explicit interactive approval.
+- Non-interactive and JSON fix runs no longer disable consumer VPNs, because they cannot safely guide re-enable/recovery steps.
+- macOS deep network-service reset now snapshots and restores DNS servers, proxy settings, service order, and IPv4/IPv6 mode instead of unconditionally forcing DHCP plus Cloudflare DNS after service recreation.
+- Linux NetworkManager DNS changes now resolve the active connection profile for the interface instead of assuming the profile name equals the device name, and Wi-Fi profile reset collects reconnection details before deleting the old profile.
+- macOS latency diagnostics now use the correct `ping -W 2000` millisecond timeout instead of `-W 2`, which caused healthy endpoints to be reported as unreachable.
+- Speed-test aggregation now merges all successful providers with a bounded N-provider inverse-variance merge, detects divergence across the full provider spread, ignores failed/non-2xx transfer samples, and makes NDT7 respect short requested durations.
+- `--fast` and `--speed-duration` now work both before and after subcommands, including `nd300 fix --fast`.
+
+### Added
+- Regression tests for clean/no-op and staged DNS planning behavior, medium-risk confirmation rules, JSON-mode VPN safety, macOS network snapshot restore command generation, and all-provider speed aggregation/divergence.
+
 ## [3.0.2] - 2026-05-07
 
 ### Fixed

@@ -65,10 +65,7 @@ impl SpeedQXDisplay {
             return ProgressBar::hidden();
         }
         let pb = ProgressBar::new(100);
-        let template = format!(
-            "  [{{bar:20.cyan/dim}}] [{}/{}] {{msg}}",
-            step, total
-        );
+        let template = format!("  [{{bar:20.cyan/dim}}] [{}/{}] {{msg}}", step, total);
         pb.set_style(
             ProgressStyle::default_bar()
                 .template(&template)
@@ -86,13 +83,7 @@ impl SpeedQXDisplay {
         }
         let check = if self.use_ascii { "[OK]" } else { "\u{2713}" };
         if self.use_colors {
-            println!(
-                "  [{}/{}] {} {}",
-                step,
-                total,
-                check.green(),
-                msg,
-            );
+            println!("  [{}/{}] {} {}", step, total, check.green(), msg,);
         } else {
             println!("  [{}/{}] {} {}", step, total, check, msg);
         }
@@ -129,9 +120,11 @@ fn render_multi_provider(
     let mut builder = ReportBuilder::new(label_width, data_width, chars);
 
     // Top border + title
-    builder = builder
-        .full_top_border()
-        .span_row(&format!("  {:^width$}", "SPEEDQX RESULTS", width = label_width + data_width + 3));
+    builder = builder.full_top_border().span_row(&format!(
+        "  {:^width$}",
+        "SPEEDQX RESULTS",
+        width = label_width + data_width + 3
+    ));
 
     builder = builder.section_header("Averaged Results");
 
@@ -146,8 +139,14 @@ fn render_multi_provider(
     }
 
     // Download / Upload
-    builder = builder.row("Download", &format!("{} (avg)", format_mbps(result.download_mbps)));
-    builder = builder.row("Upload", &format!("{} (avg)", format_mbps(result.upload_mbps)));
+    builder = builder.row(
+        "Download",
+        &format!("{} (avg)", format_mbps(result.download_mbps)),
+    );
+    builder = builder.row(
+        "Upload",
+        &format!("{} (avg)", format_mbps(result.upload_mbps)),
+    );
 
     // Packet loss
     if let Some(loss) = result.packet_loss_pct {
@@ -159,8 +158,16 @@ fn render_multi_provider(
 
     // Stability metrics
     if let Some(ref stability) = result.stability {
-        let dl_label = if stability.download_stable { "Stable" } else { "Variable" };
-        let ul_label = if stability.upload_stable { "Stable" } else { "Variable" };
+        let dl_label = if stability.download_stable {
+            "Stable"
+        } else {
+            "Variable"
+        };
+        let ul_label = if stability.upload_stable {
+            "Stable"
+        } else {
+            "Variable"
+        };
         builder = builder.row(
             "Stability",
             &format!(
@@ -206,9 +213,11 @@ fn render_single_provider(
 ) -> String {
     let mut builder = ReportBuilder::new(label_width, data_width, chars);
 
-    builder = builder
-        .full_top_border()
-        .span_row(&format!("  {:^width$}", "SPEEDQX RESULTS", width = label_width + data_width + 3));
+    builder = builder.full_top_border().span_row(&format!(
+        "  {:^width$}",
+        "SPEEDQX RESULTS",
+        width = label_width + data_width + 3
+    ));
 
     if let Some(provider) = result.providers.first() {
         builder = builder.section_header(&provider.provider);

@@ -28,7 +28,13 @@ use crate::speedtest::TestDuration;
 )]
 pub struct Nd300Cli {
     /// Technician mode - full technical report with deep diagnostics
-    #[arg(short = 't', long = "tech", alias = "technician", help_heading = "Modes", global = true)]
+    #[arg(
+        short = 't',
+        long = "tech",
+        alias = "technician",
+        help_heading = "Modes",
+        global = true
+    )]
     pub tech: bool,
 
     /// Custom title for the report header
@@ -52,11 +58,11 @@ pub struct Nd300Cli {
     pub verbose: bool,
 
     /// Skip the speed test (faster execution)
-    #[arg(long, help_heading = "Speed Test")]
+    #[arg(long, help_heading = "Speed Test", global = true)]
     pub fast: bool,
 
     /// Speed test duration in seconds
-    #[arg(long, default_value = "10", help_heading = "Speed Test")]
+    #[arg(long, default_value = "10", help_heading = "Speed Test", global = true)]
     pub speed_duration: u64,
 
     /// Change DNS servers and verify connectivity
@@ -81,7 +87,13 @@ pub struct Nd300Cli {
 
     /// Auto-confirm Medium-cost prompts when running the fix flow. Does NOT
     /// bypass High-risk action prompts (Y/N is always required for those).
-    #[arg(short = 'y', long = "yes", alias = "non-interactive", help_heading = "Actions", global = true)]
+    #[arg(
+        short = 'y',
+        long = "yes",
+        alias = "non-interactive",
+        help_heading = "Actions",
+        global = true
+    )]
     pub yes: bool,
 
     /// Print version

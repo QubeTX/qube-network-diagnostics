@@ -17,11 +17,20 @@ mod speedtest {
     }
 }
 
+fn normalize_manpage(buf: Vec<u8>) -> Vec<u8> {
+    let rendered = String::from_utf8(buf).expect("clap_mangen renders UTF-8 man pages");
+    rendered
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .into_bytes()
+}
+
 fn main() {
-    let man_dir = std::path::PathBuf::from(
-        std::env::var("OUT_DIR").unwrap_or_else(|_| "man".to_string()),
-    )
-    .join("man");
+    let man_dir =
+        std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap_or_else(|_| "man".to_string()))
+            .join("man");
     fs::create_dir_all(&man_dir).unwrap();
 
     // Also write to project root man/ for inclusion in release archives
@@ -33,6 +42,7 @@ fn main() {
     let nd300_man = clap_mangen::Man::new(nd300_cmd);
     let mut buf = Vec::new();
     nd300_man.render(&mut buf).unwrap();
+    let buf = normalize_manpage(buf);
     fs::write(man_dir.join("nd300.1"), &buf).unwrap();
     fs::write(root_man_dir.join("nd300.1"), &buf).unwrap();
 
@@ -41,6 +51,7 @@ fn main() {
     let speedqx_man = clap_mangen::Man::new(speedqx_cmd);
     let mut buf = Vec::new();
     speedqx_man.render(&mut buf).unwrap();
+    let buf = normalize_manpage(buf);
     fs::write(man_dir.join("speedqx.1"), &buf).unwrap();
     fs::write(root_man_dir.join("speedqx.1"), &buf).unwrap();
 

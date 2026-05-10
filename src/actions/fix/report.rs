@@ -65,9 +65,7 @@ pub fn save_session_report(session: &Session, outcome: &FinalOutcome) -> Option<
 fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
     let mut md = String::with_capacity(8 * 1024);
 
-    let stamp = chrono::Local::now()
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string();
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     md.push_str("# ND-300 Fix Report\n\n");
     md.push_str(&format!("**Generated:** {}\n", stamp));
@@ -83,18 +81,18 @@ fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
         "**Wall-clock duration:** {} seconds\n",
         session.elapsed().as_secs()
     ));
-    md.push_str("\n");
+    md.push('\n');
 
     // Summary verdict
     md.push_str("## Verdict\n\n");
     md.push_str(&render_verdict(outcome));
-    md.push_str("\n");
+    md.push('\n');
 
     // Baseline
     if let Some(baseline) = &session.baseline {
         md.push_str("## Baseline diagnostics (before any actions)\n\n");
         md.push_str(&render_diagnostic_table(baseline));
-        md.push_str("\n");
+        md.push('\n');
     }
 
     // Iteration timeline
@@ -156,12 +154,16 @@ fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
                             }
                         }
                         if let Some(code) = cmd.exit_code {
-                            md.push_str(&format!("  exit {} ({:.1}s)\n", code, cmd.duration.as_secs_f64()));
+                            md.push_str(&format!(
+                                "  exit {} ({:.1}s)\n",
+                                code,
+                                cmd.duration.as_secs_f64()
+                            ));
                         }
                         md.push_str("  ```\n\n");
                     }
                 }
-                md.push_str("\n");
+                md.push('\n');
             }
         }
     }
@@ -170,7 +172,7 @@ fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
     if let Some(last) = session.snapshots.last() {
         md.push_str("## Final diagnostics (after all actions)\n\n");
         md.push_str(&render_diagnostic_table(&last.results));
-        md.push_str("\n");
+        md.push('\n');
     }
 
     // Suggestions
@@ -180,7 +182,7 @@ fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
         for s in suggestions_for_keys(&remaining_keys) {
             md.push_str(&format!("- {}\n", s));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
 
     // Environment
@@ -189,10 +191,7 @@ fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
         "- Platform: {}\n",
         crate::platform::platform_name()
     ));
-    md.push_str(&format!(
-        "- Elevated: {}\n",
-        crate::platform::is_elevated()
-    ));
+    md.push_str(&format!("- Elevated: {}\n", crate::platform::is_elevated()));
     md.push_str(&format!(
         "- ND-300 version: {}\n",
         env!("CARGO_PKG_VERSION")
@@ -203,7 +202,7 @@ fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
             session.vpn_names.join(", ")
         ));
     }
-    md.push_str("\n");
+    md.push('\n');
 
     md.push_str("---\n");
     md.push_str("_This report was generated automatically by `nd300 fix`._\n");
@@ -214,7 +213,8 @@ fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
 fn render_verdict(outcome: &FinalOutcome) -> String {
     match outcome {
         FinalOutcome::Fixed => {
-            "✅ **Fixed** — Connectivity is healthy. The actions above resolved the failures.\n".to_string()
+            "✅ **Fixed** — Connectivity is healthy. The actions above resolved the failures.\n"
+                .to_string()
         }
         FinalOutcome::Partial(remaining) => {
             format!(

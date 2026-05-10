@@ -45,10 +45,7 @@ pub async fn run(config: &Config) -> i32 {
     // Detect service name (macOS needs this, other platforms use iface)
     let service_name = super::fix::stages::detect_service_name(&iface).await;
 
-    println!(
-        "  Interface: {}",
-        color::cyan(&iface, config),
-    );
+    println!("  Interface: {}", color::cyan(&iface, config),);
     println!();
 
     // Prompt for DNS choice (extended with NextDNS)
@@ -138,7 +135,10 @@ pub async fn run(config: &Config) -> i32 {
         println!(
             "  {} {}",
             color::green(success_icon(config), config),
-            color::green("DNS configured successfully — running diagnostics...", config),
+            color::green(
+                "DNS configured successfully — running diagnostics...",
+                config
+            ),
         );
         println!();
         return 0; // fall through to diagnostics
@@ -149,7 +149,10 @@ pub async fn run(config: &Config) -> i32 {
         println!(
             "  {} {}",
             color::yellow(super::fix::warn_icon(config), config),
-            color::yellow("Verification failed — reverting to automatic DNS...", config),
+            color::yellow(
+                "Verification failed — reverting to automatic DNS...",
+                config
+            ),
         );
 
         // Platform-specific NextDNS revert
@@ -157,7 +160,10 @@ pub async fn run(config: &Config) -> i32 {
         if matches!(provider, DnsProvider::NextDns(_)) {
             // Restore backed-up resolved.conf if it exists
             let mut restore = tokio::process::Command::new("cp");
-            restore.args(["/etc/systemd/resolved.conf.bak", "/etc/systemd/resolved.conf"]);
+            restore.args([
+                "/etc/systemd/resolved.conf.bak",
+                "/etc/systemd/resolved.conf",
+            ]);
             let _ = super::fix::cmd::run_cmd(restore, super::fix::cmd::TIMEOUT_QUICK).await;
             let mut restart = tokio::process::Command::new("systemctl");
             restart.args(["restart", "systemd-resolved"]);
@@ -201,10 +207,7 @@ pub async fn run(config: &Config) -> i32 {
             println!(
                 "  {} {}",
                 color::yellow(super::fix::warn_icon(config), config),
-                color::yellow(
-                    "Reverted to automatic DNS — running diagnostics...",
-                    config,
-                ),
+                color::yellow("Reverted to automatic DNS — running diagnostics...", config,),
             );
             println!();
             return 0;
@@ -215,7 +218,10 @@ pub async fn run(config: &Config) -> i32 {
     println!(
         "  {} {}",
         color::red(fail_icon(config), config),
-        color::red("DNS change failed — connectivity could not be verified", config),
+        color::red(
+            "DNS change failed — connectivity could not be verified",
+            config
+        ),
     );
     2
 }
@@ -255,7 +261,8 @@ async fn run_json(config: &Config) -> i32 {
 
     // Test reachability
     let (cf_ok, google_ok) = fix_dns::test_dns_reachability().await;
-    let provider = fix_dns::adjust_for_reachability(DnsProvider::Cloudflare, cf_ok, google_ok, config);
+    let provider =
+        fix_dns::adjust_for_reachability(DnsProvider::Cloudflare, cf_ok, google_ok, config);
 
     // Set DNS
     let set_result = fix_dns::set_dns_servers(&iface, &service_name, provider.clone()).await;
@@ -314,7 +321,11 @@ async fn run_json(config: &Config) -> i32 {
         serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
     );
 
-    if verified { 0 } else { 2 }
+    if verified {
+        0
+    } else {
+        2
+    }
 }
 
 /// Extended DNS choice prompt including NextDNS option.

@@ -12,9 +12,7 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
         .header(config.title(), config.subtitle());
 
     // Diagnostic summary header
-    builder = builder
-        .span_row(&format!("  DIAGNOSTIC SUMMARY"))
-        .divider();
+    builder = builder.span_row("  DIAGNOSTIC SUMMARY").divider();
 
     // Render each diagnostic category
     builder = render_diagnostic_row(builder, &results.adapters, config);

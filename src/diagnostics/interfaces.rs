@@ -22,7 +22,11 @@ pub async fn check() -> (DiagnosticResult, Vec<InterfaceInfo>) {
 
     for (name, data) in &networks {
         let mac = format_mac(data.mac_address().0);
-        let ip_addrs: Vec<String> = data.ip_networks().iter().map(|n| n.addr.to_string()).collect();
+        let ip_addrs: Vec<String> = data
+            .ip_networks()
+            .iter()
+            .map(|n| n.addr.to_string())
+            .collect();
         let is_up = !ip_addrs.is_empty() && data.total_received() > 0;
 
         let iface_type = detect_interface_type(name);
@@ -65,13 +69,25 @@ pub async fn check() -> (DiagnosticResult, Vec<InterfaceInfo>) {
 
 fn detect_interface_type(name: &str) -> String {
     let lower = name.to_lowercase();
-    if lower.contains("wi-fi") || lower.contains("wifi") || lower.contains("wlan") || lower.contains("wlp") {
+    if lower.contains("wi-fi")
+        || lower.contains("wifi")
+        || lower.contains("wlan")
+        || lower.contains("wlp")
+    {
         "Wi-Fi".to_string()
-    } else if lower.contains("eth") || lower.contains("enp") || lower.contains("eno") || lower.contains("ethernet") {
+    } else if lower.contains("eth")
+        || lower.contains("enp")
+        || lower.contains("eno")
+        || lower.contains("ethernet")
+    {
         "Ethernet".to_string()
     } else if lower == "lo" || lower == "lo0" || (lower.starts_with("lo") && lower.len() <= 3) {
         "Loopback".to_string()
-    } else if lower.contains("tun") || lower.contains("tap") || lower.contains("wg") || lower.contains("utun") {
+    } else if lower.contains("tun")
+        || lower.contains("tap")
+        || lower.contains("wg")
+        || lower.contains("utun")
+    {
         "VPN/Tunnel".to_string()
     } else if lower.contains("bluetooth") || lower.contains("bnep") {
         "Bluetooth".to_string()
@@ -107,7 +123,10 @@ async fn get_wifi_summary() -> String {
 
                 for line in text.lines() {
                     let line = line.trim();
-                    if line.starts_with("SSID") && !line.starts_with("SSID B") && !line.starts_with("SSID name") {
+                    if line.starts_with("SSID")
+                        && !line.starts_with("SSID B")
+                        && !line.starts_with("SSID name")
+                    {
                         if let Some(val) = line.split(':').nth(1) {
                             ssid = val.trim().to_string();
                         }
@@ -117,7 +136,10 @@ async fn get_wifi_summary() -> String {
                             let val = val.trim();
                             if val.contains("6 GHz") || val.contains("6E") {
                                 band = "6 GHz".to_string();
-                            } else if val.contains("5 GHz") || val.contains("802.11a") || val.contains("802.11ac") {
+                            } else if val.contains("5 GHz")
+                                || val.contains("802.11a")
+                                || val.contains("802.11ac")
+                            {
                                 band = "5 GHz".to_string();
                             } else if val.contains("802.11ax") {
                                 // 802.11ax can be 2.4/5/6 GHz; leave band empty to rely on channel
@@ -212,9 +234,13 @@ async fn get_wifi_summary() -> String {
                     Ok(freq_out) => {
                         let freq_str = String::from_utf8_lossy(&freq_out.stdout).trim().to_string();
                         if let Ok(freq) = freq_str.parse::<f64>() {
-                            if freq > 5.0 { "5 GHz".to_string() }
-                            else if freq > 2.0 { "2.4 GHz".to_string() }
-                            else { String::new() }
+                            if freq > 5.0 {
+                                "5 GHz".to_string()
+                            } else if freq > 2.0 {
+                                "2.4 GHz".to_string()
+                            } else {
+                                String::new()
+                            }
                         } else {
                             String::new()
                         }

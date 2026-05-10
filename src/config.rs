@@ -73,6 +73,7 @@ pub struct Config {
     pub skip_speed: bool,
     pub speed_duration: u64,
     pub verbose: bool,
+    pub auto_confirm_medium_risk: bool,
 }
 
 impl Default for Config {
@@ -86,6 +87,7 @@ impl Default for Config {
             skip_speed: false,
             speed_duration: 10,
             verbose: false,
+            auto_confirm_medium_risk: false,
         }
     }
 }
@@ -195,6 +197,11 @@ impl Config {
 
     pub fn with_verbose(mut self) -> Self {
         self.verbose = true;
+        self
+    }
+
+    pub fn with_auto_confirm_medium_risk(mut self) -> Self {
+        self.auto_confirm_medium_risk = true;
         self
     }
 }

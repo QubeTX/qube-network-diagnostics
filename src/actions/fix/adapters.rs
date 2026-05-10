@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use super::cmd::{run_cmd, TIMEOUT_QUICK, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
+use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
 
 /// List active network adapters — all platforms.
 #[cfg(windows)]
@@ -64,7 +64,11 @@ pub async fn list_active_adapters() -> Vec<String> {
                 let after = &line[colon_idx + 2..];
                 if let Some(name_end) = after.find(':') {
                     let name = &after[..name_end];
-                    if name != "lo" && !name.starts_with("veth") && !name.starts_with("docker") && !name.starts_with("br-") {
+                    if name != "lo"
+                        && !name.starts_with("veth")
+                        && !name.starts_with("docker")
+                        && !name.starts_with("br-")
+                    {
                         adapters.push(name.to_string());
                     }
                 }
@@ -291,7 +295,10 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         renew_cmd.args(["/renew", iface]);
         match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {}", iface)),
-            Ok(output) => Err(format!("DHCP renew failed: {}", String::from_utf8_lossy(&output.stderr).trim())),
+            Ok(output) => Err(format!(
+                "DHCP renew failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
             Err(e) => Err(e),
         }
     }
@@ -302,7 +309,10 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         cmd.args(["set", iface, "DHCP"]);
         match run_cmd(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {}", iface)),
-            Ok(output) => Err(format!("DHCP renew failed: {}", String::from_utf8_lossy(&output.stderr).trim())),
+            Ok(output) => Err(format!(
+                "DHCP renew failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
             Err(e) => Err(e),
         }
     }
@@ -334,7 +344,9 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         let mut renew_cmd = tokio::process::Command::new("dhclient");
         renew_cmd.arg(iface);
         match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
-            Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {} via dhclient", iface)),
+            Ok(output) if output.status.success() => {
+                Ok(format!("DHCP renewed on {} via dhclient", iface))
+            }
             _ => Err(format!("Could not renew DHCP on {}", iface)),
         }
     }

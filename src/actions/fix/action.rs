@@ -245,6 +245,12 @@ async fn apply_renew_dhcp() -> ActionOutcome {
 }
 
 async fn apply_disable_consumer_vpns(config: &Config) -> ActionOutcome {
+    if !crate::actions::is_interactive(config) {
+        return ActionOutcome::fail(
+            "Skipped: disabling VPNs requires an interactive session so they can be re-enabled safely.",
+        );
+    }
+
     let disabled = vpn::detect_and_disable(config).await;
     if disabled.is_empty() {
         ActionOutcome::ok("No consumer VPNs were active")
@@ -457,7 +463,7 @@ fn make_deep_reset_explanation() -> RiskExplanation {
         side_effects: &[
             "You will lose internet for ~10–20 seconds.",
             "Wi-Fi will need to reconnect; nd300 will try to restore it from Keychain.",
-            "Custom DNS and proxy settings on the deleted service are lost.",
+            "nd300 snapshots and attempts to restore DNS, proxy, service order, and IP mode settings.",
         ],
         reversible: Reversibility::NotReversible,
         typical_duration: "10–20 seconds",
@@ -476,5 +482,24 @@ fn make_deep_reset_explanation() -> RiskExplanation {
         ],
         reversible: Reversibility::NotReversible,
         typical_duration: "10–20 seconds",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Config;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn json_mode_does_not_disable_consumer_vpns() {
+        let outcome = apply_disable_consumer_vpns(&Config::new().with_json()).await;
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome.message.contains("requires an interactive session"),
+            "unexpected outcome: {:?}",
+            outcome
+        );
     }
 }

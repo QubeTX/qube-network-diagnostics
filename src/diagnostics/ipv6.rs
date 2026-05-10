@@ -70,9 +70,23 @@ fn parse_ipv6_from_ipconfig(text: &str) -> Vec<Ipv6Address> {
         }
 
         let trimmed = line.trim();
-        if trimmed.contains("IPv6 Address") || trimmed.contains("Link-local IPv6") || trimmed.contains("Temporary IPv6") {
-            if let Some(addr) = trimmed.split(':').skip(1).collect::<Vec<&str>>().join(":").trim().strip_suffix("(Preferred)") {
-                let scope = if trimmed.contains("Link-local") { "link-local" } else { "global" };
+        if trimmed.contains("IPv6 Address")
+            || trimmed.contains("Link-local IPv6")
+            || trimmed.contains("Temporary IPv6")
+        {
+            if let Some(addr) = trimmed
+                .split(':')
+                .skip(1)
+                .collect::<Vec<&str>>()
+                .join(":")
+                .trim()
+                .strip_suffix("(Preferred)")
+            {
+                let scope = if trimmed.contains("Link-local") {
+                    "link-local"
+                } else {
+                    "global"
+                };
                 addrs.push(Ipv6Address {
                     interface: current_iface.clone(),
                     address: addr.trim().to_string(),
@@ -82,7 +96,11 @@ fn parse_ipv6_from_ipconfig(text: &str) -> Vec<Ipv6Address> {
                 let addr: String = trimmed.split(':').skip(1).collect::<Vec<&str>>().join(":");
                 let addr = addr.trim().trim_end_matches("(Preferred)").trim();
                 if !addr.is_empty() {
-                    let scope = if trimmed.contains("Link-local") { "link-local" } else { "global" };
+                    let scope = if trimmed.contains("Link-local") {
+                        "link-local"
+                    } else {
+                        "global"
+                    };
                     addrs.push(Ipv6Address {
                         interface: current_iface.clone(),
                         address: addr.to_string(),
@@ -125,10 +143,7 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
 
     #[cfg(windows)]
     {
-        if let Ok(output) = tokio::process::Command::new("ipconfig")
-            .output()
-            .await
-        {
+        if let Ok(output) = tokio::process::Command::new("ipconfig").output().await {
             let text = String::from_utf8_lossy(&output.stdout);
             let mut current_iface = String::new();
 
@@ -138,19 +153,38 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
                 }
 
                 let trimmed = line.trim();
-                if trimmed.contains("IPv6 Address") || trimmed.contains("Link-local IPv6") || trimmed.contains("Temporary IPv6") {
-                    if let Some(addr) = trimmed.split(':').skip(1).collect::<Vec<&str>>().join(":").trim().strip_suffix("(Preferred)") {
-                        let scope = if trimmed.contains("Link-local") { "link-local" } else { "global" };
+                if trimmed.contains("IPv6 Address")
+                    || trimmed.contains("Link-local IPv6")
+                    || trimmed.contains("Temporary IPv6")
+                {
+                    if let Some(addr) = trimmed
+                        .split(':')
+                        .skip(1)
+                        .collect::<Vec<&str>>()
+                        .join(":")
+                        .trim()
+                        .strip_suffix("(Preferred)")
+                    {
+                        let scope = if trimmed.contains("Link-local") {
+                            "link-local"
+                        } else {
+                            "global"
+                        };
                         addrs.push(Ipv6Address {
                             interface: current_iface.clone(),
                             address: addr.trim().to_string(),
                             scope: scope.to_string(),
                         });
                     } else {
-                        let addr: String = trimmed.split(':').skip(1).collect::<Vec<&str>>().join(":");
+                        let addr: String =
+                            trimmed.split(':').skip(1).collect::<Vec<&str>>().join(":");
                         let addr = addr.trim().trim_end_matches("(Preferred)").trim();
                         if !addr.is_empty() {
-                            let scope = if trimmed.contains("Link-local") { "link-local" } else { "global" };
+                            let scope = if trimmed.contains("Link-local") {
+                                "link-local"
+                            } else {
+                                "global"
+                            };
                             addrs.push(Ipv6Address {
                                 interface: current_iface.clone(),
                                 address: addr.to_string(),
@@ -194,10 +228,7 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
 
         // Fallback for macOS if `ip` not available
         if addrs.is_empty() {
-            if let Ok(output) = tokio::process::Command::new("ifconfig")
-                .output()
-                .await
-            {
+            if let Ok(output) = tokio::process::Command::new("ifconfig").output().await {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let mut current_iface = String::new();
 

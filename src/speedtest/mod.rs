@@ -156,6 +156,121 @@ fn divergence_ratio(a: f64, b: f64) -> f64 {
     (a - b).abs() / a.max(b)
 }
 
+fn divergence_spread(values: &[(f64, f64)]) -> f64 {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+
+    for (value, _) in values {
+        if *value <= 0.0 {
+            continue;
+        }
+        min = min.min(*value);
+        max = max.max(*value);
+    }
+
+    if !min.is_finite() || !max.is_finite() || max <= 0.0 || min == max {
+        0.0
+    } else {
+        divergence_ratio(min, max)
+    }
+}
+
+fn inverse_variance_merge_many(values: &[(f64, f64)]) -> f64 {
+    let positive: Vec<(f64, f64)> = values
+        .iter()
+        .copied()
+        .filter(|(value, _)| *value > 0.0)
+        .collect();
+
+    if positive.is_empty() {
+        return 0.0;
+    }
+    if positive.len() == 1 {
+        return positive[0].0;
+    }
+
+    let min_positive_variance = positive
+        .iter()
+        .filter_map(|(_, variance)| (*variance > 0.0).then_some(*variance))
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    if min_positive_variance.is_none() {
+        return positive.iter().map(|(value, _)| value).sum::<f64>() / positive.len() as f64;
+    }
+
+    let variance_floor = min_positive_variance.unwrap().max(0.000_001);
+    let raw_weights: Vec<f64> = positive
+        .iter()
+        .map(|(_, variance)| 1.0 / variance.max(variance_floor))
+        .collect();
+    let raw_total = raw_weights.iter().sum::<f64>();
+    if raw_total <= 0.0 {
+        return positive.iter().map(|(value, _)| value).sum::<f64>() / positive.len() as f64;
+    }
+
+    let weights = capped_inverse_variance_weights(&raw_weights, raw_total, 0.70);
+
+    positive
+        .iter()
+        .zip(weights.iter())
+        .map(|((value, _), weight)| value * weight)
+        .sum()
+}
+
+fn capped_inverse_variance_weights(raw_weights: &[f64], raw_total: f64, cap: f64) -> Vec<f64> {
+    if raw_weights.is_empty() {
+        return Vec::new();
+    }
+    if raw_weights.len() == 1 {
+        return vec![1.0];
+    }
+    if raw_total <= 0.0 {
+        let equal = 1.0 / raw_weights.len() as f64;
+        return vec![equal; raw_weights.len()];
+    }
+
+    let cap = cap.max(1.0 / raw_weights.len() as f64);
+    let mut weights = vec![0.0; raw_weights.len()];
+    let mut remaining: Vec<usize> = (0..raw_weights.len()).collect();
+    let mut remaining_mass = 1.0;
+
+    loop {
+        if remaining.is_empty() {
+            break;
+        }
+
+        let remaining_raw_total = remaining.iter().map(|idx| raw_weights[*idx]).sum::<f64>();
+        if remaining_raw_total <= 0.0 {
+            let equal = remaining_mass / remaining.len() as f64;
+            for idx in remaining {
+                weights[idx] = equal;
+            }
+            break;
+        }
+
+        let mut capped = Vec::new();
+        for idx in &remaining {
+            let candidate = remaining_mass * raw_weights[*idx] / remaining_raw_total;
+            if candidate > cap {
+                weights[*idx] = cap;
+                remaining_mass = (remaining_mass - cap).max(0.0);
+                capped.push(*idx);
+            }
+        }
+
+        if capped.is_empty() {
+            for idx in remaining {
+                weights[idx] = remaining_mass * raw_weights[idx] / remaining_raw_total;
+            }
+            break;
+        }
+
+        remaining.retain(|idx| !capped.contains(idx));
+    }
+
+    weights
+}
+
 /// Aggregation result including new metrics.
 struct AggregateResult {
     ping: Option<f64>,
@@ -175,8 +290,13 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
 
     if successful.is_empty() {
         return AggregateResult {
-            ping: None, jitter: None, download: 0.0, upload: 0.0,
-            packet_loss: None, stability: None, divergence: None,
+            ping: None,
+            jitter: None,
+            download: 0.0,
+            upload: 0.0,
+            packet_loss: None,
+            stability: None,
+            divergence: None,
         };
     }
 
@@ -206,14 +326,20 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
             }
         }
         // Fallback: use provider-reported value if no raw samples
-        if p.bandwidth_samples.is_none() || p.bandwidth_samples.as_ref().map_or(true, |s| s.download.is_empty()) {
+        if p.bandwidth_samples
+            .as_ref()
+            .is_none_or(|s| s.download.is_empty())
+        {
             if let Some(dl) = p.download_mbps {
                 if dl > 0.0 {
                     provider_dl.push((dl, 0.0));
                 }
             }
         }
-        if p.bandwidth_samples.is_none() || p.bandwidth_samples.as_ref().map_or(true, |s| s.upload.is_empty()) {
+        if p.bandwidth_samples
+            .as_ref()
+            .is_none_or(|s| s.upload.is_empty())
+        {
             if let Some(ul) = p.upload_mbps {
                 if ul > 0.0 {
                     provider_ul.push((ul, 0.0));
@@ -223,38 +349,27 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
     }
 
     // ── Merge bandwidth via inverse-variance weighting ─────────────
-    let download = if provider_dl.is_empty() {
-        0.0
-    } else if provider_dl.len() == 1 {
-        provider_dl[0].0
-    } else {
-        // Pairwise merge
-        let mut acc = provider_dl[0];
-        for pair in &provider_dl[1..] {
-            let merged = statistics::inverse_variance_merge(acc.0, acc.1, pair.0, pair.1);
-            acc = (merged.value, 0.0); // variance of merged not needed for further pairwise
-        }
-        acc.0
-    };
+    let download = inverse_variance_merge_many(&provider_dl);
 
-    let upload = if provider_ul.is_empty() {
-        0.0
-    } else if provider_ul.len() == 1 {
-        provider_ul[0].0
-    } else {
-        let mut acc = provider_ul[0];
-        for pair in &provider_ul[1..] {
-            let merged = statistics::inverse_variance_merge(acc.0, acc.1, pair.0, pair.1);
-            acc = (merged.value, 0.0);
-        }
-        acc.0
-    };
+    let upload = inverse_variance_merge_many(&provider_ul);
 
     // ── Latency: confidence-weighted merge (CF 0.4 / NDT7 0.6) ─────
-    let cf_ping = successful.iter().find(|p| p.provider == "Cloudflare").and_then(|p| p.ping_ms);
-    let ndt_ping = successful.iter().find(|p| p.provider == "M-Lab NDT7").and_then(|p| p.ping_ms);
-    let cf_jitter = successful.iter().find(|p| p.provider == "Cloudflare").and_then(|p| p.jitter_ms);
-    let ndt_jitter = successful.iter().find(|p| p.provider == "M-Lab NDT7").and_then(|p| p.jitter_ms);
+    let cf_ping = successful
+        .iter()
+        .find(|p| p.provider == "Cloudflare")
+        .and_then(|p| p.ping_ms);
+    let ndt_ping = successful
+        .iter()
+        .find(|p| p.provider == "M-Lab NDT7")
+        .and_then(|p| p.ping_ms);
+    let cf_jitter = successful
+        .iter()
+        .find(|p| p.provider == "Cloudflare")
+        .and_then(|p| p.jitter_ms);
+    let ndt_jitter = successful
+        .iter()
+        .find(|p| p.provider == "M-Lab NDT7")
+        .and_then(|p| p.jitter_ms);
 
     let ping = match (cf_ping, ndt_ping) {
         (Some(cf), Some(ndt)) => Some(statistics::weighted_merge(cf, ndt, CF_LATENCY_WEIGHT)),
@@ -262,7 +377,8 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
         (None, Some(ndt)) => Some(ndt),
         (None, None) => {
             // Fallback: minimum across all providers
-            successful.iter()
+            successful
+                .iter()
                 .filter_map(|p| p.ping_ms)
                 .filter(|p| *p > 0.0)
                 .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
@@ -274,8 +390,16 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
         (Some(cf), None) => Some(cf),
         (None, Some(ndt)) => Some(ndt),
         (None, None) => {
-            let jitters: Vec<f64> = successful.iter().filter_map(|p| p.jitter_ms).filter(|j| *j > 0.0).collect();
-            if jitters.is_empty() { None } else { Some(statistics::mean(&jitters)) }
+            let jitters: Vec<f64> = successful
+                .iter()
+                .filter_map(|p| p.jitter_ms)
+                .filter(|j| *j > 0.0)
+                .collect();
+            if jitters.is_empty() {
+                None
+            } else {
+                Some(statistics::mean(&jitters))
+            }
         }
     };
 
@@ -301,16 +425,8 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
 
     // ── Provider divergence ────────────────────────────────────────
     let divergence = if provider_dl.len() >= 2 || provider_ul.len() >= 2 {
-        let dl_div = if provider_dl.len() >= 2 {
-            divergence_ratio(provider_dl[0].0, provider_dl[1].0)
-        } else {
-            0.0
-        };
-        let ul_div = if provider_ul.len() >= 2 {
-            divergence_ratio(provider_ul[0].0, provider_ul[1].0)
-        } else {
-            0.0
-        };
+        let dl_div = divergence_spread(&provider_dl);
+        let ul_div = divergence_spread(&provider_ul);
         Some(ProviderDivergence {
             download: dl_div,
             upload: ul_div,
@@ -321,7 +437,13 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
     };
 
     AggregateResult {
-        ping, jitter, download, upload, packet_loss, stability, divergence,
+        ping,
+        jitter,
+        download,
+        upload,
+        packet_loss,
+        stability,
+        divergence,
     }
 }
 
@@ -429,5 +551,98 @@ pub fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider(name: &str, download: f64, upload: f64, variance: f64) -> ProviderResult {
+        let delta = variance.sqrt();
+        ProviderResult {
+            provider: name.to_string(),
+            server: "test".to_string(),
+            location: None,
+            ping_ms: None,
+            jitter_ms: None,
+            download_mbps: Some(download),
+            upload_mbps: Some(upload),
+            download_bytes: 1,
+            upload_bytes: 1,
+            download_duration_s: 1.0,
+            upload_duration_s: 1.0,
+            packet_loss_pct: None,
+            error: None,
+            bandwidth_samples: Some(BandwidthSamples {
+                download: vec![download - delta, download, download + delta, download],
+                upload: vec![upload - delta, upload, upload + delta, upload],
+            }),
+        }
+    }
+
+    #[test]
+    fn aggregate_uses_more_than_first_two_providers() {
+        let first_two = vec![
+            provider("Cloudflare", 100.0, 20.0, 4.0),
+            provider("M-Lab NDT7", 100.0, 20.0, 4.0),
+        ];
+        let with_four = vec![
+            provider("Cloudflare", 100.0, 20.0, 4.0),
+            provider("M-Lab NDT7", 100.0, 20.0, 4.0),
+            provider("LibreSpeed", 900.0, 180.0, 4.0),
+            provider("fast.com", 900.0, 180.0, 4.0),
+        ];
+
+        let two = aggregate(&first_two);
+        let four = aggregate(&with_four);
+
+        assert!(
+            four.download > two.download + 100.0,
+            "third/fourth providers should materially influence aggregate: two={}, four={}",
+            two.download,
+            four.download
+        );
+        assert!(
+            four.upload > two.upload + 20.0,
+            "third/fourth providers should materially influence upload aggregate: two={}, four={}",
+            two.upload,
+            four.upload
+        );
+    }
+
+    #[test]
+    fn divergence_uses_full_provider_spread() {
+        let providers = vec![
+            provider("Cloudflare", 100.0, 20.0, 4.0),
+            provider("M-Lab NDT7", 105.0, 22.0, 4.0),
+            provider("LibreSpeed", 450.0, 90.0, 4.0),
+        ];
+
+        let agg = aggregate(&providers);
+        let div = agg.divergence.expect("divergence should be reported");
+
+        assert!(div.significant);
+        assert!(
+            div.download > 0.70,
+            "expected divergence to use 100 vs 450 spread, got {}",
+            div.download
+        );
+        assert!(
+            div.upload > 0.70,
+            "expected divergence to use 20 vs 90 spread, got {}",
+            div.upload
+        );
+    }
+
+    #[test]
+    fn inverse_variance_merge_caps_single_provider_dominance() {
+        let merged = inverse_variance_merge_many(&[(1000.0, 0.000_001), (1.0, 1000.0)]);
+
+        assert!(
+            merged < 701.0,
+            "dominant provider should be capped near 70%, got {}",
+            merged
+        );
     }
 }

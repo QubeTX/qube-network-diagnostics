@@ -33,7 +33,7 @@ pub enum FinalOutcome {
     HardBlock(HardBlock),
     /// Iteration count or wall clock cap reached.
     Timeout(Vec<DiagnosticKey>),
-    /// User declined a high-risk prompt; loop stopped with remaining failures.
+    /// User declined a confirmation prompt; loop stopped with remaining failures.
     UserDeclined(Vec<DiagnosticKey>),
     /// Pre-flight check failed (e.g. not elevated). No diagnostics ran.
     PreflightFailed(String),
@@ -62,10 +62,10 @@ pub struct ActionRecord {
     pub outcome: ActionOutcome,
     pub duration: Duration,
     pub iteration: u8,
-    /// Set when the user declined a high-risk prompt for this action.
+    /// Set when the user declined a confirmation prompt for this action.
     pub user_declined: bool,
     /// Set when the action was skipped because we couldn't render an
-    /// interactive prompt (e.g. JSON mode + High-risk action).
+    /// interactive prompt (e.g. JSON mode + confirmation-gated action).
     pub skipped_no_interaction: bool,
 }
 
@@ -118,10 +118,8 @@ impl Session {
     }
 
     pub fn record_iteration(&mut self, iteration: u8, results: DiagnosticResults) {
-        self.snapshots.push(IterationSnapshot {
-            iteration,
-            results,
-        });
+        self.snapshots
+            .push(IterationSnapshot { iteration, results });
     }
 
     pub fn record_action(
@@ -174,10 +172,15 @@ impl Session {
             // Find the registry action so we can read its targets.
             // (The label match is sufficient — ActionIds are unique.)
             for k in cleared.iter() {
-                self.effectiveness
-                    .insert((record.action_id, *k), true);
+                self.effectiveness.insert((record.action_id, *k), true);
             }
         }
+    }
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -239,11 +242,7 @@ impl<'a> Reporter<'a> {
             color::dim("•", self.config),
             color::dim(action.one_line_why, self.config),
         );
-        print!(
-            "  {} {} ",
-            color::cyan("→", self.config),
-            action.label,
-        );
+        print!("  {} {} ", color::cyan("→", self.config), action.label,);
         use std::io::Write;
         let _ = std::io::stdout().flush();
     }
@@ -275,6 +274,38 @@ impl<'a> Reporter<'a> {
         );
     }
 
+    /// Render a compact confirmation gate for mutating, non-high-risk actions.
+    /// Returns `true` only on explicit y/yes.
+    pub fn confirmation_prompt(&self, action: &Action) -> bool {
+        println!();
+        println!(
+            "  {} {}",
+            color::yellow("Confirm:", self.config),
+            color::yellow(action.label, self.config),
+        );
+        println!("    {}", color::dim(action.one_line_why, self.config));
+        println!(
+            "    {}",
+            color::dim("This changes live network settings. Use --yes to auto-confirm this class of action.", self.config),
+        );
+
+        use std::io::Write;
+        print!(
+            "  {} ",
+            color::yellow(
+                "Continue? Type 'y' to proceed, anything else to skip:",
+                self.config
+            ),
+        );
+        let _ = std::io::stdout().flush();
+
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_err() {
+            return false;
+        }
+        matches!(input.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
+    }
+
     /// Render the structured high-risk action prompt and read Y/N from stdin.
     /// Returns `true` only on an explicit `y` / `Y` / `yes`. Anything else,
     /// including an empty press, is treated as N.
@@ -286,7 +317,7 @@ impl<'a> Reporter<'a> {
 
         let header = format!("Escalating: {}", exp.what);
         let bar = if self.config.use_unicode { '─' } else { '-' };
-        let rule: String = std::iter::repeat(bar).take(76).collect();
+        let rule: String = std::iter::repeat_n(bar, 76).collect();
 
         println!();
         println!(
@@ -294,10 +325,7 @@ impl<'a> Reporter<'a> {
             color::yellow(&format!("┌─ {} ", header), self.config)
         );
         println!("  {}", color::dim(&rule, self.config));
-        println!(
-            "  {}",
-            color::bold("Why I want to do this:", self.config)
-        );
+        println!("  {}", color::bold("Why I want to do this:", self.config));
         for line in wrap_text(exp.why, 70) {
             println!("    {}", line);
         }
@@ -323,7 +351,10 @@ impl<'a> Reporter<'a> {
         use std::io::Write;
         print!(
             "  {} ",
-            color::yellow("Continue? Type 'y' to proceed, anything else to skip:", self.config),
+            color::yellow(
+                "Continue? Type 'y' to proceed, anything else to skip:",
+                self.config
+            ),
         );
         let _ = std::io::stdout().flush();
 
@@ -349,6 +380,10 @@ impl<'a> Reporter<'a> {
     }
 
     pub fn high_risk_declined(&self, action: &Action) {
+        self.confirmation_declined(action);
+    }
+
+    pub fn confirmation_declined(&self, action: &Action) {
         println!(
             "  {} {}",
             color::yellow("·", self.config),
@@ -361,7 +396,7 @@ impl<'a> Reporter<'a> {
 
     pub fn final_verdict(&self, outcome: &FinalOutcome, report_path: Option<&std::path::Path>) {
         let bar = if self.config.use_unicode { '─' } else { '-' };
-        let rule: String = std::iter::repeat(bar).take(50).collect();
+        let rule: String = std::iter::repeat_n(bar, 50).collect();
 
         println!();
         println!(
@@ -386,7 +421,11 @@ impl<'a> Reporter<'a> {
                     "  {} {}",
                     color::yellow("⚠ Partially fixed", self.config),
                     color::yellow(
-                        &format!("{} remain{}", describe_keys(remaining), if remaining.len() == 1 { "s" } else { "" }),
+                        &format!(
+                            "{} remain{}",
+                            describe_keys(remaining),
+                            if remaining.len() == 1 { "s" } else { "" }
+                        ),
                         self.config,
                     ),
                 );
@@ -397,7 +436,10 @@ impl<'a> Reporter<'a> {
                     "  {} {}",
                     color::red("✗ Couldn't fix", self.config),
                     color::red(
-                        &format!("Tried every applicable action; {} still failing", describe_keys(remaining)),
+                        &format!(
+                            "Tried every applicable action; {} still failing",
+                            describe_keys(remaining)
+                        ),
                         self.config,
                     ),
                 );
@@ -415,7 +457,10 @@ impl<'a> Reporter<'a> {
                     "  {} {}",
                     color::red("✗ Timed out", self.config),
                     color::red(
-                        &format!("Loop hit its safety cap; {} still failing", describe_keys(remaining)),
+                        &format!(
+                            "Loop hit its safety cap; {} still failing",
+                            describe_keys(remaining)
+                        ),
                         self.config,
                     ),
                 );
@@ -426,7 +471,10 @@ impl<'a> Reporter<'a> {
                     "  {} {}",
                     color::yellow("⚠ Stopped at your request", self.config),
                     color::yellow(
-                        &format!("You declined a high-risk action; {} still failing", describe_keys(remaining)),
+                        &format!(
+                            "You declined a confirmation prompt; {} still failing",
+                            describe_keys(remaining)
+                        ),
                         self.config,
                     ),
                 );
@@ -498,20 +546,31 @@ pub fn suggestions_for_keys(remaining: &[DiagnosticKey]) -> Vec<String> {
         );
     }
     if has(Gateway) {
-        out.push("Power-cycle your router / modem (unplug for 30 seconds, plug back in).".to_string());
+        out.push(
+            "Power-cycle your router / modem (unplug for 30 seconds, plug back in).".to_string(),
+        );
         out.push("Try a different cable or Wi-Fi network if available.".to_string());
     }
     if has(Dns) {
-        out.push("Try `nd300 fix` again, then choose `Switch DNS to Cloudflare` if it offers it.".to_string());
-        out.push("Check your router admin page for a custom DNS setting and remove it.".to_string());
+        out.push(
+            "Try `nd300 fix` again, then choose `Switch DNS to Cloudflare` if it offers it."
+                .to_string(),
+        );
+        out.push(
+            "Check your router admin page for a custom DNS setting and remove it.".to_string(),
+        );
     }
     if has(PublicIp) {
         out.push("Check your ISP's status page — there may be an outage in your area.".to_string());
-        out.push("Disconnect any VPN you have running (including work VPNs) and re-test.".to_string());
+        out.push(
+            "Disconnect any VPN you have running (including work VPNs) and re-test.".to_string(),
+        );
     }
     if has(Latency) {
         out.push("If on Wi-Fi: move closer to your router or try a 5 GHz network.".to_string());
-        out.push("Run a speed test from another device on the same network to compare.".to_string());
+        out.push(
+            "Run a speed test from another device on the same network to compare.".to_string(),
+        );
     }
     if has(Ports) {
         out.push(
@@ -521,7 +580,9 @@ pub fn suggestions_for_keys(remaining: &[DiagnosticKey]) -> Vec<String> {
 
     if out.is_empty() {
         out.push("Reboot the machine and try again.".to_string());
-        out.push("Run `nd300 -t` for the full technician report and share it with support.".to_string());
+        out.push(
+            "Run `nd300 -t` for the full technician report and share it with support.".to_string(),
+        );
     }
     out
 }

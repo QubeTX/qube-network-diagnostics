@@ -44,7 +44,10 @@ pub async fn collect() -> Option<Vec<MtuInfo>> {
             for line in text.lines() {
                 if line.contains("mtu") {
                     let parts: Vec<&str> = line.split_whitespace().collect();
-                    if let Some(name_idx) = parts.iter().position(|p| p.ends_with(':') && !p.starts_with(' ')) {
+                    if let Some(name_idx) = parts
+                        .iter()
+                        .position(|p| p.ends_with(':') && !p.starts_with(' '))
+                    {
                         let name = parts[name_idx].trim_end_matches(':');
                         if let Some(mtu_idx) = parts.iter().position(|p| *p == "mtu") {
                             if let Some(mtu_val) = parts.get(mtu_idx + 1) {
@@ -64,10 +67,7 @@ pub async fn collect() -> Option<Vec<MtuInfo>> {
 
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = tokio::process::Command::new("ifconfig")
-            .output()
-            .await
-        {
+        if let Ok(output) = tokio::process::Command::new("ifconfig").output().await {
             let text = String::from_utf8_lossy(&output.stdout);
             let mut current_iface = String::new();
 

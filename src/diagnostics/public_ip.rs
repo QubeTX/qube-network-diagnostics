@@ -102,11 +102,7 @@ async fn get_ip_cloudflare(client: &reqwest::Client) -> Option<String> {
 }
 
 async fn get_ip_ipify(client: &reqwest::Client) -> Option<String> {
-    let resp = client
-        .get("https://api.ipify.org")
-        .send()
-        .await
-        .ok()?;
+    let resp = client.get("https://api.ipify.org").send().await.ok()?;
     let text = resp.text().await.ok()?;
     Some(text.trim().to_string())
 }
@@ -121,17 +117,35 @@ struct GeoInfo {
 }
 
 async fn get_geolocation(client: &reqwest::Client, ip: &str) -> Option<GeoInfo> {
-    let url = format!("http://ip-api.com/json/{}?fields=city,regionName,country,isp,org", ip);
+    let url = format!(
+        "http://ip-api.com/json/{}?fields=city,regionName,country,isp,org",
+        ip
+    );
 
     let resp = client.get(&url).send().await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
 
     Some(GeoInfo {
-        city: json.get("city").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        region: json.get("regionName").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        country: json.get("country").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        isp: json.get("isp").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        org: json.get("org").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        city: json
+            .get("city")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        region: json
+            .get("regionName")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        country: json
+            .get("country")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        isp: json
+            .get("isp")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        org: json
+            .get("org")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
     })
 }
 

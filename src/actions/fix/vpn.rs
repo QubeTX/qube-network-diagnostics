@@ -3,7 +3,7 @@ use crate::diagnostics::vpn::{self, VpnAdapter};
 use crate::render::progress::create_spinner;
 
 use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
-use super::{print_step_ok, print_step_fail, warn_icon};
+use super::{print_step_fail, print_step_ok, warn_icon};
 use crate::actions::{is_interactive, prompt_yes_no};
 
 /// Info about a VPN that was disabled during the fix, for potential re-enable.
@@ -16,11 +16,11 @@ pub enum DisableMethod {
     VendorCli(String, Vec<String>), // (binary, args)
     Netsh(String),                  // adapter name (Windows)
     #[cfg(target_os = "macos")]
-    Scutil(String),                 // VPN service name
+    Scutil(String), // VPN service name
     #[cfg(target_os = "linux")]
-    Nmcli(String),                  // connection name
+    Nmcli(String), // connection name
     #[cfg(target_os = "linux")]
-    WgQuick(String),                // interface name
+    WgQuick(String), // interface name
 }
 
 /// Known enterprise VPN vendors — we never touch these automatically.
@@ -30,14 +30,27 @@ fn is_enterprise_vpn(adapter: &VpnAdapter) -> bool {
     let type_lower = adapter.adapter_type.to_lowercase();
 
     let enterprise_patterns = [
-        "cisco", "anyconnect", "globalprotect", "palo alto", "zscaler",
-        "forticlient", "fortinet", "pulse secure", "juniper", "f5 ",
-        "big-ip", "checkpoint", "corp", "enterprise", "mdm", "company",
+        "cisco",
+        "anyconnect",
+        "globalprotect",
+        "palo alto",
+        "zscaler",
+        "forticlient",
+        "fortinet",
+        "pulse secure",
+        "juniper",
+        "f5 ",
+        "big-ip",
+        "checkpoint",
+        "corp",
+        "enterprise",
+        "mdm",
+        "company",
     ];
 
-    enterprise_patterns.iter().any(|p| {
-        lower.contains(p) || vendor_lower.contains(p) || type_lower.contains(p)
-    })
+    enterprise_patterns
+        .iter()
+        .any(|p| lower.contains(p) || vendor_lower.contains(p) || type_lower.contains(p))
 }
 
 /// Try to find a vendor-specific CLI to disconnect this VPN.
@@ -64,12 +77,18 @@ fn find_vendor_cli(adapter: &VpnAdapter) -> Option<(String, Vec<String>)> {
     // WireGuard (wg-quick)
     if adapter.adapter_type == "WireGuard" {
         if let Some(ref iface) = adapter.interface_name {
-            return Some(("wg-quick".to_string(), vec!["down".to_string(), iface.clone()]));
+            return Some((
+                "wg-quick".to_string(),
+                vec!["down".to_string(), iface.clone()],
+            ));
         }
     }
 
     // Cisco AnyConnect
-    if lower.contains("cisco") || vendor_lower.contains("cisco") || adapter.adapter_type.contains("Cisco") {
+    if lower.contains("cisco")
+        || vendor_lower.contains("cisco")
+        || adapter.adapter_type.contains("Cisco")
+    {
         #[cfg(windows)]
         {
             // Try common install paths
@@ -85,7 +104,10 @@ fn find_vendor_cli(adapter: &VpnAdapter) -> Option<(String, Vec<String>)> {
         }
         #[cfg(unix)]
         {
-            return Some(("/opt/cisco/anyconnect/bin/vpn".to_string(), vec!["disconnect".to_string()]));
+            return Some((
+                "/opt/cisco/anyconnect/bin/vpn".to_string(),
+                vec!["disconnect".to_string()],
+            ));
         }
     }
 
@@ -130,8 +152,8 @@ pub async fn detect_and_disable(config: &Config) -> Vec<DisabledVpn> {
             );
             prompt_yes_no(&prompt)
         } else {
-            // JSON mode: auto-disable consumer VPNs
-            true
+            // Non-interactive mode cannot safely offer re-enable handling.
+            false
         };
 
         if !do_disable {
@@ -153,7 +175,12 @@ pub async fn detect_and_disable(config: &Config) -> Vec<DisabledVpn> {
                     }
                     disabled.push(DisabledVpn {
                         name: adapter.name.clone(),
-                        method: DisableMethod::VendorCli(bin, args.iter().map(|a| a.replace("disconnect", "connect").replace("down", "up")).collect()),
+                        method: DisableMethod::VendorCli(
+                            bin,
+                            args.iter()
+                                .map(|a| a.replace("disconnect", "connect").replace("down", "up"))
+                                .collect(),
+                        ),
                     });
                     continue;
                 }
@@ -314,12 +341,19 @@ pub async fn offer_reenable(disabled: &[DisabledVpn], config: &Config) {
                     );
                     println!(
                         "    {}",
-                        crate::render::color::dim("Check your VPN configuration or contact your VPN provider.", config),
+                        crate::render::color::dim(
+                            "Check your VPN configuration or contact your VPN provider.",
+                            config
+                        ),
                     );
                 }
             }
         } else if is_interactive(config) {
-            print_step_fail(&format!("Failed to re-enable {}", vpn.name), "Try reconnecting manually", config);
+            print_step_fail(
+                &format!("Failed to re-enable {}", vpn.name),
+                "Try reconnecting manually",
+                config,
+            );
         }
     }
 }
@@ -375,7 +409,8 @@ async fn reenable_vpn(vpn: &DisabledVpn) -> bool {
 async fn redisable_vpn(vpn: &DisabledVpn) -> bool {
     match &vpn.method {
         DisableMethod::VendorCli(bin, reconnect_args) => {
-            let disconnect_args: Vec<String> = reconnect_args.iter()
+            let disconnect_args: Vec<String> = reconnect_args
+                .iter()
                 .map(|a| a.replace("connect", "disconnect").replace("up", "down"))
                 .collect();
             let mut cmd = tokio::process::Command::new(bin);
@@ -428,11 +463,14 @@ pub fn vpn_json(disabled: &[DisabledVpn]) -> serde_json::Value {
     if disabled.is_empty() {
         return serde_json::json!(null);
     }
-    let items: Vec<serde_json::Value> = disabled.iter().map(|v| {
-        serde_json::json!({
-            "name": v.name,
-            "disabled": true,
+    let items: Vec<serde_json::Value> = disabled
+        .iter()
+        .map(|v| {
+            serde_json::json!({
+                "name": v.name,
+                "disabled": true,
+            })
         })
-    }).collect();
+        .collect();
     serde_json::json!(items)
 }

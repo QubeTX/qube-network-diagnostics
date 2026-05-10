@@ -1,3 +1,4 @@
+pub mod adapter_hw_stats;
 pub mod adapters;
 pub mod arp;
 pub mod bufferbloat;
@@ -24,7 +25,6 @@ pub mod speed;
 pub mod tls_inspection;
 pub mod traffic_counters;
 pub mod vpn;
-pub mod adapter_hw_stats;
 
 use serde::Serialize;
 

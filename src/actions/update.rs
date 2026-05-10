@@ -320,11 +320,8 @@ async fn fetch_latest_version() -> Result<String, String> {
 }
 
 fn is_newer(current: &str, latest: &str) -> bool {
-    let parse = |v: &str| -> Vec<u64> {
-        v.split('.')
-            .filter_map(|s| s.parse::<u64>().ok())
-            .collect()
-    };
+    let parse =
+        |v: &str| -> Vec<u64> { v.split('.').filter_map(|s| s.parse::<u64>().ok()).collect() };
 
     let c = parse(current);
     let l = parse(latest);
@@ -419,9 +416,7 @@ fn execute_update(strategies: &[UpdateStrategy]) -> Result<UpdateStrategy, Updat
 
 fn try_strategy(strategy: UpdateStrategy) -> Result<(), StrategyError> {
     match strategy {
-        UpdateStrategy::Cargo => {
-            run_command_status("cargo", &["install", "nd-300", "--force"])
-        }
+        UpdateStrategy::Cargo => run_command_status("cargo", &["install", "nd-300", "--force"]),
         UpdateStrategy::InstallerCurl => try_installer_curl(),
         UpdateStrategy::InstallerWget => try_installer_wget(),
         UpdateStrategy::InstallerPowerShell => try_installer_powershell("powershell"),
@@ -500,10 +495,7 @@ fn try_installer_powershell(launcher: &str) -> Result<(), StrategyError> {
     // `$ErrorActionPreference='Stop'` so an `irm` failure aborts the pipeline
     // rather than feeding nothing into iex (which would exit 0 and look like
     // a successful update).
-    let script = format!(
-        "$ErrorActionPreference='Stop'; irm {} | iex",
-        PS_INSTALLER
-    );
+    let script = format!("$ErrorActionPreference='Stop'; irm {} | iex", PS_INSTALLER);
     run_command_status(
         launcher,
         &[
@@ -546,10 +538,7 @@ mod tests {
     fn unix_without_cargo_prunes_cargo() {
         assert_eq!(
             order_strategies(false, TargetOs::Unix),
-            vec![
-                UpdateStrategy::InstallerCurl,
-                UpdateStrategy::InstallerWget,
-            ]
+            vec![UpdateStrategy::InstallerCurl, UpdateStrategy::InstallerWget,]
         );
     }
 
@@ -581,7 +570,10 @@ mod tests {
         assert_eq!(UpdateStrategy::Cargo.json_method(), "cargo");
         assert_eq!(UpdateStrategy::InstallerCurl.json_method(), "installer");
         assert_eq!(UpdateStrategy::InstallerWget.json_method(), "installer");
-        assert_eq!(UpdateStrategy::InstallerPowerShell.json_method(), "installer");
+        assert_eq!(
+            UpdateStrategy::InstallerPowerShell.json_method(),
+            "installer"
+        );
         assert_eq!(UpdateStrategy::InstallerPwsh.json_method(), "installer");
     }
 

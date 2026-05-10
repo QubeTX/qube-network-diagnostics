@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use super::cmd::{run_cmd, TIMEOUT_QUICK, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
+use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
 
 /// DHCP lease renewal — all platforms.
 pub async fn renew_dhcp() -> Result<String, String> {
@@ -22,9 +22,7 @@ pub async fn renew_dhcp() -> Result<String, String> {
         let mut renew_cmd = tokio::process::Command::new("ipconfig");
         renew_cmd.arg("/renew");
         match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
-            Ok(output) if output.status.success() => {
-                Ok("DHCP lease renewed".to_string())
-            }
+            Ok(output) if output.status.success() => Ok("DHCP lease renewed".to_string()),
             Ok(output) => Err(format!(
                 "DHCP renew failed: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
@@ -42,9 +40,7 @@ pub async fn renew_dhcp() -> Result<String, String> {
                 let mut cmd = tokio::process::Command::new("ipconfig");
                 cmd.args(["set", dev, "DHCP"]);
                 match run_cmd(cmd, TIMEOUT_SLOW).await {
-                    Ok(output) if output.status.success() => {
-                        Ok(format!("DHCP renewed on {}", dev))
-                    }
+                    Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {}", dev)),
                     Ok(output) => Err(format!(
                         "DHCP renew failed on {}: {}",
                         dev,

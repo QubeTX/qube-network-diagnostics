@@ -18,9 +18,13 @@ pub async fn check(config: &Config) -> (DiagnosticResult, Option<SpeedTestResult
     let pb = create_progress_bar(config);
     let pb_clone = pb.clone();
 
-    let result = speedtest::run(st_config, move |phase, progress| {
-        update_progress(&pb_clone, phase, progress);
-    }, None)
+    let result = speedtest::run(
+        st_config,
+        move |phase, progress| {
+            update_progress(&pb_clone, phase, progress);
+        },
+        None,
+    )
     .await;
 
     pb.finish_and_clear();

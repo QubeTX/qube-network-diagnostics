@@ -10,8 +10,8 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **Two operating modes**: User mode (clean summary) and Technician mode (deep diagnostics)
 - **8 core diagnostics**: adapters, interfaces, gateway, DNS, public IP, latency, speed test, port connectivity
 - **17 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
-- **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Re-tests after each step and repeats until everything passes or no further actions remain. Works for technical and non-technical users; high-risk recovery steps always require Y/N confirmation with a plain-language explanation.
-- **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) with inverse-variance weighted aggregation, modified trimean (Ookla-style), and RFC 3550 jitter for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
+- **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
+- **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) with bounded N-provider inverse-variance aggregation, modified trimean (Ookla-style), and RFC 3550 jitter for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
 - **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and runs a probe-and-retry chain: cargo first when available, cargo-dist installer as universal fallback (curl → wget on macOS/Linux, PowerShell → pwsh on Windows). When one strategy can't run, the next is tried automatically; failures from every strategy are surfaced together with specific reasons.
 - **SpeedQX** standalone speed test binary — all 4 providers with per-provider breakdown and real-time progress
 - **Bufferbloat detection** with grade scoring (A+ through F)
@@ -75,12 +75,13 @@ nd300 fix
 nd300 -f
 nd300 --fix
 
-# Auto-confirm Medium-cost prompts (does NOT bypass High-risk Y/N)
+# Auto-confirm medium-risk prompts (does NOT bypass high-risk Y/N)
 nd300 fix --yes
 nd300 -f -y
 
 # Skip the speed test for faster execution
 nd300 --fast
+nd300 fix --fast
 
 # JSON output for scripting
 nd300 --json
@@ -171,7 +172,7 @@ speedqx --duration 10 --latency-probes 5
 | `-c, --clear-dns` | Flush the system DNS cache. Equivalent to `nd300 clear-dns`. |
 | `--uninstall` | Remove nd300 from the system. Equivalent to `nd300 uninstall`. |
 | `--update` | Check for updates and install the latest version. Equivalent to `nd300 update`. |
-| `-y, --yes` | Auto-confirm Medium-cost prompts when running the fix flow. Does **not** bypass High-risk Y/N. |
+| `-y, --yes` | Auto-confirm medium-risk prompts when running the fix flow. Does **not** bypass high-risk Y/N. |
 | `-h, --help` | Print help |
 | `-v, --version` | Print version |
 
@@ -239,7 +240,7 @@ speedqx --duration 10 --latency-probes 5
 
 The fix flow runs a **diagnostic-driven triage loop**: it tests the network, looks at what actually failed, applies only the recovery actions that target those specific failures, re-tests, and repeats. Requires elevated privileges (`sudo` on macOS/Linux, Administrator on Windows).
 
-A clean network completes `nd300 fix` in under 8 seconds and applies zero actions. A real failure usually clears in 1–2 iterations.
+A clean network completes `nd300 fix` in under 8 seconds and applies zero actions. Latency-only findings are reported as advisory because ICMP can be rate-limited or deprioritized by healthy networks. A real failure usually clears in 1–2 iterations.
 
 ### How it works
 
@@ -248,7 +249,7 @@ A clean network completes `nd300 fix` in under 8 seconds and applies zero action
 2. If everything passes → done.
 3. Look at which specific diagnostics failed.
 4. Group them by root cause (e.g. interface-down ⇒ skip DNS/gateway/IP — they cascade).
-5. Pick the cheapest action that targets a remaining failure and apply it.
+5. Pick the safest justified action that targets a remaining failure and apply it.
 6. Wait for the system to stabilize.
 7. Re-run the diagnostics.
 8. Repeat until everything passes, or no further actions are available.
@@ -262,25 +263,25 @@ The loop is bounded by **three independent caps** so it always terminates:
 
 ### Action ladder
 
-Actions are tried in cost order: cheap first, expensive last. Each action declares which failure categories it can address; only relevant actions run for any given failure set.
+Actions are tried by evidence and risk: cheap first, reversible first, and only when the current failure set justifies the action. DNS repair is intentionally staged so the tool flushes caches and restores router-provided DNS before considering a public DNS change.
 
 | Cost / risk | Action | Targets |
 |---|---|---|
 | Cheap / Low | Flush DNS cache | DNS |
-| Cheap / Low | Switch DNS to Cloudflare 1.1.1.1 | DNS |
 | Cheap / Low | Reset DNS to router defaults | DNS |
-| Cheap / Low | Flush ARP cache | Gateway, latency |
+| Cheap / Low | Switch DNS to Cloudflare 1.1.1.1 | DNS, only after safer DNS-specific fixes fail |
+| Cheap / Low | Flush ARP cache | Gateway |
 | Medium / Low | Restart networking services | DNS, gateway, public IP |
 | Medium / Low | Renew DHCP lease | Gateway, public IP, adapters, interfaces |
-| Medium / Medium | Temporarily disable consumer VPNs | Public IP, latency, DNS |
-| Expensive / Medium | Restart the network adapter | Adapters, interfaces, gateway, DNS, public IP, latency |
+| Medium / Medium | Temporarily disable consumer VPNs | Public IP, DNS; interactive confirmation required |
+| Expensive / Medium | Restart the network adapter | Adapters, interfaces, gateway, DNS, public IP |
 | Expensive / **High** | Deep stack reset (Winsock / TCP-IP / IPv6 on Windows; recreate network service on macOS; recreate NetworkManager profile on Linux) | Last-resort recovery |
 
-Enterprise VPNs (Cisco AnyConnect, Zscaler, Palo Alto / GlobalProtect, F5, Check Point, Juniper) are **never** auto-disabled.
+Enterprise VPNs (Cisco AnyConnect, Zscaler, Palo Alto / GlobalProtect, F5, Check Point, Juniper) are **never** auto-disabled. Consumer VPN disable is also skipped in JSON or non-interactive mode, even with `--yes`, because the tool cannot safely guide re-enable/recovery steps there. Other medium-risk actions such as DHCP reset, service restart, adapter restart, and public-DNS changes are skipped in JSON or non-interactive mode unless `--yes` can safely auto-confirm the medium-risk prompt. High-risk actions are never auto-confirmed.
 
-### High-risk action prompts
+### Confirmation prompts
 
-The deep stack reset is gated behind a structured plain-language prompt:
+Medium-risk actions explain what they will change and require confirmation unless `--yes` is provided. The deep stack reset is high-risk and is always gated behind a structured plain-language prompt:
 
 ```text
 ┌─ Escalating: Reset Windows networking stack ──────────────────────────────
@@ -301,7 +302,7 @@ Typical duration: 10–15 seconds
 Continue? Type 'y' to proceed, anything else to skip:
 ```
 
-`--yes` does **not** bypass these prompts — they always require an explicit `y`. Anything else (including a blank Enter) is treated as N. In `--json` / non-interactive contexts, high-risk actions are skipped, not auto-applied, with a clear marker in the report.
+`--yes` does **not** bypass high-risk prompts — they always require an explicit `y`. Anything else (including a blank Enter) is treated as N. In `--json` / non-interactive contexts, high-risk actions are skipped, not auto-applied, with a clear marker in the report.
 
 ### Hard-block detection
 
@@ -395,8 +396,8 @@ The speed test uses a technician-grade accuracy pipeline matching the [SpeedQX w
 - **Winsorized cross-validation**: catches edge cases where IQR filtering is too aggressive
 - **Upload-specific pipeline**: keeps fastest 50% of post-warmup samples (following Speedtest.net methodology)
 - **RFC 3550 jitter**: exponentially weighted moving average, the standard used by VoIP and real-time media
-- **Inverse-variance weighted aggregation**: statistically optimal combination of Cloudflare and NDT7 results
-- **Provider divergence detection**: flags when results differ by >30%, indicating possible throttling or QoS
+- **Bounded inverse-variance weighted aggregation**: combines every successful provider while preventing any single provider from dominating the result
+- **Provider divergence detection**: flags when the full provider spread differs by >30%, indicating possible throttling or QoS
 
 For a full technical breakdown, see the [SpeedQX Technical Report](https://speedqx.com/how-it-works).
 

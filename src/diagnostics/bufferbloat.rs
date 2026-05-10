@@ -49,7 +49,13 @@ pub async fn collect() -> Option<BufferbloatResult> {
         }
         None => {
             // Can't measure loaded, just report unloaded
-            let grade = if unloaded < 20.0 { "A" } else if unloaded < 50.0 { "B" } else { "C" };
+            let grade = if unloaded < 20.0 {
+                "A"
+            } else if unloaded < 50.0 {
+                "B"
+            } else {
+                "C"
+            };
             (
                 grade.to_string(),
                 "Loaded latency not measured (run without --fast for full test)".to_string(),
@@ -91,13 +97,19 @@ async fn measure_latency(host: &str, count: u32) -> Option<f64> {
     for line in text.lines() {
         if let Some(pos) = line.find("time=") {
             let after = &line[pos + 5..];
-            let num: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            let num: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
             if let Ok(ms) = num.parse::<f64>() {
                 times.push(ms);
             }
         } else if let Some(pos) = line.find("time<") {
             let after = &line[pos + 5..];
-            let num: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            let num: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
             if let Ok(ms) = num.parse::<f64>() {
                 times.push(ms);
             }

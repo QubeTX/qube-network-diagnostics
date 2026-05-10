@@ -51,10 +51,7 @@ pub async fn check() -> (DiagnosticResult, Vec<PortResult>) {
             .filter(|r| !r.open)
             .map(|r| format!("{} ({})", r.service, r.port))
             .collect();
-        DiagnosticResult::warn(
-            "Ports",
-            format!("Blocked: {}", blocked.join(", ")),
-        )
+        DiagnosticResult::warn("Ports", format!("Blocked: {}", blocked.join(", ")))
     };
 
     (result, results)
@@ -79,11 +76,8 @@ async fn test_port(host: &str, port: u16, service: &str) -> PortResult {
     };
 
     for addr in addrs {
-        match tokio::time::timeout(
-            Duration::from_secs(5),
-            tokio::net::TcpStream::connect(addr),
-        )
-        .await
+        match tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(addr))
+            .await
         {
             Ok(Ok(_stream)) => {
                 let latency = start.elapsed().as_secs_f64() * 1000.0;

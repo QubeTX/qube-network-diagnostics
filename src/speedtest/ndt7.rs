@@ -1,11 +1,10 @@
-use super::{BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration, statistics};
+use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
 use futures_util::{SinkExt, StreamExt};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-const LOCATE_URL: &str =
-    "https://locate.measurementlab.net/v2/nearest/ndt/ndt7";
+const LOCATE_URL: &str = "https://locate.measurementlab.net/v2/nearest/ndt/ndt7";
 
 /// Initial upload frame size (8 KB) — doubles up to MAX_UPLOAD_FRAME.
 const INITIAL_UPLOAD_FRAME_SIZE: usize = 8192;
@@ -26,15 +25,12 @@ where
 {
     match run_inner(config, &progress).await {
         Ok(result) => result,
-        Err(e) => error_result(format!("{e}")),
+        Err(e) => error_result(e.to_string()),
     }
 }
 
 /// Internal implementation that propagates errors.
-async fn run_inner<F>(
-    config: &SpeedTestConfig,
-    progress: &F,
-) -> Result<ProviderResult, String>
+async fn run_inner<F>(config: &SpeedTestConfig, progress: &F) -> Result<ProviderResult, String>
 where
     F: Fn(Phase, f64) + Send + Sync,
 {
@@ -61,26 +57,24 @@ where
         .as_array()
         .ok_or("NDT7 discovery: missing results array")?;
 
-    let server_entry = results
-        .first()
-        .ok_or("NDT7 discovery: no servers found")?;
+    let server_entry = results.first().ok_or("NDT7 discovery: no servers found")?;
 
     let machine = server_entry["machine"]
         .as_str()
         .unwrap_or("unknown")
         .to_string();
 
-    let city = server_entry["location"]["city"]
-        .as_str()
-        .unwrap_or("");
-    let country = server_entry["location"]["country"]
-        .as_str()
-        .unwrap_or("");
+    let city = server_entry["location"]["city"].as_str().unwrap_or("");
+    let country = server_entry["location"]["country"].as_str().unwrap_or("");
     let location = if !city.is_empty() || !country.is_empty() {
         Some(format!(
             "{}{}{}",
             city,
-            if !city.is_empty() && !country.is_empty() { ", " } else { "" },
+            if !city.is_empty() && !country.is_empty() {
+                ", "
+            } else {
+                ""
+            },
             country
         ))
     } else {
@@ -101,9 +95,7 @@ where
     let download_url_ws = urls["ws:///ndt/v7/download"]
         .as_str()
         .map(|s| s.to_string());
-    let upload_url_ws = urls["ws:///ndt/v7/upload"]
-        .as_str()
-        .map(|s| s.to_string());
+    let upload_url_ws = urls["ws:///ndt/v7/upload"].as_str().map(|s| s.to_string());
 
     progress(Phase::Ndt7Discovery, 1.0);
 
@@ -134,14 +126,20 @@ where
             break;
         }
 
+        let run_duration = remaining.min(Duration::from_secs(10));
         let dl_budget_f64 = dl_budget_secs as f64;
-        let dl_result = run_download(&download_url, download_url_ws.as_deref(), |frac| {
-            // Progress based on overall deadline, not per-session
-            let elapsed = dl_phase_start.elapsed().as_secs_f64();
-            let overall_frac = (elapsed / dl_budget_f64).min(0.99);
-            // Blend: use max of overall progress and per-session fraction
-            progress(Phase::Ndt7Download, overall_frac.max(frac * 0.1));
-        })
+        let dl_result = run_download(
+            &download_url,
+            download_url_ws.as_deref(),
+            run_duration,
+            |frac| {
+                // Progress based on overall deadline, not per-session
+                let elapsed = dl_phase_start.elapsed().as_secs_f64();
+                let overall_frac = (elapsed / dl_budget_f64).min(0.99);
+                // Blend: use max of overall progress and per-session fraction
+                progress(Phase::Ndt7Download, overall_frac.max(frac * 0.1));
+            },
+        )
         .await?;
 
         total_dl_bytes += dl_result.bytes;
@@ -174,12 +172,18 @@ where
             break;
         }
 
+        let run_duration = remaining.min(Duration::from_secs(10));
         let ul_budget_f64 = ul_budget_secs as f64;
-        let ul_result = run_upload(&upload_url, upload_url_ws.as_deref(), |frac| {
-            let elapsed = ul_phase_start.elapsed().as_secs_f64();
-            let overall_frac = (elapsed / ul_budget_f64).min(0.99);
-            progress(Phase::Ndt7Upload, overall_frac.max(frac * 0.1));
-        })
+        let ul_result = run_upload(
+            &upload_url,
+            upload_url_ws.as_deref(),
+            run_duration,
+            |frac| {
+                let elapsed = ul_phase_start.elapsed().as_secs_f64();
+                let overall_frac = (elapsed / ul_budget_f64).min(0.99);
+                progress(Phase::Ndt7Upload, overall_frac.max(frac * 0.1));
+            },
+        )
         .await?;
 
         total_ul_bytes += ul_result.bytes;
@@ -267,7 +271,9 @@ async fn ndt7_connect(
     label: &str,
 ) -> Result<
     (
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
         tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,
     ),
     String,
@@ -308,7 +314,12 @@ async fn ndt7_connect(
 }
 
 /// Run a single NDT7 download test over WebSocket.
-async fn run_download<F>(url: &str, fallback_url: Option<&str>, progress: F) -> Result<SubTestResult, String>
+async fn run_download<F>(
+    url: &str,
+    fallback_url: Option<&str>,
+    duration: Duration,
+    progress: F,
+) -> Result<SubTestResult, String>
 where
     F: Fn(f64),
 {
@@ -322,10 +333,12 @@ where
     let mut final_elapsed_us: u64 = 0;
     let mut total_received: u64 = 0;
     let start = Instant::now();
+    let deadline = tokio::time::Instant::from_std(start + duration);
 
     loop {
         let msg = tokio::select! {
             msg = read.next() => msg,
+            _ = tokio::time::sleep_until(deadline) => break,
             _ = tokio::time::sleep(SINGLE_TEST_TIMEOUT) => break,
         };
 
@@ -333,8 +346,7 @@ where
             Some(Ok(Message::Binary(data))) => {
                 total_received += data.len() as u64;
                 let elapsed = start.elapsed().as_secs_f64();
-                // Assume ~10 seconds per test
-                progress((elapsed / 10.0).min(0.99));
+                progress((elapsed / duration.as_secs_f64()).min(0.99));
             }
             Some(Ok(Message::Text(text))) => {
                 if let Ok(measurement) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -387,7 +399,11 @@ where
 
     Ok(SubTestResult {
         throughput_mbps,
-        bytes: if final_bytes > 0 { final_bytes } else { total_received },
+        bytes: if final_bytes > 0 {
+            final_bytes
+        } else {
+            total_received
+        },
         duration_s,
         ping_ms,
         smoothed_rtts,
@@ -395,7 +411,12 @@ where
 }
 
 /// Run a single NDT7 upload test over WebSocket.
-async fn run_upload<F>(url: &str, fallback_url: Option<&str>, progress: F) -> Result<SubTestResult, String>
+async fn run_upload<F>(
+    url: &str,
+    fallback_url: Option<&str>,
+    duration: Duration,
+    progress: F,
+) -> Result<SubTestResult, String>
 where
     F: Fn(f64),
 {
@@ -406,7 +427,7 @@ where
     let mut frame_size = INITIAL_UPLOAD_FRAME_SIZE;
     let mut upload_data = vec![0u8; frame_size];
     let start = Instant::now();
-    let send_deadline = start + Duration::from_secs(10);
+    let send_deadline = start + duration;
     let mut frame_count: u64 = 0;
 
     let mut min_rtts: Vec<f64> = Vec::new();
@@ -430,10 +451,10 @@ where
                         bytes_sent += frame_size as u64;
                         frame_count += 1;
                         let elapsed = start.elapsed().as_secs_f64();
-                        progress((elapsed / 10.0).min(0.99));
+                        progress((elapsed / duration.as_secs_f64()).min(0.99));
 
                         // Double frame size periodically for better saturation
-                        if frame_count % 100 == 0 && frame_size < MAX_UPLOAD_FRAME_SIZE {
+                        if frame_count.is_multiple_of(100) && frame_size < MAX_UPLOAD_FRAME_SIZE {
                             frame_size *= 2;
                             upload_data = vec![0u8; frame_size];
                         }
@@ -529,7 +550,11 @@ where
 
     Ok(SubTestResult {
         throughput_mbps,
-        bytes: if final_bytes > 0 { final_bytes } else { bytes_sent },
+        bytes: if final_bytes > 0 {
+            final_bytes
+        } else {
+            bytes_sent
+        },
         duration_s,
         ping_ms,
         smoothed_rtts,

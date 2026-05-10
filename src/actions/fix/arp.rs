@@ -7,9 +7,7 @@ pub async fn flush_arp() -> Result<String, String> {
         let mut cmd = tokio::process::Command::new("arp");
         cmd.args(["-d", "*"]);
         match run_cmd(cmd, TIMEOUT_QUICK).await {
-            Ok(output) if output.status.success() => {
-                Ok("ARP cache flushed".to_string())
-            }
+            Ok(output) if output.status.success() => Ok("ARP cache flushed".to_string()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
             Err(e) => Err(e),
         }
@@ -20,9 +18,7 @@ pub async fn flush_arp() -> Result<String, String> {
         let mut cmd = tokio::process::Command::new("arp");
         cmd.args(["-d", "-a"]);
         match run_cmd(cmd, TIMEOUT_QUICK).await {
-            Ok(output) if output.status.success() => {
-                Ok("ARP cache flushed".to_string())
-            }
+            Ok(output) if output.status.success() => Ok("ARP cache flushed".to_string()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
             Err(e) => Err(e),
         }
@@ -33,9 +29,7 @@ pub async fn flush_arp() -> Result<String, String> {
         let mut cmd = tokio::process::Command::new("ip");
         cmd.args(["neigh", "flush", "all"]);
         match run_cmd(cmd, TIMEOUT_QUICK).await {
-            Ok(output) if output.status.success() => {
-                Ok("ARP cache flushed".to_string())
-            }
+            Ok(output) if output.status.success() => Ok("ARP cache flushed".to_string()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
             Err(e) => Err(e),
         }

@@ -44,7 +44,11 @@ async fn collect_windows() -> Option<Vec<DnsCacheEntry>> {
         let line = line.trim();
 
         if line.contains("Record Name") {
-            current_name = line.split(':').nth(1).map(|s| s.trim().to_string()).unwrap_or_default();
+            current_name = line
+                .split(':')
+                .nth(1)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
         } else if line.contains("Record Type") {
             let type_num: u32 = line
                 .split(':')
@@ -58,10 +62,14 @@ async fn collect_windows() -> Option<Vec<DnsCacheEntry>> {
                 12 => "PTR",
                 15 => "MX",
                 _ => "OTHER",
-            }.to_string();
+            }
+            .to_string();
         } else if line.contains("Time To Live") {
             current_ttl = line.split(':').nth(1).and_then(|s| s.trim().parse().ok());
-        } else if line.contains("A (Host) Record") || line.contains("CNAME Record") || line.contains("AAAA Record") {
+        } else if line.contains("A (Host) Record")
+            || line.contains("CNAME Record")
+            || line.contains("AAAA Record")
+        {
             let data = line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string();
             if !current_name.is_empty() {
                 entries.push(DnsCacheEntry {

@@ -26,12 +26,18 @@ pub async fn run(config: &Config) -> i32 {
                     "success": false,
                     "message": format!("Could not determine binary location: {}", e),
                 });
-                println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
+                );
             } else {
                 println!(
                     "  {} {}",
                     color::red(fail_icon(config), config),
-                    color::red(&format!("Could not determine binary location: {}", e), config),
+                    color::red(
+                        &format!("Could not determine binary location: {}", e),
+                        config
+                    ),
                 );
             }
             return 2;
@@ -51,7 +57,14 @@ pub async fn run(config: &Config) -> i32 {
     println!();
     println!(
         "  This will remove nd300 and speedqx from: {}",
-        color::cyan(&real_path.parent().unwrap_or(&real_path).display().to_string(), config),
+        color::cyan(
+            &real_path
+                .parent()
+                .unwrap_or(&real_path)
+                .display()
+                .to_string(),
+            config
+        ),
     );
 
     // Show what we'll clean up
@@ -144,9 +157,16 @@ async fn run_json(exe_path: &Path, config: &Config) -> i32 {
         "notes": report.notes,
         "path": exe_path.display().to_string(),
     });
-    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string()));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
+    );
 
-    if report.binary_removed { 0 } else { 2 }
+    if report.binary_removed {
+        0
+    } else {
+        2
+    }
 }
 
 async fn do_uninstall(exe_path: &Path, _config: &Config) -> CleanupReport {
@@ -200,11 +220,11 @@ async fn do_uninstall(exe_path: &Path, _config: &Config) -> CleanupReport {
             if sibling.exists() {
                 match std::fs::remove_file(&sibling) {
                     Ok(_) => report.sibling_removed = true,
-                    Err(e) => report.notes.push(format!(
-                        "Could not remove {}: {}",
-                        sibling.display(),
-                        e
-                    )),
+                    Err(e) => {
+                        report
+                            .notes
+                            .push(format!("Could not remove {}: {}", sibling.display(), e))
+                    }
                 }
             }
         }
@@ -224,7 +244,8 @@ async fn do_uninstall(exe_path: &Path, _config: &Config) -> CleanupReport {
                 }
             } else {
                 report.notes.push(
-                    "Other binaries share the install directory — PATH entry left intact".to_string(),
+                    "Other binaries share the install directory — PATH entry left intact"
+                        .to_string(),
                 );
             }
         }
@@ -245,10 +266,7 @@ async fn do_uninstall(exe_path: &Path, _config: &Config) -> CleanupReport {
         // On Windows, a running exe cannot be deleted directly.
         // Spawn a background cmd that waits briefly, then deletes the file.
         let exe_str = exe_path.to_string_lossy();
-        let script = format!(
-            "ping localhost -n 3 > nul & del \"{}\"",
-            exe_str
-        );
+        let script = format!("ping localhost -n 3 > nul & del \"{}\"", exe_str);
 
         match std::process::Command::new("cmd")
             .args(["/C", &script])
@@ -258,7 +276,9 @@ async fn do_uninstall(exe_path: &Path, _config: &Config) -> CleanupReport {
             .spawn()
         {
             Ok(_) => report.binary_removed = true,
-            Err(e) => report.notes.push(format!("Failed to spawn cleanup process: {}", e)),
+            Err(e) => report
+                .notes
+                .push(format!("Failed to spawn cleanup process: {}", e)),
         }
     }
 
@@ -311,10 +331,7 @@ fn get_receipt_dir() -> Option<PathBuf> {
 /// directory from PATH — that would break the user's Rust toolchain.
 #[cfg(windows)]
 fn is_sole_package_in_dir(dir: &Path) -> bool {
-    let our_names: Vec<String> = OUR_BINARIES
-        .iter()
-        .map(|n| format!("{}.exe", n))
-        .collect();
+    let our_names: Vec<String> = OUR_BINARIES.iter().map(|n| format!("{}.exe", n)).collect();
 
     match std::fs::read_dir(dir) {
         Ok(entries) => {
@@ -339,25 +356,22 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
 
     // Read current user PATH from registry
     let output = Command::new("reg")
-        .args([
-            "query",
-            "HKCU\\Environment",
-            "/v",
-            "PATH",
-        ])
+        .args(["query", "HKCU\\Environment", "/v", "PATH"])
         .output()
         .map_err(|e| format!("Failed to query registry: {}", e))?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     // Parse the PATH value and its registry type from reg query output
     // Format: "    PATH    REG_EXPAND_SZ    value"
-    let (current_path, reg_type) = match text
-        .lines()
-        .find(|line| line.contains("PATH") && (line.contains("REG_EXPAND_SZ") || line.contains("REG_SZ")))
-    {
+    let (current_path, reg_type) = match text.lines().find(|line| {
+        line.contains("PATH") && (line.contains("REG_EXPAND_SZ") || line.contains("REG_SZ"))
+    }) {
         Some(line) => {
             if let Some(idx) = line.find("REG_EXPAND_SZ") {
-                (line[idx + "REG_EXPAND_SZ".len()..].trim().to_string(), "REG_EXPAND_SZ")
+                (
+                    line[idx + "REG_EXPAND_SZ".len()..].trim().to_string(),
+                    "REG_EXPAND_SZ",
+                )
             } else if let Some(idx) = line.find("REG_SZ") {
                 (line[idx + "REG_SZ".len()..].trim().to_string(), "REG_SZ")
             } else {
@@ -378,7 +392,10 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
         })
         .collect();
 
-    let original_count = current_path.split(';').filter(|p| !p.trim().is_empty()).count();
+    let original_count = current_path
+        .split(';')
+        .filter(|p| !p.trim().is_empty())
+        .count();
 
     if new_parts.len() == original_count {
         return Ok(false); // Directory wasn't in PATH

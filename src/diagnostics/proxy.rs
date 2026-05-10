@@ -45,9 +45,8 @@ pub async fn collect() -> Option<ProxyConfig> {
         check_macos_proxy(&mut config).await;
     }
 
-    config.proxy_enabled = config.http_proxy.is_some()
-        || config.https_proxy.is_some()
-        || config.socks_proxy.is_some();
+    config.proxy_enabled =
+        config.http_proxy.is_some() || config.https_proxy.is_some() || config.socks_proxy.is_some();
 
     Some(config)
 }
@@ -129,16 +128,16 @@ async fn check_macos_proxy(config: &mut ProxyConfig) {
                 config.proxy_enabled = true;
             }
             if line.contains("HTTPProxy") {
-                config.http_proxy = line.splitn(2, ':').nth(1).map(|s| s.trim().to_string());
+                config.http_proxy = line.split_once(':').map(|x| x.1.trim().to_string());
             }
             if line.contains("HTTPSProxy") {
-                config.https_proxy = line.splitn(2, ':').nth(1).map(|s| s.trim().to_string());
+                config.https_proxy = line.split_once(':').map(|x| x.1.trim().to_string());
             }
             if line.contains("SOCKSProxy") {
-                config.socks_proxy = line.splitn(2, ':').nth(1).map(|s| s.trim().to_string());
+                config.socks_proxy = line.split_once(':').map(|x| x.1.trim().to_string());
             }
             if line.contains("ProxyAutoConfigURLString") {
-                config.pac_url = line.splitn(2, ':').nth(1).map(|s| s.trim().to_string());
+                config.pac_url = line.split_once(':').map(|x| x.1.trim().to_string());
             }
         }
     }

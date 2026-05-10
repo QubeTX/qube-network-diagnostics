@@ -293,20 +293,23 @@ impl ReportBuilder {
         self.output.push_str(&self.renderer.render_top_header());
         self.output.push_str(&self.renderer.render_header_bottom());
         self.output.push_str(&self.renderer.render_centered(title));
-        self.output.push_str(&self.renderer.render_centered(subtitle));
+        self.output
+            .push_str(&self.renderer.render_centered(subtitle));
         self.output.push_str(&self.renderer.render_top_divider());
         self
     }
 
     pub fn section_header(mut self, text: &str) -> Self {
         self.output.push_str(&self.renderer.render_bottom_divider());
-        self.output.push_str(&self.renderer.render_span_row(&format!("  {}", text)));
+        self.output
+            .push_str(&self.renderer.render_span_row(&format!("  {}", text)));
         self.output.push_str(&self.renderer.render_top_divider());
         self
     }
 
     pub fn row(mut self, label: &str, value: &str) -> Self {
-        self.output.push_str(&self.renderer.render_row(label, value));
+        self.output
+            .push_str(&self.renderer.render_row(label, value));
         self
     }
 
@@ -326,8 +329,7 @@ impl ReportBuilder {
     }
 
     pub fn finish(mut self) -> String {
-        self.output
-            .push_str(&self.renderer.render_bottom_divider());
+        self.output.push_str(&self.renderer.render_bottom_divider());
         self.output.push_str(&self.renderer.render_full_bottom());
         self.output
     }

@@ -57,7 +57,10 @@ pub async fn check() -> (DiagnosticResult, Option<DnsInfo>) {
             if time_ms > 500.0 {
                 DiagnosticResult::warn("DNS", format!("Resolving slowly ({:.0}ms)", time_ms))
             } else if time_ms > 200.0 {
-                DiagnosticResult::warn("DNS", format!("Resolving with moderate latency ({:.0}ms)", time_ms))
+                DiagnosticResult::warn(
+                    "DNS",
+                    format!("Resolving with moderate latency ({:.0}ms)", time_ms),
+                )
             } else {
                 DiagnosticResult::ok("DNS", format!("Resolving normally ({:.0}ms)", time_ms))
             }
@@ -123,7 +126,9 @@ async fn get_dns_servers_windows() -> Vec<String> {
                     }
                 } else if in_dns_section {
                     let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.contains(':') && !trimmed.starts_with(char::is_numeric) {
+                    if trimmed.is_empty()
+                        || trimmed.contains(':') && !trimmed.starts_with(char::is_numeric)
+                    {
                         in_dns_section = false;
                     } else if let Some(ip) = extract_ip(trimmed) {
                         servers.push(ip);

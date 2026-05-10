@@ -28,6 +28,9 @@ async fn main() {
     if cli.verbose {
         config = config.with_verbose();
     }
+    if cli.yes {
+        config = config.with_auto_confirm_medium_risk();
+    }
     if let Some(title) = cli.title.clone() {
         config = config.with_title(title);
     }
@@ -38,9 +41,7 @@ async fn main() {
     // surface going forward; flags remain so older scripts keep working.
     if let Some(cmd) = cli.command.clone() {
         let exit_code = match cmd {
-            Nd300Command::Fix(args) => {
-                nd_300::actions::fix::run(&config, args).await
-            }
+            Nd300Command::Fix(args) => nd_300::actions::fix::run(&config, args).await,
             Nd300Command::Update => nd_300::actions::update::run(&config).await,
             Nd300Command::ClearDns => nd_300::actions::clear_dns::run(&config).await,
             Nd300Command::Uninstall => nd_300::actions::uninstall::run(&config).await,

@@ -1,4 +1,4 @@
-use super::{BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration, statistics};
+use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
 use reqwest::Client;
 use std::time::{Duration, Instant};
 
@@ -27,14 +27,11 @@ where
 {
     match run_inner(config, &progress).await {
         Ok(result) => result,
-        Err(e) => error_result(format!("{e}")),
+        Err(e) => error_result(e.to_string()),
     }
 }
 
-async fn run_inner<F>(
-    config: &SpeedTestConfig,
-    progress: &F,
-) -> Result<ProviderResult, String>
+async fn run_inner<F>(config: &SpeedTestConfig, progress: &F) -> Result<ProviderResult, String>
 where
     F: Fn(Phase, f64) + Send + Sync,
 {
@@ -47,7 +44,9 @@ where
     progress(Phase::FcDiscovery, 0.0);
 
     // Dynamically extract the API token from fast.com's JS bundle
-    let token = extract_token(&client).await.unwrap_or_else(|_| FALLBACK_TOKEN.to_string());
+    let token = extract_token(&client)
+        .await
+        .unwrap_or_else(|_| FALLBACK_TOKEN.to_string());
 
     progress(Phase::FcDiscovery, 0.3);
 
@@ -64,10 +63,7 @@ where
         .map_err(|e| format!("fast.com discovery failed: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!(
-            "fast.com API returned status {}",
-            resp.status()
-        ));
+        return Err(format!("fast.com API returned status {}", resp.status()));
     }
 
     let body: serde_json::Value = resp
@@ -119,7 +115,13 @@ where
         // Use a tiny range request to measure connection RTT, not download time
         let ping_url = format!("{}&bytes=1", first_url);
         let ping_start = Instant::now();
-        if client.head(&ping_url).timeout(Duration::from_secs(5)).send().await.is_ok() {
+        if client
+            .head(&ping_url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .is_ok()
+        {
             ping_ms = Some(ping_start.elapsed().as_secs_f64() * 1000.0);
         }
     }
@@ -130,22 +132,23 @@ where
 
         let req_start = Instant::now();
         match client.get(url).send().await {
-            Ok(resp) => match resp.bytes().await {
-                Ok(body) => {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(body) = resp.bytes().await {
                     let req_bytes = body.len() as u64;
                     let req_duration = req_start.elapsed().as_secs_f64();
                     dl_bytes += req_bytes;
                     if req_duration > 0.0 {
-                        dl_mbps_samples.push((req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0));
+                        dl_mbps_samples
+                            .push((req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0));
                     }
 
                     let elapsed = dl_start.elapsed().as_secs_f64();
                     let frac = (elapsed / dl_secs as f64).min(1.0);
                     progress(Phase::FcDownload, frac);
                 }
-                Err(_) => {}
-            },
+            }
             Err(_) => {}
+            _ => {}
         }
     }
 
@@ -182,11 +185,12 @@ where
             .send()
             .await
         {
-            Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
+            Ok(resp) if resp.status().is_success() => {
                 let req_duration = req_start.elapsed().as_secs_f64();
                 ul_bytes += UPLOAD_CHUNK_SIZE as u64;
                 if req_duration > 0.0 {
-                    ul_mbps_samples.push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
+                    ul_mbps_samples
+                        .push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
                 }
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let frac = (elapsed / ul_secs as f64).min(1.0);
@@ -214,7 +218,10 @@ where
 
     Ok(ProviderResult {
         provider: "fast.com".to_string(),
-        server: urls.first().cloned().unwrap_or_else(|| "unknown".to_string()),
+        server: urls
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string()),
         location,
         ping_ms,
         jitter_ms: None, // fast.com doesn't provide jitter data
@@ -260,7 +267,12 @@ async fn extract_token(client: &Client) -> Result<String, String> {
 
     // Ensure filename ends with .js
     let js_filename = if js_filename.contains(".js") {
-        js_filename.split(".js").next().unwrap_or(&js_filename).to_string() + ".js"
+        js_filename
+            .split(".js")
+            .next()
+            .unwrap_or(&js_filename)
+            .to_string()
+            + ".js"
     } else {
         return Err("fast.com: invalid JS filename".to_string());
     };
@@ -283,10 +295,10 @@ async fn extract_token(client: &Client) -> Result<String, String> {
         .nth(1)
         .and_then(|s| {
             let s = s.trim_start();
-            if s.starts_with('"') {
-                s[1..].split('"').next().map(|t| t.to_string())
-            } else if s.starts_with('\'') {
-                s[1..].split('\'').next().map(|t| t.to_string())
+            if let Some(stripped) = s.strip_prefix('"') {
+                stripped.split('"').next().map(|t| t.to_string())
+            } else if let Some(stripped) = s.strip_prefix('\'') {
+                stripped.split('\'').next().map(|t| t.to_string())
             } else {
                 None
             }

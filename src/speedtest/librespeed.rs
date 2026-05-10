@@ -1,4 +1,4 @@
-use super::{BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration, statistics};
+use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
@@ -81,14 +81,11 @@ where
 {
     match run_inner(config, &progress).await {
         Ok(result) => result,
-        Err(e) => error_result(format!("{e}")),
+        Err(e) => error_result(e.to_string()),
     }
 }
 
-async fn run_inner<F>(
-    config: &SpeedTestConfig,
-    progress: &F,
-) -> Result<ProviderResult, String>
+async fn run_inner<F>(config: &SpeedTestConfig, progress: &F) -> Result<ProviderResult, String>
 where
     F: Fn(Phase, f64) + Send + Sync,
 {
@@ -170,21 +167,22 @@ where
     while Instant::now() < dl_deadline {
         let req_start = Instant::now();
         match client.get(&dl_url).send().await {
-            Ok(resp) => match resp.bytes().await {
-                Ok(body) => {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(body) = resp.bytes().await {
                     let req_bytes = body.len() as u64;
                     let req_duration = req_start.elapsed().as_secs_f64();
                     dl_bytes += req_bytes;
                     if req_duration > 0.0 {
-                        dl_mbps_samples.push((req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0));
+                        dl_mbps_samples
+                            .push((req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0));
                     }
                     let elapsed = dl_start.elapsed().as_secs_f64();
                     let frac = (elapsed / dl_secs as f64).min(1.0);
                     progress(Phase::LsDownload, frac);
                 }
-                Err(_) => {}
-            },
+            }
             Err(_) => {}
+            _ => {}
         }
     }
 
@@ -215,17 +213,19 @@ where
             .send()
             .await
         {
-            Ok(_) => {
+            Ok(resp) if resp.status().is_success() => {
                 let req_duration = req_start.elapsed().as_secs_f64();
                 ul_bytes += UPLOAD_CHUNK_SIZE as u64;
                 if req_duration > 0.0 {
-                    ul_mbps_samples.push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
+                    ul_mbps_samples
+                        .push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
                 }
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let frac = (elapsed / ul_secs as f64).min(1.0);
                 progress(Phase::LsUpload, frac);
             }
             Err(_) => {}
+            _ => {}
         }
     }
 
@@ -345,10 +345,7 @@ where
 
     let entry = candidates[best_idx];
     Ok(SelectedServer {
-        name: entry
-            .name
-            .clone()
-            .unwrap_or_else(|| entry.server.clone()),
+        name: entry.name.clone().unwrap_or_else(|| entry.server.clone()),
         base_url: entry.server.clone(),
         dl_url: entry.dl_url.clone(),
         ul_url: entry.ul_url.clone(),

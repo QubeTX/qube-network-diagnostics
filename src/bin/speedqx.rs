@@ -1,7 +1,9 @@
 use clap::Parser;
 use nd_300::cli::{SpeedQXCli, SpeedQXCommand};
 use nd_300::speedtest::display::{render_results, SpeedQXDisplay};
-use nd_300::speedtest::{format_mbps, Phase, ProviderCompleteCallback, SpeedTestConfig, TestDuration};
+use nd_300::speedtest::{
+    format_mbps, Phase, ProviderCompleteCallback, SpeedTestConfig, TestDuration,
+};
 use std::sync::{Arc, Mutex};
 
 /// Tracks which phase is currently active so the callback can manage transitions.
@@ -125,7 +127,9 @@ impl DisplayState {
             let label = self.label_for_phase(phase);
 
             if self.is_progress_phase(phase) {
-                let bar = self.display.create_progress_bar(step, self.total_steps, label);
+                let bar = self
+                    .display
+                    .create_progress_bar(step, self.total_steps, label);
                 self.current_bar = Some(bar);
             } else {
                 let spinner = self.display.create_spinner(step, self.total_steps, label);
@@ -225,12 +229,10 @@ async fn main() {
         if use_colors {
             println!(
                 "  {}",
-                owo_colors::OwoColorize::dimmed(
-                    &format!(
-                        "Estimated test time: ~{}:{:02} (4 providers, {}s/direction)",
-                        mins, secs, per_dir_secs
-                    )
-                )
+                owo_colors::OwoColorize::dimmed(&format!(
+                    "Estimated test time: ~{}:{:02} (4 providers, {}s/direction)",
+                    mins, secs, per_dir_secs
+                ))
             );
         } else {
             println!(
@@ -261,7 +263,11 @@ async fn main() {
             return;
         }
 
-        let sep = if summary_ascii { "---" } else { "\u{2500}\u{2500}\u{2500}" };
+        let sep = if summary_ascii {
+            "---"
+        } else {
+            "\u{2500}\u{2500}\u{2500}"
+        };
 
         let dl = result
             .download_mbps

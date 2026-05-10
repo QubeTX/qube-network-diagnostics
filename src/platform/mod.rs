@@ -4,16 +4,24 @@
 
 pub fn platform_name() -> &'static str {
     #[cfg(windows)]
-    { "Windows" }
+    {
+        "Windows"
+    }
 
     #[cfg(target_os = "macos")]
-    { "macOS" }
+    {
+        "macOS"
+    }
 
     #[cfg(target_os = "linux")]
-    { "Linux" }
+    {
+        "Linux"
+    }
 
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-    { "Unknown" }
+    {
+        "Unknown"
+    }
 }
 
 pub fn is_elevated() -> bool {

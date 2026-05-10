@@ -57,11 +57,7 @@ async fn check_tls_interception(client: &reqwest::Client) -> bool {
     // Corporate MITM proxies sometimes fail specific certificate pinning checks
 
     // Try to connect and verify the response matches expected patterns
-    match client
-        .get("https://1.1.1.1/cdn-cgi/trace")
-        .send()
-        .await
-    {
+    match client.get("https://1.1.1.1/cdn-cgi/trace").send().await {
         Ok(resp) => {
             let text = resp.text().await.unwrap_or_default();
             // If we get a valid Cloudflare trace response, likely not intercepted

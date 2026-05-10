@@ -62,49 +62,91 @@ async fn collect_windows() -> Option<ProtocolStatistics> {
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut tcp = TcpStats {
-        active_opens: 0, passive_opens: 0, failed_connections: 0,
-        reset_connections: 0, current_connections: 0,
-        segments_received: 0, segments_sent: 0, segments_retransmitted: 0,
+        active_opens: 0,
+        passive_opens: 0,
+        failed_connections: 0,
+        reset_connections: 0,
+        current_connections: 0,
+        segments_received: 0,
+        segments_sent: 0,
+        segments_retransmitted: 0,
     };
     let mut udp = UdpStats {
-        datagrams_received: 0, datagrams_sent: 0, receive_errors: 0, no_port_errors: 0,
+        datagrams_received: 0,
+        datagrams_sent: 0,
+        receive_errors: 0,
+        no_port_errors: 0,
     };
     let mut icmp = IcmpStats {
-        messages_received: 0, messages_sent: 0, errors_received: 0, errors_sent: 0,
+        messages_received: 0,
+        messages_sent: 0,
+        errors_received: 0,
+        errors_sent: 0,
     };
 
     let mut section = "";
     for line in text.lines() {
         let line = line.trim();
-        if line.contains("TCP Statistics") { section = "tcp"; continue; }
-        if line.contains("UDP Statistics") { section = "udp"; continue; }
-        if line.contains("ICMPv4 Statistics") || line.contains("ICMP Statistics") { section = "icmp"; continue; }
-        if line.contains("IPv4 Statistics") || line.contains("IPv6 Statistics") { section = ""; continue; }
+        if line.contains("TCP Statistics") {
+            section = "tcp";
+            continue;
+        }
+        if line.contains("UDP Statistics") {
+            section = "udp";
+            continue;
+        }
+        if line.contains("ICMPv4 Statistics") || line.contains("ICMP Statistics") {
+            section = "icmp";
+            continue;
+        }
+        if line.contains("IPv4 Statistics") || line.contains("IPv6 Statistics") {
+            section = "";
+            continue;
+        }
 
         let val = extract_stat_value(line).unwrap_or(0);
 
         match section {
             "tcp" => {
-                if line.contains("Active Opens") { tcp.active_opens = val; }
-                else if line.contains("Passive Opens") { tcp.passive_opens = val; }
-                else if line.contains("Failed") { tcp.failed_connections = val; }
-                else if line.contains("Reset") && line.contains("Connection") { tcp.reset_connections = val; }
-                else if line.contains("Current") { tcp.current_connections = val; }
-                else if line.contains("Segments Received") { tcp.segments_received = val; }
-                else if line.contains("Segments Sent") && !line.contains("Re") { tcp.segments_sent = val; }
-                else if line.contains("Retransmit") { tcp.segments_retransmitted = val; }
+                if line.contains("Active Opens") {
+                    tcp.active_opens = val;
+                } else if line.contains("Passive Opens") {
+                    tcp.passive_opens = val;
+                } else if line.contains("Failed") {
+                    tcp.failed_connections = val;
+                } else if line.contains("Reset") && line.contains("Connection") {
+                    tcp.reset_connections = val;
+                } else if line.contains("Current") {
+                    tcp.current_connections = val;
+                } else if line.contains("Segments Received") {
+                    tcp.segments_received = val;
+                } else if line.contains("Segments Sent") && !line.contains("Re") {
+                    tcp.segments_sent = val;
+                } else if line.contains("Retransmit") {
+                    tcp.segments_retransmitted = val;
+                }
             }
             "udp" => {
-                if line.contains("Datagrams Received") { udp.datagrams_received = val; }
-                else if line.contains("No Ports") { udp.no_port_errors = val; }
-                else if line.contains("Receive Errors") { udp.receive_errors = val; }
-                else if line.contains("Datagrams Sent") { udp.datagrams_sent = val; }
+                if line.contains("Datagrams Received") {
+                    udp.datagrams_received = val;
+                } else if line.contains("No Ports") {
+                    udp.no_port_errors = val;
+                } else if line.contains("Receive Errors") {
+                    udp.receive_errors = val;
+                } else if line.contains("Datagrams Sent") {
+                    udp.datagrams_sent = val;
+                }
             }
             "icmp" => {
-                if line.contains("Messages") && line.contains("Received") { icmp.messages_received = val; }
-                else if line.contains("Messages") && line.contains("Sent") { icmp.messages_sent = val; }
-                else if line.contains("Errors") && line.contains("Received") { icmp.errors_received = val; }
-                else if line.contains("Errors") && line.contains("Sent") { icmp.errors_sent = val; }
+                if line.contains("Messages") && line.contains("Received") {
+                    icmp.messages_received = val;
+                } else if line.contains("Messages") && line.contains("Sent") {
+                    icmp.messages_sent = val;
+                } else if line.contains("Errors") && line.contains("Received") {
+                    icmp.errors_received = val;
+                } else if line.contains("Errors") && line.contains("Sent") {
+                    icmp.errors_sent = val;
+                }
             }
             _ => {}
         }
@@ -125,43 +167,77 @@ async fn collect_macos() -> Option<ProtocolStatistics> {
 
     // macOS netstat -s output parsing (similar structure to Windows)
     let mut tcp = TcpStats {
-        active_opens: 0, passive_opens: 0, failed_connections: 0,
-        reset_connections: 0, current_connections: 0,
-        segments_received: 0, segments_sent: 0, segments_retransmitted: 0,
+        active_opens: 0,
+        passive_opens: 0,
+        failed_connections: 0,
+        reset_connections: 0,
+        current_connections: 0,
+        segments_received: 0,
+        segments_sent: 0,
+        segments_retransmitted: 0,
     };
     let mut udp = UdpStats {
-        datagrams_received: 0, datagrams_sent: 0, receive_errors: 0, no_port_errors: 0,
+        datagrams_received: 0,
+        datagrams_sent: 0,
+        receive_errors: 0,
+        no_port_errors: 0,
     };
     let mut icmp = IcmpStats {
-        messages_received: 0, messages_sent: 0, errors_received: 0, errors_sent: 0,
+        messages_received: 0,
+        messages_sent: 0,
+        errors_received: 0,
+        errors_sent: 0,
     };
 
     let mut section = "";
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed == "tcp:" { section = "tcp"; continue; }
-        if trimmed == "udp:" { section = "udp"; continue; }
-        if trimmed == "icmp:" { section = "icmp"; continue; }
+        if trimmed == "tcp:" {
+            section = "tcp";
+            continue;
+        }
+        if trimmed == "udp:" {
+            section = "udp";
+            continue;
+        }
+        if trimmed == "icmp:" {
+            section = "icmp";
+            continue;
+        }
 
         let val = extract_leading_number(trimmed).unwrap_or(0);
 
         match section {
             "tcp" => {
-                if trimmed.contains("connection request") { tcp.active_opens = val; }
-                else if trimmed.contains("connection accept") { tcp.passive_opens = val; }
-                else if trimmed.contains("bad connection") { tcp.failed_connections = val; }
-                else if trimmed.contains("reset") { tcp.reset_connections = val; }
-                else if trimmed.contains("packet") && trimmed.contains("sent") { tcp.segments_sent = val; }
-                else if trimmed.contains("packet") && trimmed.contains("received") { tcp.segments_received = val; }
-                else if trimmed.contains("retransmit") { tcp.segments_retransmitted = val; }
+                if trimmed.contains("connection request") {
+                    tcp.active_opens = val;
+                } else if trimmed.contains("connection accept") {
+                    tcp.passive_opens = val;
+                } else if trimmed.contains("bad connection") {
+                    tcp.failed_connections = val;
+                } else if trimmed.contains("reset") {
+                    tcp.reset_connections = val;
+                } else if trimmed.contains("packet") && trimmed.contains("sent") {
+                    tcp.segments_sent = val;
+                } else if trimmed.contains("packet") && trimmed.contains("received") {
+                    tcp.segments_received = val;
+                } else if trimmed.contains("retransmit") {
+                    tcp.segments_retransmitted = val;
+                }
             }
             "udp" => {
-                if trimmed.contains("datagram") && trimmed.contains("received") { udp.datagrams_received = val; }
-                else if trimmed.contains("datagram") && trimmed.contains("sent") { udp.datagrams_sent = val; }
+                if trimmed.contains("datagram") && trimmed.contains("received") {
+                    udp.datagrams_received = val;
+                } else if trimmed.contains("datagram") && trimmed.contains("sent") {
+                    udp.datagrams_sent = val;
+                }
             }
             "icmp" => {
-                if trimmed.contains("response") && trimmed.contains("received") { icmp.messages_received = val; }
-                else if trimmed.contains("sent") { icmp.messages_sent = val; }
+                if trimmed.contains("response") && trimmed.contains("received") {
+                    icmp.messages_received = val;
+                } else if trimmed.contains("sent") {
+                    icmp.messages_sent = val;
+                }
             }
             _ => {}
         }
@@ -173,22 +249,35 @@ async fn collect_macos() -> Option<ProtocolStatistics> {
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<ProtocolStatistics> {
     let mut tcp = TcpStats {
-        active_opens: 0, passive_opens: 0, failed_connections: 0,
-        reset_connections: 0, current_connections: 0,
-        segments_received: 0, segments_sent: 0, segments_retransmitted: 0,
+        active_opens: 0,
+        passive_opens: 0,
+        failed_connections: 0,
+        reset_connections: 0,
+        current_connections: 0,
+        segments_received: 0,
+        segments_sent: 0,
+        segments_retransmitted: 0,
     };
     let mut udp = UdpStats {
-        datagrams_received: 0, datagrams_sent: 0, receive_errors: 0, no_port_errors: 0,
+        datagrams_received: 0,
+        datagrams_sent: 0,
+        receive_errors: 0,
+        no_port_errors: 0,
     };
     let mut icmp = IcmpStats {
-        messages_received: 0, messages_sent: 0, errors_received: 0, errors_sent: 0,
+        messages_received: 0,
+        messages_sent: 0,
+        errors_received: 0,
+        errors_sent: 0,
     };
 
     // Read /proc/net/snmp
     if let Ok(content) = tokio::fs::read_to_string("/proc/net/snmp").await {
         let lines: Vec<&str> = content.lines().collect();
         for i in (0..lines.len()).step_by(2) {
-            if i + 1 >= lines.len() { break; }
+            if i + 1 >= lines.len() {
+                break;
+            }
             let headers: Vec<&str> = lines[i].split_whitespace().collect();
             let values: Vec<&str> = lines[i + 1].split_whitespace().collect();
 

@@ -14,9 +14,7 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
     let mut builder = ReportBuilder::new(label_width, data_width, chars)
         .header(config.title(), config.subtitle());
 
-    builder = builder
-        .span_row(&format!("  DIAGNOSTIC SUMMARY"))
-        .divider();
+    builder = builder.span_row("  DIAGNOSTIC SUMMARY").divider();
 
     builder = render_summary_row(builder, &results.adapters, config);
     builder = render_summary_row(builder, &results.interfaces, config);
@@ -44,7 +42,10 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
     // Interface details
     if let Some(ref ifaces) = results.interface_details {
         let mut b = ReportBuilder::new(label_width, data_width, chars);
-        b = b.full_top_border().span_row("  NETWORK INTERFACES").divider();
+        b = b
+            .full_top_border()
+            .span_row("  NETWORK INTERFACES")
+            .divider();
 
         for (i, iface) in ifaces.iter().enumerate() {
             if i > 0 {
@@ -95,7 +96,14 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
                         b = b.row("Link Speed", &format_link_speed(tx));
                     }
                     (Some(tx), Some(rx)) => {
-                        b = b.row("Link Speed", &format!("TX: {} / RX: {}", format_link_speed(tx), format_link_speed(rx)));
+                        b = b.row(
+                            "Link Speed",
+                            &format!(
+                                "TX: {} / RX: {}",
+                                format_link_speed(tx),
+                                format_link_speed(rx)
+                            ),
+                        );
                     }
                     (Some(tx), None) => {
                         b = b.row("Link Speed", &format_link_speed(tx));
@@ -173,7 +181,10 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
     // Public IP details
     if let Some(ref pip) = results.public_ip_details {
         let mut b = ReportBuilder::new(label_width, data_width, chars);
-        b = b.full_top_border().span_row("  PUBLIC IP & GEOLOCATION").divider();
+        b = b
+            .full_top_border()
+            .span_row("  PUBLIC IP & GEOLOCATION")
+            .divider();
         b = b.row("Public IP", &pip.ip);
         b = b.row("Lookup Time", &format!("{:.0}ms", pip.lookup_time_ms));
         b = b.row("Behind NAT", if pip.behind_nat { "Yes" } else { "No" });
@@ -237,8 +248,17 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
         if let Some(jitter) = speed.jitter_ms {
             b = b.row("Jitter", &format!("{:.1} ms", jitter));
         }
-        b = b.row("Download", &format!("{} (avg)", crate::speedtest::format_mbps(speed.download_mbps)));
-        b = b.row("Upload", &format!("{} (avg)", crate::speedtest::format_mbps(speed.upload_mbps)));
+        b = b.row(
+            "Download",
+            &format!(
+                "{} (avg)",
+                crate::speedtest::format_mbps(speed.download_mbps)
+            ),
+        );
+        b = b.row(
+            "Upload",
+            &format!("{} (avg)", crate::speedtest::format_mbps(speed.upload_mbps)),
+        );
         if let Some(loss) = speed.packet_loss_pct {
             b = b.row("Packet Loss", &format!("{:.0}%", loss));
         }
@@ -271,7 +291,10 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
     // Port details
     if let Some(ref ports) = results.port_details {
         let mut b = ReportBuilder::new(label_width, data_width, chars);
-        b = b.full_top_border().span_row("  PORT CONNECTIVITY").divider();
+        b = b
+            .full_top_border()
+            .span_row("  PORT CONNECTIVITY")
+            .divider();
 
         for port in ports {
             let status = if port.open { "Open" } else { "Blocked" };
@@ -333,8 +356,14 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
                 } else {
                     route.gateway.clone()
                 };
-                let metric = route.metric.map(|m| format!(" m:{}", m)).unwrap_or_default();
-                b = b.row(&route.destination, &format!("via {} dev {}{}", gw, route.interface, metric));
+                let metric = route
+                    .metric
+                    .map(|m| format!(" m:{}", m))
+                    .unwrap_or_default();
+                b = b.row(
+                    &route.destination,
+                    &format!("via {} dev {}{}", gw, route.interface, metric),
+                );
             }
             if routes.len() > 20 {
                 b = b.row("", &format!("... and {} more", routes.len() - 20));
@@ -347,13 +376,23 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
     // Active Connections
     if let Some(ref conns) = tech.active_connections {
         if !conns.is_empty() {
-            let established: Vec<_> = conns.iter().filter(|c| c.state == "ESTABLISHED").take(20).collect();
+            let established: Vec<_> = conns
+                .iter()
+                .filter(|c| c.state == "ESTABLISHED")
+                .take(20)
+                .collect();
             if !established.is_empty() {
                 let mut b = ReportBuilder::new(label_width, data_width, chars);
-                b = b.full_top_border().span_row("  ACTIVE CONNECTIONS (ESTABLISHED)").divider();
+                b = b
+                    .full_top_border()
+                    .span_row("  ACTIVE CONNECTIONS (ESTABLISHED)")
+                    .divider();
                 for conn in &established {
                     let proc_info = conn.process_name.as_deref().unwrap_or("?");
-                    b = b.row(&conn.local_addr, &format!("{} [{}]", conn.remote_addr, proc_info));
+                    b = b.row(
+                        &conn.local_addr,
+                        &format!("{} [{}]", conn.remote_addr, proc_info),
+                    );
                 }
                 let total_established = conns.iter().filter(|c| c.state == "ESTABLISHED").count();
                 if total_established > 20 {
@@ -391,9 +430,14 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
             let mut b = ReportBuilder::new(label_width, data_width, chars);
             b = b.full_top_border().span_row("  DHCP LEASES").divider();
             for (i, lease) in dhcp.iter().enumerate() {
-                if i > 0 { b = b.divider(); }
+                if i > 0 {
+                    b = b.divider();
+                }
                 b = b.row("Interface", &lease.interface);
-                b = b.row("DHCP Enabled", if lease.dhcp_enabled { "Yes" } else { "No" });
+                b = b.row(
+                    "DHCP Enabled",
+                    if lease.dhcp_enabled { "Yes" } else { "No" },
+                );
                 if let Some(ref server) = lease.dhcp_server {
                     b = b.row("DHCP Server", server);
                 }
@@ -415,14 +459,20 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
     // Protocol Statistics
     if let Some(ref stats) = tech.protocol_stats {
         let mut b = ReportBuilder::new(label_width, data_width, chars);
-        b = b.full_top_border().span_row("  PROTOCOL STATISTICS").divider();
+        b = b
+            .full_top_border()
+            .span_row("  PROTOCOL STATISTICS")
+            .divider();
 
         b = b.row("TCP Active Opens", &stats.tcp.active_opens.to_string());
         b = b.row("TCP Passive Opens", &stats.tcp.passive_opens.to_string());
         b = b.row("TCP Current", &stats.tcp.current_connections.to_string());
         b = b.row("TCP Failed", &stats.tcp.failed_connections.to_string());
         b = b.row("TCP Resets", &stats.tcp.reset_connections.to_string());
-        b = b.row("TCP Retransmits", &stats.tcp.segments_retransmitted.to_string());
+        b = b.row(
+            "TCP Retransmits",
+            &stats.tcp.segments_retransmitted.to_string(),
+        );
         b = b.row("TCP Segments In", &stats.tcp.segments_received.to_string());
         b = b.row("TCP Segments Out", &stats.tcp.segments_sent.to_string());
         b = b.divider();
@@ -442,9 +492,14 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
     if let Some(ref hw) = tech.adapter_hw_stats {
         if !hw.is_empty() {
             let mut b = ReportBuilder::new(label_width, data_width, chars);
-            b = b.full_top_border().span_row("  ADAPTER HARDWARE STATS").divider();
+            b = b
+                .full_top_border()
+                .span_row("  ADAPTER HARDWARE STATS")
+                .divider();
             for (i, stat) in hw.iter().enumerate() {
-                if i > 0 { b = b.divider(); }
+                if i > 0 {
+                    b = b.divider();
+                }
                 b = b.row("Interface", &stat.name);
                 b = b.row("RX Bytes", &format_bytes(stat.rx_bytes));
                 b = b.row("TX Bytes", &format_bytes(stat.tx_bytes));
@@ -467,8 +522,14 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
     // Proxy Config
     if let Some(ref proxy) = tech.proxy_config {
         let mut b = ReportBuilder::new(label_width, data_width, chars);
-        b = b.full_top_border().span_row("  PROXY CONFIGURATION").divider();
-        b = b.row("Proxy Enabled", if proxy.proxy_enabled { "Yes" } else { "No" });
+        b = b
+            .full_top_border()
+            .span_row("  PROXY CONFIGURATION")
+            .divider();
+        b = b.row(
+            "Proxy Enabled",
+            if proxy.proxy_enabled { "Yes" } else { "No" },
+        );
         if let Some(ref http) = proxy.http_proxy {
             b = b.row("HTTP Proxy", http);
         }
@@ -493,7 +554,9 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
         let mut b = ReportBuilder::new(label_width, data_width, chars);
         b = b.full_top_border().span_row("  VPN DETECTION").divider();
         for (i, vpn) in vpns.iter().enumerate() {
-            if i > 0 { b = b.divider(); }
+            if i > 0 {
+                b = b.divider();
+            }
             b = b.row("VPN Adapter", &vpn.name);
             b = b.row("Type", &vpn.adapter_type);
             b = b.row("Status", &vpn.status);
@@ -522,7 +585,11 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
         for profile in &fw.profiles {
             b = b.row(
                 &profile.name,
-                if profile.enabled { "Enabled" } else { "Disabled" },
+                if profile.enabled {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                },
             );
         }
         output.push_str(&b.finish());
@@ -535,7 +602,10 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
             let mut b = ReportBuilder::new(label_width, data_width, chars);
             b = b.full_top_border().span_row("  DNS CACHE").divider();
             for entry in cache.iter().take(20) {
-                b = b.row(&entry.name, &format!("{}: {}", entry.record_type, entry.data));
+                b = b.row(
+                    &entry.name,
+                    &format!("{}: {}", entry.record_type, entry.data),
+                );
             }
             if cache.len() > 20 {
                 b = b.row("", &format!("... and {} more entries", cache.len() - 20));
@@ -559,7 +629,10 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
         b = b.row("Dual Stack", if ipv6.dual_stack { "Yes" } else { "No" });
 
         for addr in ipv6.addresses.iter().take(10) {
-            b = b.row(&addr.scope, &format!("{} ({})", addr.address, addr.interface));
+            b = b.row(
+                &addr.scope,
+                &format!("{} ({})", addr.address, addr.interface),
+            );
         }
         output.push_str(&b.finish());
         output.push('\n');
@@ -569,7 +642,10 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
     if let Some(ref mtus) = tech.mtu_info {
         if !mtus.is_empty() {
             let mut b = ReportBuilder::new(label_width, data_width, chars);
-            b = b.full_top_border().span_row("  MTU PER INTERFACE").divider();
+            b = b
+                .full_top_border()
+                .span_row("  MTU PER INTERFACE")
+                .divider();
             for mtu in mtus {
                 b = b.row(&mtu.interface, &mtu.mtu.to_string());
             }
@@ -581,7 +657,10 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
     // Connection States
     if let Some(ref states) = tech.connection_states {
         let mut b = ReportBuilder::new(label_width, data_width, chars);
-        b = b.full_top_border().span_row("  TCP CONNECTION STATES").divider();
+        b = b
+            .full_top_border()
+            .span_row("  TCP CONNECTION STATES")
+            .divider();
         b = b.row("ESTABLISHED", &states.established.to_string());
         b = b.row("TIME_WAIT", &states.time_wait.to_string());
         b = b.row("CLOSE_WAIT", &states.close_wait.to_string());
@@ -601,7 +680,10 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
         let mut b = ReportBuilder::new(label_width, data_width, chars);
         b = b.full_top_border().span_row("  BUFFERBLOAT TEST").divider();
         b = b.row("Grade", &bb.grade);
-        b = b.row("Unloaded Latency", &format!("{:.1}ms", bb.unloaded_latency_ms));
+        b = b.row(
+            "Unloaded Latency",
+            &format!("{:.1}ms", bb.unloaded_latency_ms),
+        );
         if let Some(loaded) = bb.loaded_latency_ms {
             b = b.row("Loaded Latency", &format!("{:.1}ms", loaded));
         }
@@ -630,7 +712,10 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
     // TLS Inspection
     if let Some(ref tls) = tech.tls_inspection {
         let mut b = ReportBuilder::new(label_width, data_width, chars);
-        b = b.full_top_border().span_row("  TLS INSPECTION CHECK").divider();
+        b = b
+            .full_top_border()
+            .span_row("  TLS INSPECTION CHECK")
+            .divider();
         b = b.row("Intercepted", if tls.detected { "DETECTED" } else { "No" });
         b = b.row("Assessment", &tls.description);
         output.push_str(&b.finish());
@@ -641,7 +726,10 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
     if let Some(ref traffic) = tech.traffic_counters {
         if !traffic.is_empty() {
             let mut b = ReportBuilder::new(label_width, data_width, chars);
-            b = b.full_top_border().span_row("  TRAFFIC COUNTERS (since boot)").divider();
+            b = b
+                .full_top_border()
+                .span_row("  TRAFFIC COUNTERS (since boot)")
+                .divider();
             for counter in traffic {
                 b = b.row(
                     &counter.interface,
@@ -685,20 +773,40 @@ fn count_issues(results: &DiagnosticResults) -> (usize, usize) {
         &results.ports.status,
     ];
 
-    let fails = statuses.iter().filter(|s| ***s == DiagnosticStatus::Fail).count();
-    let warns = statuses.iter().filter(|s| ***s == DiagnosticStatus::Warn).count();
+    let fails = statuses
+        .iter()
+        .filter(|s| ***s == DiagnosticStatus::Fail)
+        .count();
+    let warns = statuses
+        .iter()
+        .filter(|s| ***s == DiagnosticStatus::Warn)
+        .count();
     (fails, warns)
 }
 
 fn format_overall(fails: usize, warns: usize, config: &Config) -> String {
     if fails > 0 && warns > 0 {
-        let text = format!("{} failure{}, {} warning{}", fails, if fails > 1 { "s" } else { "" }, warns, if warns > 1 { "s" } else { "" });
+        let text = format!(
+            "{} failure{}, {} warning{}",
+            fails,
+            if fails > 1 { "s" } else { "" },
+            warns,
+            if warns > 1 { "s" } else { "" }
+        );
         colorize_status(&text, &DiagnosticStatus::Fail, config)
     } else if fails > 0 {
-        let text = format!("{} failure{} detected", fails, if fails > 1 { "s" } else { "" });
+        let text = format!(
+            "{} failure{} detected",
+            fails,
+            if fails > 1 { "s" } else { "" }
+        );
         colorize_status(&text, &DiagnosticStatus::Fail, config)
     } else if warns > 0 {
-        let text = format!("{} warning{} detected", warns, if warns > 1 { "s" } else { "" });
+        let text = format!(
+            "{} warning{} detected",
+            warns,
+            if warns > 1 { "s" } else { "" }
+        );
         colorize_status(&text, &DiagnosticStatus::Warn, config)
     } else {
         colorize_status("All diagnostics passed", &DiagnosticStatus::Ok, config)

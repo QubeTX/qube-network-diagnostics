@@ -105,11 +105,7 @@ fn types_by_status(adapters: &[AdapterInfo], status: &str) -> BTreeSet<String> {
         .iter()
         .filter(|a| a.status == status)
         .map(|a| {
-            let dtype = display_type(
-                &a.adapter_type,
-                &a.name,
-                a.physical_medium.as_deref(),
-            );
+            let dtype = display_type(&a.adapter_type, &a.name, a.physical_medium.as_deref());
             // Append link speed for active Wi-Fi adapters
             if status == "Active" && dtype == "Wi-Fi" {
                 if let Some(speed) = a.link_speed_mbps {
@@ -239,31 +235,28 @@ fn get_if_entry2(if_index: u32) -> Option<IfEntry2Data> {
 fn physical_medium_name(pm: u32) -> Option<&'static str> {
     // Values from NDIS_PHYSICAL_MEDIUM enum
     match pm {
-        0 => None,           // Unspecified
-        1 => Some("WirelessLan"),       // NdisPhysicalMediumWirelessLan
+        0 => None,                // Unspecified
+        1 => Some("WirelessLan"), // NdisPhysicalMediumWirelessLan
         2 => Some("CableModem"),
         3 => Some("PhoneLine"),
         4 => Some("PowerLine"),
         5 => Some("DSL"),
         6 => Some("FibreChannel"),
-        7 => Some("1394"),              // IEEE 1394 / FireWire
+        7 => Some("1394"), // IEEE 1394 / FireWire
         8 => Some("WirelessWan"),
-        9 => Some("Native802_11"),      // NdisPhysicalMediumNative802_11
+        9 => Some("Native802_11"), // NdisPhysicalMediumNative802_11
         10 => Some("Bluetooth"),
         11 => Some("Infiniband"),
         12 => Some("WiMax"),
         13 => Some("UWB"),
-        14 => Some("Ethernet802_3"),    // NdisPhysicalMedium802_3
+        14 => Some("Ethernet802_3"), // NdisPhysicalMedium802_3
         _ => None,
     }
 }
 
 /// Derive adapter status from GetIfEntry2 + OperStatus.
 #[cfg(windows)]
-fn derive_status(
-    oper_status: ipconfig::OperStatus,
-    if2: Option<&IfEntry2Data>,
-) -> String {
+fn derive_status(oper_status: ipconfig::OperStatus, if2: Option<&IfEntry2Data>) -> String {
     if let Some(data) = if2 {
         // AdminStatus=2 means admin-disabled
         if data.admin_status == 2 {
@@ -338,15 +331,23 @@ async fn collect_adapters_windows() -> Vec<AdapterInfo> {
                 .and_then(|d| physical_medium_name(d.physical_medium_type))
                 .map(|s| s.to_string());
 
-            let tx_speed_bps = if2.as_ref().map(|d| d.transmit_link_speed)
+            let tx_speed_bps = if2
+                .as_ref()
+                .map(|d| d.transmit_link_speed)
                 .unwrap_or(adapter.transmit_link_speed());
-            let rx_speed_bps = if2.as_ref().map(|d| d.receive_link_speed)
+            let rx_speed_bps = if2
+                .as_ref()
+                .map(|d| d.receive_link_speed)
                 .unwrap_or(adapter.receive_link_speed());
 
             let tx_mbps = tx_speed_bps / 1_000_000;
             let rx_mbps = rx_speed_bps / 1_000_000;
 
-            let dns: Vec<String> = adapter.dns_servers().iter().map(|ip| ip.to_string()).collect();
+            let dns: Vec<String> = adapter
+                .dns_servers()
+                .iter()
+                .map(|ip| ip.to_string())
+                .collect();
             let gws: Vec<String> = adapter.gateways().iter().map(|ip| ip.to_string()).collect();
 
             let media_connect = if2.as_ref().map(|d| match d.media_connect_state {
@@ -433,12 +434,9 @@ pub async fn enrich_driver_info(adapters: &mut Vec<AdapterInfo>) {
 
     for (drv_name, version, date) in &driver_data {
         for adapter in adapters.iter_mut() {
-            let matches = adapter
-                .description
-                .as_ref()
-                .map_or(false, |desc| {
-                    desc.contains(drv_name.as_str()) || drv_name.contains(desc.as_str())
-                });
+            let matches = adapter.description.as_ref().map_or(false, |desc| {
+                desc.contains(drv_name.as_str()) || drv_name.contains(desc.as_str())
+            });
 
             if matches {
                 adapter.driver_name = Some(drv_name.clone());
@@ -561,7 +559,10 @@ async fn collect_adapters_linux() -> Vec<AdapterInfo> {
                 "Ethernet"
             } else if name.starts_with("tun") || name.starts_with("wg") {
                 "VPN/Tunnel"
-            } else if name.starts_with("docker") || name.starts_with("veth") || name.starts_with("br-") {
+            } else if name.starts_with("docker")
+                || name.starts_with("veth")
+                || name.starts_with("br-")
+            {
                 "Virtual"
             } else {
                 "Other"

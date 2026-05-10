@@ -4,25 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ND-300 (`nd300`) is a cross-platform CLI network diagnostics tool written in Rust. It runs 25+ diagnostic modules concurrently, supports user and technician modes, and includes a multi-stage network recovery system (`--fix`). Ships two binaries: `nd300` (main diagnostic) and `speedqx` (standalone speed test).
+ND-300 (`nd300`) is a cross-platform CLI network diagnostics tool written in Rust. It runs 25+ diagnostic modules concurrently, supports user and technician modes, and includes a diagnostic-driven network recovery system (`--fix`). Ships two binaries: `nd300` (main diagnostic) and `speedqx` (standalone speed test).
 
 ## Build & Run Commands
 
 ```bash
 cargo build --release          # Release build → target/release/nd300 + speedqx
 cargo build                    # Debug build (also generates man pages via build.rs)
-cargo run -- [OPTIONS]         # Run nd300 with arguments
+cargo run --bin nd300 -- [OPTIONS]    # Run nd300 with arguments
 cargo run --bin speedqx -- [OPTIONS]  # Run speedqx with arguments
-cargo run -- -t                # Technician mode (deep diagnostics)
-cargo run -- --json            # JSON output
-cargo run -- fix               # Run triage-loop fix (requires elevation; subcommand form, v3+)
-cargo run -- -f                # Same as `cargo run -- fix` (legacy flag form, still works)
-cargo run -- --fast            # Skip speed test
-cargo run -- update            # Self-update to latest release (also `--update`)
+cargo run --bin nd300 -- -t           # Technician mode (deep diagnostics)
+cargo run --bin nd300 -- --json       # JSON output
+cargo run --bin nd300 -- fix          # Run triage-loop fix (requires elevation; subcommand form, v3+)
+cargo run --bin nd300 -- -f           # Same as `cargo run --bin nd300 -- fix` (legacy flag form, still works)
+cargo run --bin nd300 -- --fast       # Skip speed test
+cargo run --bin nd300 -- fix --fast   # Skip speed test inside the fix subcommand
+cargo run --bin nd300 -- update       # Self-update to latest release (also `--update`)
 cargo test --lib actions::fix::triage  # Triage planner unit tests
 ```
 
-Tests: only the triage planner (`src/actions/fix/triage.rs`) currently has unit tests; the rest is validated by CI release builds across 6 platform targets.
+Tests cover the fix planner and confirmation rules, platform command construction, latency argument selection, and speed-test aggregation. CI release builds remain the source of truth for all 6 platform targets.
 
 ## Architecture
 
@@ -42,12 +43,12 @@ main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
   → Exit code: 0=OK, 1=Warn, 2=Fail
 ```
 
-`Nd300Cli` defines a `command: Option<Nd300Command>` field alongside the legacy boolean flags. If a subcommand is given, it takes precedence; otherwise the flag-form dispatch runs. Both forms produce identical behavior. Output flags (`--json`, `--ascii`, `--no-color`, `--verbose`) and `--yes` are marked `global = true` so they work in both positions.
+`Nd300Cli` defines a `command: Option<Nd300Command>` field alongside the legacy boolean flags. If a subcommand is given, it takes precedence; otherwise the flag-form dispatch runs. Both forms produce identical behavior. Output flags (`--json`, `--ascii`, `--no-color`, `--verbose`), fix confirmation (`--yes`), and speed controls (`--fast`, `--speed-duration`) are marked `global = true` so they work in both positions.
 
 ### Module Layout
 
 - **`src/cli.rs`** — Shared clap derive definitions (`Nd300Cli`, `SpeedQXCli`) used by both binaries and by `build.rs` for man page generation.
-- **`src/actions/`** — Exit-early operations (`--fix`, `--clear-dns`, `--uninstall`, `--dns`, `--update`). The fix flow (`actions/fix/`) implements 3-stage graduated network recovery with VPN detection, connectivity checks between stages, Wi-Fi reconnection, and report generation (`report.rs` saves Markdown to `~/Downloads/`).
+- **`src/actions/`** — Exit-early operations (`--fix`, `--clear-dns`, `--uninstall`, `--dns`, `--update`). The fix flow (`actions/fix/`) implements evidence-driven network recovery with VPN detection, connectivity checks between actions, Wi-Fi reconnection, state preservation, and report generation (`report.rs` saves Markdown to `~/Downloads/`).
 - **`src/diagnostics/`** — All diagnostic modules. Each is self-contained with platform-specific code via `#[cfg]` attributes. Each returns `(DiagnosticResult, Option<DetailStruct>)` — the detail struct carries rich data for rendering. `shared_cache.rs` pre-fetches subprocess outputs to deduplicate calls across tech-mode modules.
 - **`src/speedtest/`** — Quad-provider speed test engine (Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com). Provider clients: `cloudflare.rs`, `ndt7.rs`, `librespeed.rs`, `fastcom.rs`. `statistics.rs` implements the accuracy pipeline (trimean, IQR filter, slow-start discard, inverse-variance merge, bootstrap CI). `display.rs` handles speedqx-specific progress rendering. Both binaries share this module.
 - **`src/render/`** — Output formatting. `table.rs` builds Unicode/ASCII box-drawing tables with ANSI-aware string functions (`visible_len`, `truncate_visible`). `color.rs` centralizes ANSI color output. `progress.rs` handles spinners.
@@ -183,6 +184,7 @@ When the release CI fails:
 3. Detect hard-block patterns (no link / ISP outage / enterprise VPN) → exit with guidance
 4. Compute actionable failures, group by root cause, build_plan() returns ordered Vec<Action>
 5. For each action in plan:
+     - Medium-risk actions: require confirmation unless explicitly auto-confirmed with --yes
      - High-risk actions: render structured RiskExplanation prompt; require explicit 'y'
      - Apply, capture ActionOutcome, sleep stabilization window
      - If fatal_environment_change → break out of plan, re-probe immediately
@@ -204,6 +206,8 @@ When the release CI fails:
 
 In interactive mode, every High-risk Action renders a multi-line block with `what`, `why`, side-effects, reversibility, and typical duration before running. Requires an **explicit `y`** — Enter alone, blank, or any non-`y` is treated as N. **`--yes` does NOT bypass these prompts** (by design — protects non-technicians from accidentally OK'ing destructive actions). In `--json` / non-interactive contexts, High-risk Actions are *skipped* (not auto-applied) with a clear marker in the report.
 
+Medium-risk actions (VPN disable, DHCP reset, service restart, interface restart, and public-DNS changes) render a shorter confirmation prompt. `--yes` auto-confirms only these medium-risk prompts. JSON/non-interactive runs skip them when confirmation is required. Consumer VPNs are never disabled from JSON/non-interactive runs, and enterprise VPNs are never auto-disabled in any mode.
+
 ### What to do when adding a new fix primitive
 
 1. Add an `ActionId` variant in `action.rs`.
@@ -211,6 +215,8 @@ In interactive mode, every High-risk Action renders a multi-line block with `wha
 3. Add a match arm in `Action::apply`.
 4. Append an `Action { ... }` entry in `all_actions()` declaring `targets`, `cost`, `risk`, `max_attempts`, `stabilization`. For `Risk::High`, attach a complete `RiskExplanation`.
 5. Triage planning picks it up automatically — no changes needed in `triage.rs`.
+
+Clean networks produce zero fix actions. Latency-only findings are advisory because ICMP can be rate-limited or deprioritized by otherwise healthy networks. DNS remediation is staged: flush cache first, restore router-provided DNS next, and consider public DNS only after DNS-specific evidence remains. macOS deep reset snapshots DNS, proxy, service order, IPv4/IPv6 mode, and SSID and restores the original settings after service recreation unless the user explicitly chose a DNS change. Linux NetworkManager actions operate on the active connection profile instead of assuming the profile name equals the device name.
 
 Enterprise VPNs (Cisco, Zscaler, Palo Alto / GlobalProtect, F5, Check Point, Juniper) are never auto-disabled. Fix reports always go to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`.
 
@@ -297,7 +303,7 @@ The statistics module (`src/speedtest/statistics.rs`) implements a multi-stage a
 4. **IQR outlier filter**: Remove values outside Q1 - 1.5*IQR to Q3 + 1.5*IQR
 5. **Modified trimean**: `(P10 + 8*P50 + P90) / 10` — Ookla-style, heavily median-weighted
 6. **Winsorized cross-validation**: If Winsorized trimean diverges from IQR trimean by >15%, average both
-7. **Inverse-variance merge**: Combine providers using `1/variance` weighting, clamped to [0.3, 0.7]
+7. **Inverse-variance merge**: Combine every successful provider using `1/variance` weighting, with bounded source weights so no single provider dominates the result
 8. **Latency**: Fixed 0.4 CF / 0.6 NDT7 weights (NDT7's kernel MinRTT is structurally superior)
-9. **Divergence detection**: Flag when providers differ by >30%
+9. **Divergence detection**: Flag when the full provider spread differs by >30%
 10. **Stability**: Coefficient of variation on combined samples (stable = CV < 0.15)

@@ -68,15 +68,17 @@ pub fn actionable_failures(results: &DiagnosticResults) -> HashSet<DiagnosticKey
     for (res, key) in pairs.iter() {
         match res.status {
             DiagnosticStatus::Fail => {
+                if matches!(key, DiagnosticKey::Latency) {
+                    // Public ICMP/UDP latency probes are commonly filtered
+                    // even when HTTP/DNS/gateway connectivity is healthy.
+                    continue;
+                }
                 out.insert(*key);
             }
             DiagnosticStatus::Warn => {
-                // Only Warn-level latency is treated as actionable today —
-                // the rest of the Warn categories don't have a corresponding
-                // primitive that's reliably useful.
-                if matches!(key, DiagnosticKey::Latency) {
-                    out.insert(*key);
-                }
+                // Warn-level findings are advisory in fix mode. Mutating a
+                // healthy connection for moderate latency or a partial port
+                // block is more likely to make a user's machine worse.
             }
             _ => {}
         }
@@ -124,7 +126,8 @@ pub fn hard_block_detected(results: &DiagnosticResults) -> Option<HardBlock> {
     // No active interfaces at all → no physical link.
     let any_active = matches!(results.adapters.status, Ok | Warn)
         || matches!(results.interfaces.status, Ok | Warn);
-    if !any_active && matches!(results.adapters.status, Fail)
+    if !any_active
+        && matches!(results.adapters.status, Fail)
         && matches!(results.interfaces.status, Fail)
     {
         return Some(HardBlock::NoPhysicalLink);
@@ -161,6 +164,37 @@ pub fn hard_block_detected(results: &DiagnosticResults) -> Option<HardBlock> {
     None
 }
 
+fn action_stage(action: &Action, attempts: &Attempts) -> u8 {
+    use ActionId::*;
+
+    match action.id {
+        FlushDns | FlushArp => {
+            if attempts.get(&action.id).copied().unwrap_or(0) == 0 {
+                0
+            } else {
+                4
+            }
+        }
+        SetDnsAutomatic => {
+            if attempts.get(&FlushDns).copied().unwrap_or(0) > 0 {
+                1
+            } else {
+                2
+            }
+        }
+        SetDnsCloudflare => {
+            if attempts.get(&SetDnsAutomatic).copied().unwrap_or(0) > 0 {
+                2
+            } else {
+                3
+            }
+        }
+        RestartNetworkServices | RenewDhcp | DisableConsumerVpns => 3,
+        BounceInterface => 4,
+        DeepStackReset => 5,
+    }
+}
+
 /// Build the next iteration's plan — an ordered `Vec<Action>` to attempt.
 ///
 /// 1. Restrict attention to the root-cause group of currently-failing categories.
@@ -187,6 +221,13 @@ pub fn build_plan(
         })
         .filter(|a| a.targets.iter().any(|t| group.contains(t)))
         .collect();
+
+    let min_stage = candidates
+        .iter()
+        .map(|a| action_stage(a, attempts))
+        .min()
+        .unwrap_or(0);
+    candidates.retain(|a| action_stage(a, attempts) == min_stage);
 
     candidates.sort_by(|a, b| {
         let ca = a.cost.rank();
@@ -232,6 +273,28 @@ pub fn requires_high_risk_consent(action: &Action) -> bool {
     matches!(action.risk, Risk::High(_))
 }
 
+/// Whether an action needs a Y/N gate before it mutates network state.
+/// High-risk actions always require explicit consent. Medium/expensive and
+/// DNS-changing actions can be auto-confirmed by `--yes`.
+pub fn requires_confirmation(action: &Action, auto_confirm_medium_risk: bool) -> bool {
+    if action.risk.is_high() {
+        return true;
+    }
+    if auto_confirm_medium_risk {
+        return false;
+    }
+
+    matches!(
+        action.id,
+        ActionId::SetDnsCloudflare
+            | ActionId::SetDnsAutomatic
+            | ActionId::RestartNetworkServices
+            | ActionId::RenewDhcp
+            | ActionId::DisableConsumerVpns
+            | ActionId::BounceInterface
+    )
+}
+
 /// Limit on the number of distinct loop iterations. Combined with per-action
 /// `max_attempts` and the wall-clock cap in [`super::session::WALL_CLOCK_CAP`],
 /// guarantees termination.
@@ -241,8 +304,8 @@ pub const MAX_ITERATIONS: u8 = 6;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::action::Cost;
+    use super::*;
     use crate::diagnostics::{DiagnosticResult, DiagnosticResults};
 
     fn empty_results() -> DiagnosticResults {
@@ -297,7 +360,12 @@ mod tests {
         assert!(failures.contains(&DiagnosticKey::Dns));
 
         let registry = super::super::action::all_actions();
-        let plan = build_plan(&failures, &Attempts::new(), &Effectiveness::new(), &registry);
+        let plan = build_plan(
+            &failures,
+            &Attempts::new(),
+            &Effectiveness::new(),
+            &registry,
+        );
 
         assert!(!plan.is_empty());
         // First action should be Cheap-Low.
@@ -327,7 +395,10 @@ mod tests {
         let grouped = group_by_root_cause(&failures);
 
         assert!(grouped.contains(&DiagnosticKey::Adapters));
-        assert!(!grouped.contains(&DiagnosticKey::Dns), "DNS should be suppressed");
+        assert!(
+            !grouped.contains(&DiagnosticKey::Dns),
+            "DNS should be suppressed"
+        );
         assert!(
             !grouped.contains(&DiagnosticKey::Gateway),
             "Gateway should be suppressed under Adapters"
@@ -380,10 +451,7 @@ mod tests {
     #[test]
     fn enterprise_vpn_marker_detected() {
         let mut r = empty_results();
-        r.public_ip = DiagnosticResult::warn(
-            "Public IP",
-            "Detected via Cisco AnyConnect adapter",
-        );
+        r.public_ip = DiagnosticResult::warn("Public IP", "Detected via Cisco AnyConnect adapter");
         let block = hard_block_detected(&r);
         assert!(matches!(block, Some(HardBlock::EnterpriseVpnActive(_))));
     }
@@ -423,5 +491,113 @@ mod tests {
                 "expected SetDnsCloudflare ahead of SetDnsAutomatic when marked helpful"
             );
         }
+    }
+
+    #[test]
+    fn latency_warn_is_advisory_not_actionable() {
+        let mut r = empty_results();
+        r.latency = DiagnosticResult::warn("Latency", "Moderate latency (~125ms avg)");
+
+        let failures = actionable_failures(&r);
+        assert!(
+            failures.is_empty(),
+            "latency warning should not cause mutating fix actions: {:?}",
+            failures
+        );
+    }
+
+    #[test]
+    fn latency_fail_is_advisory_when_other_connectivity_passes() {
+        let mut r = empty_results();
+        r.latency = fail("Latency", "All endpoints unreachable");
+
+        let failures = actionable_failures(&r);
+        assert!(
+            failures.is_empty(),
+            "ICMP-only latency failure should not mutate an otherwise working network: {:?}",
+            failures
+        );
+    }
+
+    #[test]
+    fn dns_failure_starts_with_cache_flush_only() {
+        let mut r = empty_results();
+        r.dns = fail("DNS", "resolution failed");
+
+        let registry = super::super::action::all_actions();
+        let plan = build_plan(
+            &actionable_failures(&r),
+            &Attempts::new(),
+            &Effectiveness::new(),
+            &registry,
+        );
+
+        let ids: Vec<ActionId> = plan.iter().map(|a| a.id).collect();
+        assert_eq!(ids, vec![ActionId::FlushDns]);
+    }
+
+    #[test]
+    fn dns_failure_progresses_to_automatic_before_public_dns() {
+        let mut r = empty_results();
+        r.dns = fail("DNS", "resolution failed");
+
+        let registry = super::super::action::all_actions();
+        let mut attempts = Attempts::new();
+        attempts.insert(ActionId::FlushDns, 1);
+
+        let plan = build_plan(
+            &actionable_failures(&r),
+            &attempts,
+            &Effectiveness::new(),
+            &registry,
+        );
+
+        let ids: Vec<ActionId> = plan.iter().map(|a| a.id).collect();
+        assert_eq!(ids, vec![ActionId::SetDnsAutomatic]);
+    }
+
+    #[test]
+    fn dns_failure_uses_public_dns_only_after_automatic_dns_fails() {
+        let mut r = empty_results();
+        r.dns = fail("DNS", "resolution failed");
+
+        let registry = super::super::action::all_actions();
+        let mut attempts = Attempts::new();
+        attempts.insert(ActionId::FlushDns, 1);
+        attempts.insert(ActionId::SetDnsAutomatic, 1);
+
+        let plan = build_plan(
+            &actionable_failures(&r),
+            &attempts,
+            &Effectiveness::new(),
+            &registry,
+        );
+
+        let ids: Vec<ActionId> = plan.iter().map(|a| a.id).collect();
+        assert_eq!(ids, vec![ActionId::SetDnsCloudflare]);
+    }
+
+    #[test]
+    fn medium_risk_actions_need_confirmation_without_auto_confirm() {
+        let registry = super::super::action::all_actions();
+        let renew = registry
+            .iter()
+            .find(|a| a.id == ActionId::RenewDhcp)
+            .expect("renew action exists");
+        let restart = registry
+            .iter()
+            .find(|a| a.id == ActionId::RestartNetworkServices)
+            .expect("restart action exists");
+        let vpn = registry
+            .iter()
+            .find(|a| a.id == ActionId::DisableConsumerVpns)
+            .expect("vpn action exists");
+
+        assert!(requires_confirmation(renew, false));
+        assert!(requires_confirmation(restart, false));
+        assert!(requires_confirmation(vpn, false));
+        assert!(!requires_confirmation(renew, true));
+        assert!(!requires_confirmation(restart, true));
+        assert!(!requires_confirmation(vpn, true));
     }
 }

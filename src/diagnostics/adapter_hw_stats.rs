@@ -88,9 +88,7 @@ async fn get_link_info(_iface: &str) -> (Option<String>, Option<String>) {
             };
 
             // Match by friendly_name
-            let adapter = adapters
-                .iter()
-                .find(|a| a.friendly_name() == iface_name);
+            let adapter = adapters.iter().find(|a| a.friendly_name() == iface_name);
 
             let adapter = match adapter {
                 Some(a) => a,

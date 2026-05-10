@@ -82,7 +82,10 @@ async fn collect_macos() -> Option<Vec<RouteEntry>> {
     let mut entries = Vec::new();
 
     for line in text.lines() {
-        if line.starts_with("Destination") || line.starts_with("Routing") || line.starts_with("Internet") {
+        if line.starts_with("Destination")
+            || line.starts_with("Routing")
+            || line.starts_with("Internet")
+        {
             continue;
         }
         let parts: Vec<&str> = line.split_whitespace().collect();

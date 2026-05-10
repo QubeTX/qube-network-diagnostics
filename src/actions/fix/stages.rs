@@ -4,16 +4,17 @@ use crate::render::progress::create_spinner;
 
 use super::adapters;
 use super::arp;
+#[allow(unused_imports)]
+use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
 use super::connectivity;
 use super::dhcp;
 use super::dns;
+#[cfg(any(windows, target_os = "linux"))]
 use super::wifi;
-#[allow(unused_imports)]
-use super::cmd::{run_cmd, TIMEOUT_QUICK, TIMEOUT_MEDIUM, TIMEOUT_SLOW};
-use super::{print_step_ok, print_step_fail, warn_icon, StepResult};
-use crate::actions::{flush_dns_platform, is_interactive, prompt_yes_no};
+use super::{print_step_fail, print_step_ok, warn_icon, StepResult};
 #[cfg(target_os = "linux")]
 use crate::actions::prompt_string;
+use crate::actions::{flush_dns_platform, is_interactive, prompt_yes_no};
 
 // ── Stage 1: Service Restart (automatic, safe) ─────────────────────────────
 
@@ -26,16 +27,29 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
         match adapters::detect_default_interface().await {
             Some(iface) => {
                 let service_name = detect_service_name(&iface).await;
-                let result = dns::set_dns_servers(&iface, &service_name, dns::DnsProvider::Automatic).await;
+                let result =
+                    dns::set_dns_servers(&iface, &service_name, dns::DnsProvider::Automatic).await;
                 spinner.finish_and_clear();
                 match result {
                     Ok(msg) => {
-                        if is_interactive(config) { print_step_ok("DNS reset to automatic (DHCP)", config); }
-                        steps.push(StepResult { name: "dns_reset_auto", success: true, message: msg });
+                        if is_interactive(config) {
+                            print_step_ok("DNS reset to automatic (DHCP)", config);
+                        }
+                        steps.push(StepResult {
+                            name: "dns_reset_auto",
+                            success: true,
+                            message: msg,
+                        });
                     }
                     Err(msg) => {
-                        if is_interactive(config) { print_step_fail("Failed to reset DNS to automatic", &msg, config); }
-                        steps.push(StepResult { name: "dns_reset_auto", success: false, message: msg });
+                        if is_interactive(config) {
+                            print_step_fail("Failed to reset DNS to automatic", &msg, config);
+                        }
+                        steps.push(StepResult {
+                            name: "dns_reset_auto",
+                            success: false,
+                            message: msg,
+                        });
                     }
                 }
             }
@@ -60,12 +74,24 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
         spinner.finish_and_clear();
         match result {
             Ok(msg) => {
-                if is_interactive(config) { print_step_ok("DNS cache flushed", config); }
-                steps.push(StepResult { name: "dns_flush", success: true, message: msg });
+                if is_interactive(config) {
+                    print_step_ok("DNS cache flushed", config);
+                }
+                steps.push(StepResult {
+                    name: "dns_flush",
+                    success: true,
+                    message: msg,
+                });
             }
             Err(msg) => {
-                if is_interactive(config) { print_step_fail("Failed to flush DNS cache", &msg, config); }
-                steps.push(StepResult { name: "dns_flush", success: false, message: msg });
+                if is_interactive(config) {
+                    print_step_fail("Failed to flush DNS cache", &msg, config);
+                }
+                steps.push(StepResult {
+                    name: "dns_flush",
+                    success: false,
+                    message: msg,
+                });
             }
         }
     }
@@ -77,12 +103,24 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
         spinner.finish_and_clear();
         match result {
             Ok(msg) => {
-                if is_interactive(config) { print_step_ok("ARP cache flushed", config); }
-                steps.push(StepResult { name: "arp_flush", success: true, message: msg });
+                if is_interactive(config) {
+                    print_step_ok("ARP cache flushed", config);
+                }
+                steps.push(StepResult {
+                    name: "arp_flush",
+                    success: true,
+                    message: msg,
+                });
             }
             Err(msg) => {
-                if is_interactive(config) { print_step_fail("Failed to flush ARP cache", &msg, config); }
-                steps.push(StepResult { name: "arp_flush", success: false, message: msg });
+                if is_interactive(config) {
+                    print_step_fail("Failed to flush ARP cache", &msg, config);
+                }
+                steps.push(StepResult {
+                    name: "arp_flush",
+                    success: false,
+                    message: msg,
+                });
             }
         }
     }
@@ -94,12 +132,24 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
         spinner.finish_and_clear();
         match result {
             Ok(msg) => {
-                if is_interactive(config) { print_step_ok("Network services restarted", config); }
-                steps.push(StepResult { name: "service_restart", success: true, message: msg });
+                if is_interactive(config) {
+                    print_step_ok("Network services restarted", config);
+                }
+                steps.push(StepResult {
+                    name: "service_restart",
+                    success: true,
+                    message: msg,
+                });
             }
             Err(msg) => {
-                if is_interactive(config) { print_step_fail("Failed to restart services", &msg, config); }
-                steps.push(StepResult { name: "service_restart", success: false, message: msg });
+                if is_interactive(config) {
+                    print_step_fail("Failed to restart services", &msg, config);
+                }
+                steps.push(StepResult {
+                    name: "service_restart",
+                    success: false,
+                    message: msg,
+                });
             }
         }
     }
@@ -111,12 +161,24 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
         spinner.finish_and_clear();
         match result {
             Ok(msg) => {
-                if is_interactive(config) { print_step_ok("DHCP lease renewed", config); }
-                steps.push(StepResult { name: "dhcp_renew", success: true, message: msg });
+                if is_interactive(config) {
+                    print_step_ok("DHCP lease renewed", config);
+                }
+                steps.push(StepResult {
+                    name: "dhcp_renew",
+                    success: true,
+                    message: msg,
+                });
             }
             Err(msg) => {
-                if is_interactive(config) { print_step_fail("Failed to renew DHCP lease", &msg, config); }
-                steps.push(StepResult { name: "dhcp_renew", success: false, message: msg });
+                if is_interactive(config) {
+                    print_step_fail("Failed to renew DHCP lease", &msg, config);
+                }
+                steps.push(StepResult {
+                    name: "dhcp_renew",
+                    success: false,
+                    message: msg,
+                });
             }
         }
     }
@@ -142,7 +204,9 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
     };
 
     if dns_ok {
-        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+        if is_interactive(config) {
+            print_step_ok("DNS resolution verified", config);
+        }
         return (steps, true);
     }
 
@@ -151,7 +215,9 @@ pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
         print_step_fail("DNS is not resolving correctly", "", config);
     }
 
-    let iface = adapters::detect_default_interface().await.unwrap_or_default();
+    let iface = adapters::detect_default_interface()
+        .await
+        .unwrap_or_default();
     let dns_fixed = handle_dns_fallback_prompted(config, &iface, &mut steps).await;
     (steps, dns_fixed)
 }
@@ -182,7 +248,11 @@ pub async fn restart_services() -> Result<String, String> {
         if restarted.is_empty() {
             for (internal, display) in &[("dnscache", "DNS Client"), ("Dhcp", "DHCP Client")] {
                 let mut cmd = tokio::process::Command::new("powershell");
-                cmd.args(["-NoProfile", "-Command", &format!("Restart-Service -Name '{}' -Force", internal)]);
+                cmd.args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!("Restart-Service -Name '{}' -Force", internal),
+                ]);
                 match run_cmd(cmd, TIMEOUT_MEDIUM).await {
                     Ok(output) if output.status.success() => {
                         restarted.push(*display);
@@ -194,7 +264,10 @@ pub async fn restart_services() -> Result<String, String> {
 
         if restarted.is_empty() {
             // Services are PPL-protected; DNS flush and DHCP renew already handle cache refresh
-            Ok("Services protected (PPL); DNS flush and DHCP renew handle cache refresh".to_string())
+            Ok(
+                "Services protected (PPL); DNS flush and DHCP renew handle cache refresh"
+                    .to_string(),
+            )
         } else {
             Ok(format!("Restarted: {}", restarted.join(", ")))
         }
@@ -205,9 +278,7 @@ pub async fn restart_services() -> Result<String, String> {
         let mut cmd = tokio::process::Command::new("killall");
         cmd.args(["-HUP", "configd"]);
         match run_cmd(cmd, TIMEOUT_QUICK).await {
-            Ok(output) if output.status.success() => {
-                Ok("Restarted configd".to_string())
-            }
+            Ok(output) if output.status.success() => Ok("Restarted configd".to_string()),
             _ => Err("Could not restart configd".to_string()),
         }
     }
@@ -273,10 +344,7 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
     };
 
     if is_interactive(config) {
-        println!(
-            "  Resetting interface: {}",
-            color::cyan(&iface, config),
-        );
+        println!("  Resetting interface: {}", color::cyan(&iface, config),);
     }
 
     // Disable/down
@@ -286,10 +354,14 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
         spinner.finish_and_clear();
         match result {
             Ok(_) => {
-                if is_interactive(config) { print_step_ok(&format!("Disabled {}", iface), config); }
+                if is_interactive(config) {
+                    print_step_ok(&format!("Disabled {}", iface), config);
+                }
             }
             Err(msg) => {
-                if is_interactive(config) { print_step_fail(&format!("Failed to disable {}", iface), &msg, config); }
+                if is_interactive(config) {
+                    print_step_fail(&format!("Failed to disable {}", iface), &msg, config);
+                }
                 steps.push(StepResult {
                     name: "interface_reset",
                     success: false,
@@ -314,7 +386,9 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
         spinner.finish_and_clear();
         match result {
             Ok(_) => {
-                if is_interactive(config) { print_step_ok(&format!("Re-enabled {}", iface), config); }
+                if is_interactive(config) {
+                    print_step_ok(&format!("Re-enabled {}", iface), config);
+                }
             }
             Err(_) => {
                 // Retry once — leaving interface disabled is worse than a slow retry
@@ -324,10 +398,18 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
                 spinner.finish_and_clear();
                 match retry {
                     Ok(_) => {
-                        if is_interactive(config) { print_step_ok(&format!("Re-enabled {} (retry)", iface), config); }
+                        if is_interactive(config) {
+                            print_step_ok(&format!("Re-enabled {} (retry)", iface), config);
+                        }
                     }
                     Err(msg) => {
-                        if is_interactive(config) { print_step_fail(&format!("Failed to re-enable {}", iface), &msg, config); }
+                        if is_interactive(config) {
+                            print_step_fail(
+                                &format!("Failed to re-enable {}", iface),
+                                &msg,
+                                config,
+                            );
+                        }
                         steps.push(StepResult {
                             name: "interface_reset",
                             success: false,
@@ -354,12 +436,24 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
         spinner.finish_and_clear();
         match result {
             Ok(msg) => {
-                if is_interactive(config) { print_step_ok("DHCP renewed", config); }
-                steps.push(StepResult { name: "interface_reset", success: true, message: msg });
+                if is_interactive(config) {
+                    print_step_ok("DHCP renewed", config);
+                }
+                steps.push(StepResult {
+                    name: "interface_reset",
+                    success: true,
+                    message: msg,
+                });
             }
             Err(msg) => {
-                if is_interactive(config) { print_step_fail("DHCP renew failed", &msg, config); }
-                steps.push(StepResult { name: "interface_reset", success: false, message: msg });
+                if is_interactive(config) {
+                    print_step_fail("DHCP renew failed", &msg, config);
+                }
+                steps.push(StepResult {
+                    name: "interface_reset",
+                    success: false,
+                    message: msg,
+                });
             }
         }
     }
@@ -385,7 +479,9 @@ pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
     };
 
     if dns_ok {
-        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+        if is_interactive(config) {
+            print_step_ok("DNS resolution verified", config);
+        }
         return (steps, true);
     }
 
@@ -536,7 +632,9 @@ pub async fn run_stage3(config: &Config, saved_ssid: &Option<String>) -> (Vec<St
     match result {
         Ok(msgs) => {
             for msg in &msgs {
-                if is_interactive(config) { print_step_ok(msg, config); }
+                if is_interactive(config) {
+                    print_step_ok(msg, config);
+                }
             }
             steps.push(StepResult {
                 name: "stack_reset",
@@ -545,7 +643,9 @@ pub async fn run_stage3(config: &Config, saved_ssid: &Option<String>) -> (Vec<St
             });
         }
         Err(msg) => {
-            if is_interactive(config) { print_step_fail("Stack reset failed", &msg, config); }
+            if is_interactive(config) {
+                print_step_fail("Stack reset failed", &msg, config);
+            }
             steps.push(StepResult {
                 name: "stack_reset",
                 success: false,
@@ -575,40 +675,62 @@ pub async fn run_stage3(config: &Config, saved_ssid: &Option<String>) -> (Vec<St
     };
 
     if dns_ok {
-        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+        if is_interactive(config) {
+            print_step_ok("DNS resolution verified", config);
+        }
         return (steps, true);
     }
 
     // DNS failed — auto-apply Google DNS (no prompt in Stage 3)
-    let iface = adapters::detect_default_interface().await.unwrap_or_default();
+    let iface = adapters::detect_default_interface()
+        .await
+        .unwrap_or_default();
     let dns_fixed = handle_dns_fallback_auto(config, &iface, &mut steps).await;
     (steps, dns_fixed)
 }
 
 fn platform_stage3_warning() -> &'static str {
     #[cfg(windows)]
-    { "This will reset Winsock, TCP/IP stack, and optionally delete your Wi-Fi profile." }
+    {
+        "This will reset Winsock, TCP/IP stack, and optionally delete your Wi-Fi profile."
+    }
 
     #[cfg(target_os = "macos")]
-    { "This will remove and recreate your network service." }
+    {
+        "This will remove and recreate your network service."
+    }
 
     #[cfg(target_os = "linux")]
-    { "This will delete and recreate your network connection profile." }
+    {
+        "This will delete and recreate your network connection profile."
+    }
 }
 
-pub async fn platform_stage3(config: &Config, saved_ssid: &Option<String>) -> Result<Vec<String>, String> {
+pub async fn platform_stage3(
+    config: &Config,
+    saved_ssid: &Option<String>,
+) -> Result<Vec<String>, String> {
     #[cfg(windows)]
-    { stage3_windows(config, saved_ssid).await }
+    {
+        stage3_windows(config, saved_ssid).await
+    }
 
     #[cfg(target_os = "macos")]
-    { stage3_macos(config, saved_ssid).await }
+    {
+        stage3_macos(config, saved_ssid).await
+    }
 
     #[cfg(target_os = "linux")]
-    { stage3_linux(config, saved_ssid).await }
+    {
+        stage3_linux(config, saved_ssid).await
+    }
 }
 
 #[cfg(windows)]
-async fn stage3_windows(config: &Config, saved_ssid: &Option<String>) -> Result<Vec<String>, String> {
+async fn stage3_windows(
+    config: &Config,
+    saved_ssid: &Option<String>,
+) -> Result<Vec<String>, String> {
     let mut completed = Vec::new();
 
     // 1. Winsock reset
@@ -680,7 +802,10 @@ async fn stage3_windows(config: &Config, saved_ssid: &Option<String>) -> Result<
                 }
                 println!(
                     "  {}",
-                    crate::render::color::dim("Reconnect to your Wi-Fi network via the system tray.", config),
+                    crate::render::color::dim(
+                        "Reconnect to your Wi-Fi network via the system tray.",
+                        config
+                    ),
                 );
             }
         }
@@ -703,15 +828,397 @@ async fn stage3_windows(config: &Config, saved_ssid: &Option<String>) -> Result<
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandSpec {
+    program: &'static str,
+    args: Vec<String>,
+}
+
+#[cfg(target_os = "macos")]
+impl CommandSpec {
+    fn new(program: &'static str, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            program,
+            args: args.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MacosIpv4Snapshot {
+    Dhcp,
+    Manual {
+        ip: String,
+        subnet: String,
+        router: String,
+    },
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MacosIpv6Snapshot {
+    Automatic,
+    LinkLocal,
+    Off,
+    Manual {
+        address: String,
+        prefix: String,
+        router: String,
+    },
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacosProxySnapshot {
+    kind: &'static str,
+    enabled: bool,
+    server: Option<String>,
+    port: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosProxySnapshot {
+    fn disabled(kind: &'static str) -> Self {
+        Self {
+            kind,
+            enabled: false,
+            server: None,
+            port: None,
+        }
+    }
+
+    fn restore_specs(&self, service: &str) -> Vec<CommandSpec> {
+        let set_cmd = match self.kind {
+            "secureweb" => "-setsecurewebproxy",
+            _ => "-setwebproxy",
+        };
+        let state_cmd = match self.kind {
+            "secureweb" => "-setsecurewebproxystate",
+            _ => "-setwebproxystate",
+        };
+
+        if self.enabled {
+            let server = self.server.clone().unwrap_or_default();
+            let port = self.port.clone().unwrap_or_else(|| "0".to_string());
+            vec![
+                CommandSpec::new("networksetup", [set_cmd, service, &server, &port]),
+                CommandSpec::new("networksetup", [state_cmd, service, "on"]),
+            ]
+        } else {
+            vec![CommandSpec::new(
+                "networksetup",
+                [state_cmd, service, "off"],
+            )]
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacosNetworkSnapshot {
+    service_name: String,
+    dns_servers: Vec<String>,
+    service_order: Vec<String>,
+    web_proxy: MacosProxySnapshot,
+    secure_web_proxy: MacosProxySnapshot,
+    ipv4: MacosIpv4Snapshot,
+    ipv6: MacosIpv6Snapshot,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosNetworkSnapshot {
+    fn restore_command_specs(&self) -> Vec<CommandSpec> {
+        let mut specs = Vec::new();
+
+        let mut dns_args = vec!["-setdnsservers".to_string(), self.service_name.clone()];
+        if self.dns_servers.is_empty() {
+            dns_args.push("empty".to_string());
+        } else {
+            dns_args.extend(self.dns_servers.clone());
+        }
+        specs.push(CommandSpec::new("networksetup", dns_args));
+
+        match &self.ipv4 {
+            MacosIpv4Snapshot::Dhcp => {
+                specs.push(CommandSpec::new(
+                    "networksetup",
+                    ["-setdhcp", self.service_name.as_str()],
+                ));
+            }
+            MacosIpv4Snapshot::Manual { ip, subnet, router } => {
+                specs.push(CommandSpec::new(
+                    "networksetup",
+                    [
+                        "-setmanual",
+                        self.service_name.as_str(),
+                        ip.as_str(),
+                        subnet.as_str(),
+                        router.as_str(),
+                    ],
+                ));
+            }
+            MacosIpv4Snapshot::Unknown => {}
+        }
+
+        match &self.ipv6 {
+            MacosIpv6Snapshot::Automatic => {
+                specs.push(CommandSpec::new(
+                    "networksetup",
+                    ["-setv6automatic", self.service_name.as_str()],
+                ));
+            }
+            MacosIpv6Snapshot::LinkLocal => {
+                specs.push(CommandSpec::new(
+                    "networksetup",
+                    ["-setv6linklocal", self.service_name.as_str()],
+                ));
+            }
+            MacosIpv6Snapshot::Off => {
+                specs.push(CommandSpec::new(
+                    "networksetup",
+                    ["-setv6off", self.service_name.as_str()],
+                ));
+            }
+            MacosIpv6Snapshot::Manual {
+                address,
+                prefix,
+                router,
+            } => {
+                specs.push(CommandSpec::new(
+                    "networksetup",
+                    [
+                        "-setv6manual",
+                        self.service_name.as_str(),
+                        address.as_str(),
+                        prefix.as_str(),
+                        router.as_str(),
+                    ],
+                ));
+            }
+            MacosIpv6Snapshot::Unknown => {}
+        }
+
+        specs.extend(self.web_proxy.restore_specs(&self.service_name));
+        specs.extend(self.secure_web_proxy.restore_specs(&self.service_name));
+
+        if !self.service_order.is_empty() {
+            let mut order_args = vec!["-ordernetworkservices".to_string()];
+            order_args.extend(self.service_order.clone());
+            specs.push(CommandSpec::new("networksetup", order_args));
+        }
+
+        specs
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn run_networksetup(args: &[&str]) -> Option<String> {
+    let mut cmd = tokio::process::Command::new("networksetup");
+    cmd.args(args);
+    let output = run_cmd(cmd, TIMEOUT_MEDIUM).await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(target_os = "macos")]
+async fn capture_macos_network_snapshot(service_name: &str) -> MacosNetworkSnapshot {
+    let ip_info = run_networksetup(&["-getinfo", service_name]).await;
+    let dns_servers = run_networksetup(&["-getdnsservers", service_name])
+        .await
+        .map(|text| parse_macos_dns_servers(&text))
+        .unwrap_or_default();
+    let service_order = run_networksetup(&["-listnetworkserviceorder"])
+        .await
+        .map(|text| parse_macos_service_order(&text))
+        .unwrap_or_default();
+    let web_proxy = run_networksetup(&["-getwebproxy", service_name])
+        .await
+        .map(|text| parse_macos_proxy("web", &text))
+        .unwrap_or_else(|| MacosProxySnapshot::disabled("web"));
+    let secure_web_proxy = run_networksetup(&["-getsecurewebproxy", service_name])
+        .await
+        .map(|text| parse_macos_proxy("secureweb", &text))
+        .unwrap_or_else(|| MacosProxySnapshot::disabled("secureweb"));
+    let ipv4 = ip_info
+        .as_deref()
+        .map(parse_macos_ipv4)
+        .unwrap_or(MacosIpv4Snapshot::Unknown);
+    let ipv6 = ip_info
+        .as_deref()
+        .map(parse_macos_ipv6)
+        .unwrap_or(MacosIpv6Snapshot::Unknown);
+
+    MacosNetworkSnapshot {
+        service_name: service_name.to_string(),
+        dns_servers,
+        service_order,
+        web_proxy,
+        secure_web_proxy,
+        ipv4,
+        ipv6,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_dns_servers(text: &str) -> Vec<String> {
+    if text.contains("There aren't any DNS Servers") {
+        return Vec::new();
+    }
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_service_order(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('(') {
+                return None;
+            }
+            let (_, name) = trimmed.split_once(") ")?;
+            Some(name.trim().trim_start_matches("*").trim().to_string())
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_proxy(kind: &'static str, text: &str) -> MacosProxySnapshot {
+    let mut enabled = false;
+    let mut server = None;
+    let mut port = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("Enabled:") {
+            enabled = value.trim() == "Yes";
+        } else if let Some(value) = trimmed.strip_prefix("Server:") {
+            let value = value.trim();
+            if !value.is_empty() {
+                server = Some(value.to_string());
+            }
+        } else if let Some(value) = trimmed.strip_prefix("Port:") {
+            let value = value.trim();
+            if !value.is_empty() && value != "0" {
+                port = Some(value.to_string());
+            }
+        }
+    }
+
+    MacosProxySnapshot {
+        kind,
+        enabled,
+        server,
+        port,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_ipv4(text: &str) -> MacosIpv4Snapshot {
+    if text.contains("DHCP Configuration") {
+        return MacosIpv4Snapshot::Dhcp;
+    }
+
+    if text.contains("Manual Configuration") {
+        let mut ip = String::new();
+        let mut subnet = String::new();
+        let mut router = String::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if let Some(value) = trimmed.strip_prefix("IP address:") {
+                ip = value.trim().to_string();
+            } else if let Some(value) = trimmed.strip_prefix("Subnet mask:") {
+                subnet = value.trim().to_string();
+            } else if let Some(value) = trimmed.strip_prefix("Router:") {
+                router = value.trim().to_string();
+            }
+        }
+        if !ip.is_empty() && !subnet.is_empty() && !router.is_empty() {
+            return MacosIpv4Snapshot::Manual { ip, subnet, router };
+        }
+    }
+
+    MacosIpv4Snapshot::Unknown
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_ipv6(text: &str) -> MacosIpv6Snapshot {
+    let mut mode = None;
+    let mut address = String::new();
+    let mut prefix = String::new();
+    let mut router = String::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("IPv6:") {
+            let value = value.trim().to_lowercase();
+            mode = Some(value);
+        } else if let Some(value) = trimmed.strip_prefix("IPv6 IP address:") {
+            address = value.trim().to_string();
+        } else if let Some(value) = trimmed.strip_prefix("IPv6 Prefix Length:") {
+            prefix = value.trim().to_string();
+        } else if let Some(value) = trimmed.strip_prefix("IPv6 Router:") {
+            router = value.trim().to_string();
+        }
+    }
+
+    match mode.as_deref() {
+        Some(value) if value.contains("automatic") => MacosIpv6Snapshot::Automatic,
+        Some(value) if value.contains("link-local") => MacosIpv6Snapshot::LinkLocal,
+        Some(value) if value.contains("off") => MacosIpv6Snapshot::Off,
+        Some(value) if value.contains("manual") => {
+            if !address.is_empty() && !prefix.is_empty() && !router.is_empty() {
+                MacosIpv6Snapshot::Manual {
+                    address,
+                    prefix,
+                    router,
+                }
+            } else {
+                MacosIpv6Snapshot::Unknown
+            }
+        }
+        _ => MacosIpv6Snapshot::Unknown,
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn restore_macos_network_snapshot(snapshot: &MacosNetworkSnapshot) -> Vec<String> {
+    let mut restored = Vec::new();
+
+    for spec in snapshot.restore_command_specs() {
+        let mut cmd = tokio::process::Command::new(spec.program);
+        cmd.args(&spec.args);
+        if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
+            if output.status.success() {
+                restored.push(format!("{} {}", spec.program, spec.args.join(" ")));
+            }
+        }
+    }
+
+    restored
+}
+
+#[cfg(target_os = "macos")]
 async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Vec<String>, String> {
     let mut completed = Vec::new();
 
     // Detect default interface and its network service name
-    let iface = adapters::detect_default_interface().await
+    let iface = adapters::detect_default_interface()
+        .await
         .ok_or_else(|| "Could not detect default interface".to_string())?;
 
-    let service_name = detect_macos_service(&iface).await
+    let service_name = detect_macos_service(&iface)
+        .await
         .ok_or_else(|| format!("Could not find network service for {}", iface))?;
+    let snapshot = capture_macos_network_snapshot(&service_name).await;
 
     // 1. Remove network service
     {
@@ -743,21 +1250,12 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
         }
     }
 
-    // 3. Set DHCP
+    // 3. Restore the service's previous settings. This avoids converting a
+    // DHCP/default-DNS service into a hard-coded public-DNS service.
     {
-        let mut cmd = tokio::process::Command::new("networksetup");
-        cmd.args(["-setdhcp", &service_name]);
-        let _ = run_cmd(cmd, TIMEOUT_MEDIUM).await;
-    }
-
-    // 3b. Set Cloudflare DNS on the new service immediately (DHCP may be slow to deliver DNS)
-    {
-        let mut cmd = tokio::process::Command::new("networksetup");
-        cmd.args(["-setdnsservers", &service_name, "1.1.1.1", "1.0.0.1"]);
-        if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
-            if output.status.success() {
-                completed.push("Set Cloudflare DNS (1.1.1.1 + 1.0.0.1)".to_string());
-            }
+        let restored = restore_macos_network_snapshot(&snapshot).await;
+        if !restored.is_empty() {
+            completed.push("Restored previous macOS network service settings".to_string());
         }
     }
 
@@ -780,7 +1278,10 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
                     println!(
                         "  {}",
                         crate::render::color::dim(
-                            &format!("Could not retrieve password for \"{}\". Reconnect via Wi-Fi menu.", ssid),
+                            &format!(
+                                "Could not retrieve password for \"{}\". Reconnect via Wi-Fi menu.",
+                                ssid
+                            ),
                             config,
                         ),
                     );
@@ -839,16 +1340,153 @@ async fn get_keychain_password(ssid: &str) -> Option<String> {
     None
 }
 
+#[cfg(all(test, target_os = "macos"))]
+mod macos_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn automatic_dns_restores_empty_dns_marker() {
+        let snapshot = MacosNetworkSnapshot {
+            service_name: "Wi-Fi".to_string(),
+            dns_servers: Vec::new(),
+            service_order: vec!["Wi-Fi".to_string(), "Thunderbolt Bridge".to_string()],
+            web_proxy: MacosProxySnapshot::disabled("web"),
+            secure_web_proxy: MacosProxySnapshot::disabled("secureweb"),
+            ipv4: MacosIpv4Snapshot::Dhcp,
+            ipv6: MacosIpv6Snapshot::Automatic,
+        };
+
+        let specs = snapshot.restore_command_specs();
+        assert!(specs.iter().any(|spec| {
+            spec.program == "networksetup" && spec.args == vec!["-setdnsservers", "Wi-Fi", "empty"]
+        }));
+        assert!(specs.iter().any(|spec| {
+            spec.program == "networksetup"
+                && spec.args == vec!["-ordernetworkservices", "Wi-Fi", "Thunderbolt Bridge"]
+        }));
+        assert!(specs.iter().any(|spec| {
+            spec.program == "networksetup" && spec.args == vec!["-setdhcp", "Wi-Fi"]
+        }));
+        assert!(specs.iter().any(|spec| {
+            spec.program == "networksetup" && spec.args == vec!["-setv6automatic", "Wi-Fi"]
+        }));
+    }
+
+    #[test]
+    fn manual_dns_and_proxy_restore_commands_preserve_values() {
+        let snapshot = MacosNetworkSnapshot {
+            service_name: "Wi-Fi".to_string(),
+            dns_servers: vec!["10.0.0.2".to_string(), "10.0.0.3".to_string()],
+            service_order: Vec::new(),
+            web_proxy: MacosProxySnapshot {
+                kind: "web",
+                enabled: true,
+                server: Some("proxy.example.test".to_string()),
+                port: Some("8080".to_string()),
+            },
+            secure_web_proxy: MacosProxySnapshot::disabled("secureweb"),
+            ipv4: MacosIpv4Snapshot::Manual {
+                ip: "10.0.0.42".to_string(),
+                subnet: "255.255.255.0".to_string(),
+                router: "10.0.0.1".to_string(),
+            },
+            ipv6: MacosIpv6Snapshot::Off,
+        };
+
+        let specs = snapshot.restore_command_specs();
+        assert!(specs.iter().any(|spec| {
+            spec.program == "networksetup"
+                && spec.args == vec!["-setdnsservers", "Wi-Fi", "10.0.0.2", "10.0.0.3"]
+        }));
+        assert!(specs.iter().any(|spec| {
+            spec.program == "networksetup"
+                && spec.args == vec!["-setwebproxy", "Wi-Fi", "proxy.example.test", "8080"]
+        }));
+        assert!(specs.iter().any(|spec| {
+            spec.program == "networksetup"
+                && spec.args
+                    == vec![
+                        "-setmanual",
+                        "Wi-Fi",
+                        "10.0.0.42",
+                        "255.255.255.0",
+                        "10.0.0.1",
+                    ]
+        }));
+        assert!(specs.iter().any(|spec| {
+            spec.program == "networksetup" && spec.args == vec!["-setv6off", "Wi-Fi"]
+        }));
+    }
+
+    #[test]
+    fn service_order_strips_disabled_marker() {
+        let parsed = parse_macos_service_order(
+            "
+(1) Wi-Fi
+(2) *Thunderbolt Bridge
+",
+        );
+
+        assert_eq!(parsed, vec!["Wi-Fi", "Thunderbolt Bridge"]);
+    }
+
+    #[test]
+    fn ipv6_manual_parse_restores_manual_mode() {
+        let parsed = parse_macos_ipv6(
+            "
+IPv6: Manual
+IPv6 IP address: 2001:db8::20
+IPv6 Prefix Length: 64
+IPv6 Router: 2001:db8::1
+",
+        );
+
+        assert_eq!(
+            parsed,
+            MacosIpv6Snapshot::Manual {
+                address: "2001:db8::20".to_string(),
+                prefix: "64".to_string(),
+                router: "2001:db8::1".to_string(),
+            }
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Vec<String>, String> {
     let mut completed = Vec::new();
 
-    let iface = adapters::detect_default_interface().await
+    let iface = adapters::detect_default_interface()
+        .await
         .ok_or_else(|| "Could not detect default interface".to_string())?;
 
     let has_nm = has_network_manager().await;
 
     if has_nm {
+        let is_wifi = is_linux_wifi(&iface).await;
+        let wifi_credentials = if is_wifi {
+            if !is_interactive(config) {
+                return Err("Wi-Fi profile reset requires interactive mode".to_string());
+            }
+
+            let ssid_to_connect = if let Some(ssid) = saved_ssid {
+                ssid.clone()
+            } else {
+                let networks = wifi::scan_wifi_networks().await;
+                if !networks.is_empty() {
+                    println!("  Available networks:");
+                    for (i, net) in networks.iter().enumerate().take(10) {
+                        println!("    {}. {}", i + 1, net);
+                    }
+                }
+                prompt_string("  Enter SSID to connect to: ")
+            };
+            let passphrase = prompt_string("  Enter passphrase (leave blank for open network): ");
+            Some((ssid_to_connect, passphrase))
+        } else {
+            None
+        };
+
         // Delete active connection profile
         if let Some(profile) = detect_nm_profile(&iface).await {
             let spinner = create_spinner(&format!("Deleting profile \"{}\"...", profile));
@@ -860,7 +1498,6 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
         }
 
         // Recreate
-        let is_wifi = is_linux_wifi(&iface).await;
         if is_wifi {
             // Wi-Fi: scan and connect
             let spinner = create_spinner("Scanning for Wi-Fi networks...");
@@ -870,26 +1507,14 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             spinner.finish_and_clear();
 
-            let ssid_to_connect = if let Some(ssid) = saved_ssid {
-                ssid.clone()
-            } else if is_interactive(config) {
-                let networks = wifi::scan_wifi_networks().await;
-                if !networks.is_empty() {
-                    println!("  Available networks:");
-                    for (i, net) in networks.iter().enumerate().take(10) {
-                        println!("    {}. {}", i + 1, net);
-                    }
-                }
-                prompt_string("  Enter SSID to connect to: ")
-            } else {
-                return Err("Wi-Fi reconnection requires interactive mode".to_string());
-            };
-
-            if is_interactive(config) {
-                let passphrase = prompt_string("  Enter passphrase: ");
+            if let Some((ssid_to_connect, passphrase)) = wifi_credentials {
                 let spinner = create_spinner(&format!("Connecting to {}...", ssid_to_connect));
                 let mut cmd = tokio::process::Command::new("nmcli");
-                cmd.args(["device", "wifi", "connect", &ssid_to_connect, "password", &passphrase, "ifname", &iface]);
+                cmd.args(["device", "wifi", "connect", &ssid_to_connect]);
+                if !passphrase.is_empty() {
+                    cmd.args(["password", &passphrase]);
+                }
+                cmd.args(["ifname", &iface]);
                 let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
                 spinner.finish_and_clear();
                 match r {
@@ -906,7 +1531,16 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
             let spinner = create_spinner("Creating new ethernet profile...");
             let con_name = format!("Auto {}", iface);
             let mut cmd = tokio::process::Command::new("nmcli");
-            cmd.args(["connection", "add", "type", "ethernet", "con-name", &con_name, "ifname", &iface]);
+            cmd.args([
+                "connection",
+                "add",
+                "type",
+                "ethernet",
+                "con-name",
+                &con_name,
+                "ifname",
+                &iface,
+            ]);
             let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
             spinner.finish_and_clear();
             match r {
@@ -967,7 +1601,10 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
                     let mut reconf_cmd = tokio::process::Command::new("wpa_cli");
                     reconf_cmd.args(["-i", &iface, "reconfigure"]);
                     let _ = run_cmd(reconf_cmd, TIMEOUT_QUICK).await;
-                    completed.push(format!("Connected to {} via wpa_supplicant", ssid_to_connect));
+                    completed.push(format!(
+                        "Connected to {} via wpa_supplicant",
+                        ssid_to_connect
+                    ));
                 }
             }
         }
@@ -994,13 +1631,17 @@ async fn has_network_manager() -> bool {
 #[cfg(target_os = "linux")]
 async fn detect_nm_profile(iface: &str) -> Option<String> {
     let mut cmd = tokio::process::Command::new("nmcli");
-    cmd.args(["-t", "-f", "NAME,DEVICE", "connection", "show", "--active"]);
+    cmd.args(["-g", "GENERAL.CONNECTION", "device", "show", iface]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
-        let text = String::from_utf8_lossy(&output.stdout);
-        for line in text.lines() {
-            let parts: Vec<&str> = line.splitn(2, ':').collect();
-            if parts.len() == 2 && parts[1] == iface {
-                return Some(parts[0].to_string());
+        if output.status.success() {
+            let name = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !name.is_empty() && name != "--" {
+                return Some(name);
             }
         }
     }
@@ -1024,7 +1665,9 @@ async fn is_linux_wifi(iface: &str) -> bool {
 pub async fn detect_service_name(iface: &str) -> String {
     #[cfg(target_os = "macos")]
     {
-        detect_macos_service(iface).await.unwrap_or_else(|| iface.to_string())
+        detect_macos_service(iface)
+            .await
+            .unwrap_or_else(|| iface.to_string())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1059,12 +1702,24 @@ async fn handle_dns_fallback_prompted(
 
     match &result {
         Ok(msg) => {
-            if is_interactive(config) { print_step_ok(msg, config); }
-            steps.push(StepResult { name: "dns_set", success: true, message: msg.clone() });
+            if is_interactive(config) {
+                print_step_ok(msg, config);
+            }
+            steps.push(StepResult {
+                name: "dns_set",
+                success: true,
+                message: msg.clone(),
+            });
         }
         Err(msg) => {
-            if is_interactive(config) { print_step_fail("Failed to set DNS servers", msg, config); }
-            steps.push(StepResult { name: "dns_set", success: false, message: msg.clone() });
+            if is_interactive(config) {
+                print_step_fail("Failed to set DNS servers", msg, config);
+            }
+            steps.push(StepResult {
+                name: "dns_set",
+                success: false,
+                message: msg.clone(),
+            });
             return false;
         }
     }
@@ -1083,9 +1738,15 @@ async fn handle_dns_fallback_prompted(
     spinner.finish_and_clear();
 
     if dns_ok {
-        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+        if is_interactive(config) {
+            print_step_ok("DNS resolution verified", config);
+        }
     } else if is_interactive(config) {
-        print_step_fail("DNS still not resolving", "May need manual configuration", config);
+        print_step_fail(
+            "DNS still not resolving",
+            "May need manual configuration",
+            config,
+        );
     }
 
     dns_ok
@@ -1103,7 +1764,10 @@ async fn handle_dns_fallback_auto(
     if is_interactive(config) {
         println!(
             "    {}",
-            color::dim("DNS not resolving — auto-applying Google DNS (8.8.8.8 + 8.8.4.4)", config),
+            color::dim(
+                "DNS not resolving — auto-applying Google DNS (8.8.8.8 + 8.8.4.4)",
+                config
+            ),
         );
     }
 
@@ -1121,12 +1785,24 @@ async fn handle_dns_fallback_auto(
 
     match &result {
         Ok(msg) => {
-            if is_interactive(config) { print_step_ok(msg, config); }
-            steps.push(StepResult { name: "dns_set", success: true, message: msg.clone() });
+            if is_interactive(config) {
+                print_step_ok(msg, config);
+            }
+            steps.push(StepResult {
+                name: "dns_set",
+                success: true,
+                message: msg.clone(),
+            });
         }
         Err(msg) => {
-            if is_interactive(config) { print_step_fail("Failed to set DNS servers", msg, config); }
-            steps.push(StepResult { name: "dns_set", success: false, message: msg.clone() });
+            if is_interactive(config) {
+                print_step_fail("Failed to set DNS servers", msg, config);
+            }
+            steps.push(StepResult {
+                name: "dns_set",
+                success: false,
+                message: msg.clone(),
+            });
             return false;
         }
     }
@@ -1145,9 +1821,15 @@ async fn handle_dns_fallback_auto(
     spinner.finish_and_clear();
 
     if dns_ok {
-        if is_interactive(config) { print_step_ok("DNS resolution verified", config); }
+        if is_interactive(config) {
+            print_step_ok("DNS resolution verified", config);
+        }
     } else if is_interactive(config) {
-        print_step_fail("DNS still not resolving", "May need manual configuration", config);
+        print_step_fail(
+            "DNS still not resolving",
+            "May need manual configuration",
+            config,
+        );
     }
 
     dns_ok

@@ -18,12 +18,10 @@ use crate::config::{Config, OutputFormat};
 use crate::diagnostics;
 
 use super::action::{self, DiagnosticKey};
-use super::session::{
-    FinalOutcome, Reporter, Session, DEFAULT_ITERATION_DELAY,
-};
+use super::session::{FinalOutcome, Reporter, Session, DEFAULT_ITERATION_DELAY};
 use super::triage::{
-    actionable_failures, build_plan, hard_block_detected, requires_high_risk_consent,
-    HardBlock, MAX_ITERATIONS,
+    actionable_failures, build_plan, hard_block_detected, requires_confirmation,
+    requires_high_risk_consent, HardBlock, MAX_ITERATIONS,
 };
 
 /// Top-level entry point. Runs the full triage loop and returns a process
@@ -52,8 +50,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
     for iteration in 1..=MAX_ITERATIONS {
         // Wall-clock cap.
         if session.wall_clock_exhausted() {
-            let remaining: Vec<DiagnosticKey> =
-                actionable_failures(&current).into_iter().collect();
+            let remaining: Vec<DiagnosticKey> = actionable_failures(&current).into_iter().collect();
             let outcome = FinalOutcome::Timeout(remaining);
             session.final_outcome = Some(outcome.clone());
             if interactive {
@@ -64,11 +61,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
 
         let failures = actionable_failures(&current);
         if failures.is_empty() {
-            let outcome = if iteration == 1 {
-                FinalOutcome::Fixed
-            } else {
-                FinalOutcome::Fixed
-            };
+            let outcome = FinalOutcome::Fixed;
             session.final_outcome = Some(outcome.clone());
             if interactive {
                 reporter.final_verdict(&outcome, None);
@@ -110,29 +103,40 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
 
         // Apply actions in cost-order. Fatal env changes break early so we
         // re-probe before applying further actions in the same iteration.
-        let mut user_declined_high_risk = false;
+        let mut user_declined_confirmation = false;
+        let mut skipped_for_confirmation = false;
+        let mut ran_action = false;
         for action in &plan {
             if session.wall_clock_exhausted() {
                 break;
             }
 
-            // High-risk gate.
-            if requires_high_risk_consent(action) {
+            // Confirmation gates. High-risk always requires explicit Y/N;
+            // medium-risk and DNS-changing actions honor --yes.
+            if requires_confirmation(action, config.auto_confirm_medium_risk) {
                 if !interactive {
                     session.record_action(
                         iteration,
                         action,
                         super::action::ActionOutcome::fail(
-                            "Skipped: requires interactive confirmation. Re-run `nd300 fix` in a terminal.",
+                            "Skipped: requires confirmation. Re-run `nd300 fix` in a terminal or use `--yes` for medium-risk actions.",
                         ),
                         Duration::from_millis(0),
                         false,
                         true,
                     );
+                    skipped_for_confirmation = true;
                     continue;
                 }
-                if !reporter.high_risk_prompt(action) {
-                    reporter.high_risk_declined(action);
+
+                let approved = if requires_high_risk_consent(action) {
+                    reporter.high_risk_prompt(action)
+                } else {
+                    reporter.confirmation_prompt(action)
+                };
+
+                if !approved {
+                    reporter.confirmation_declined(action);
                     session.record_action(
                         iteration,
                         action,
@@ -141,7 +145,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
                         true,
                         false,
                     );
-                    user_declined_high_risk = true;
+                    user_declined_confirmation = true;
                     break;
                 }
             }
@@ -158,6 +162,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
 
             let fatal_env_change = outcome.fatal_environment_change;
             session.record_action(iteration, action, outcome, duration, false, false);
+            ran_action = true;
 
             // Stabilize before either re-probing or applying the next action.
             if action.stabilization > Duration::from_millis(0) {
@@ -170,7 +175,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
             }
         }
 
-        if user_declined_high_risk {
+        if user_declined_confirmation || (skipped_for_confirmation && !ran_action) {
             let remaining: Vec<DiagnosticKey> = actionable_failures(&current).into_iter().collect();
             let outcome = FinalOutcome::UserDeclined(remaining);
             session.final_outcome = Some(outcome.clone());
@@ -348,4 +353,3 @@ fn hard_block_str(b: &HardBlock) -> &'static str {
         HardBlock::EnterpriseVpnActive(_) => "enterprise_vpn_active",
     }
 }
-
