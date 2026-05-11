@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.6] - 2026-05-11
+
+### Fixed
+- `nd300 update` now handles Cargo installs over older non-Cargo installs more safely. If the cargo strategy succeeds while the currently running `nd300`/`speedqx` copy lives outside Cargo's bin directory, the updater removes that old installer-managed layout so the newly installed Cargo binary is not shadowed on `PATH`.
+- If `cargo install nd300 --force` reports an existing `nd300` or `speedqx` binary collision, the updater now runs ND300's uninstall cleanup for the current install and retries the Cargo install before falling back to GitHub installers.
+
+### Documentation
+- Clarified that bare `cargo install nd300` cannot run project-specific uninstall hooks for unrelated old install locations; users with a shadowing legacy install should run `nd300 update` or `nd300 uninstall` first so ND300 can clean up the old layout.
+
 ## [3.0.5] - 2026-05-11
 
 ### Documentation

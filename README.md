@@ -46,6 +46,8 @@ cargo install nd300
 
 Older installed copies that still request `nd-300-installer.sh` or `nd-300-installer.ps1` are supported by compatibility aliases on every new GitHub release, so the legacy updater path can still reach the current installers.
 
+Cargo itself cannot run ND300-specific uninstall hooks for unrelated old install locations. If an older installer-managed `nd300` appears before Cargo's bin directory on your `PATH`, run `nd300 update` first, or run `nd300 uninstall` before `cargo install nd300`; the updater knows how to remove the old ND300 layout and complete the Cargo install.
+
 ### From Source
 
 ```sh
@@ -382,9 +384,11 @@ The updater runs a **probe-and-retry chain** so missing tools don't block the up
 
 1. Checks the latest release on GitHub. If you're already on it, exits 0 with no action.
 2. Tries `cargo install nd300 --force` first when `cargo --version` succeeds on your system.
-3. If cargo isn't available (or fails), falls through to the cargo-dist installer for your platform — `curl | sh` then `wget | sh` on macOS/Linux, `powershell.exe` then `pwsh.exe` on Windows. The installer URL uses GitHub's `releases/latest` redirect, so it always resolves to the newest release.
-4. Whichever strategy succeeds first wins; the chain stops there.
-5. If every strategy fails, both pretty and `--json` output show a per-attempt diagnostic block listing what was tried and why each failed, so you can fix the environment manually.
+3. If Cargo succeeds while the currently running ND300 copy lives outside Cargo's bin directory, removes the old installer-managed `nd300`/`speedqx` layout so the new Cargo install is not shadowed on `PATH`.
+4. If Cargo reports that an existing `nd300` or `speedqx` binary is blocking installation, runs ND300's uninstall cleanup for the current install and retries `cargo install nd300 --force`.
+5. If cargo isn't available (or still fails), falls through to the cargo-dist installer for your platform — `curl | sh` then `wget | sh` on macOS/Linux, `powershell.exe` then `pwsh.exe` on Windows. The installer URL uses GitHub's `releases/latest` redirect, so it always resolves to the newest release.
+6. Whichever strategy succeeds first wins; the chain stops there.
+7. If every strategy fails, both pretty and `--json` output show a per-attempt diagnostic block listing what was tried and why each failed, so you can fix the environment manually.
 
 Current releases publish the canonical `nd300-installer.sh` and `nd300-installer.ps1` assets plus legacy `nd-300-installer.*` aliases for older installed copies.
 

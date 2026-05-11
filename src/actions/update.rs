@@ -2,7 +2,8 @@ use crate::config::{Config, OutputFormat};
 use crate::render::color;
 use crate::VERSION;
 
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 
 use super::{fail_icon, success_icon};
 
@@ -84,6 +85,10 @@ enum StrategyError {
     /// cargo-dist installers are both atomic (write-to-temp, move-into-place),
     /// so it's still safe to fall through to the next strategy.
     Runtime(String),
+    /// The strategy reached a state where falling through would hide an
+    /// incomplete install, such as a successful cargo install shadowed by an
+    /// old installer-managed binary that could not be removed.
+    Fatal(String),
 }
 
 #[derive(Debug)]
@@ -409,6 +414,15 @@ fn execute_update(strategies: &[UpdateStrategy]) -> Result<UpdateStrategy, Updat
                     message: msg,
                 });
             }
+            Err(StrategyError::Fatal(msg)) => {
+                eprintln!("  · {} failed: {}", strategy.label(), msg);
+                attempts.push(AttemptRecord {
+                    strategy,
+                    kind: AttemptKind::Failed,
+                    message: msg,
+                });
+                return Err(UpdateFailure { attempts });
+            }
         }
     }
     Err(UpdateFailure { attempts })
@@ -416,12 +430,150 @@ fn execute_update(strategies: &[UpdateStrategy]) -> Result<UpdateStrategy, Updat
 
 fn try_strategy(strategy: UpdateStrategy) -> Result<(), StrategyError> {
     match strategy {
-        UpdateStrategy::Cargo => run_command_status("cargo", &["install", "nd300", "--force"]),
+        UpdateStrategy::Cargo => try_cargo_install(),
         UpdateStrategy::InstallerCurl => try_installer_curl(),
         UpdateStrategy::InstallerWget => try_installer_wget(),
         UpdateStrategy::InstallerPowerShell => try_installer_powershell("powershell"),
         UpdateStrategy::InstallerPwsh => try_installer_powershell("pwsh"),
     }
+}
+
+fn try_cargo_install() -> Result<(), StrategyError> {
+    match run_command_capture("cargo", &["install", "nd300", "--force"]) {
+        Ok(()) => cleanup_shadowing_current_install_after_cargo_success(),
+        Err(StrategyError::Runtime(msg))
+            if cargo_failure_suggests_existing_binary_collision(&msg) =>
+        {
+            cleanup_current_install_for_cargo_retry()?;
+            run_command_capture("cargo", &["install", "nd300", "--force"])
+        }
+        other => other,
+    }
+}
+
+fn cleanup_shadowing_current_install_after_cargo_success() -> Result<(), StrategyError> {
+    let Some(current_exe) = current_exe_real_path() else {
+        return Ok(());
+    };
+    let Some(cargo_bin) = cargo_bin_dir() else {
+        return Ok(());
+    };
+
+    if !current_install_shadows_cargo_install(&current_exe, &cargo_bin) {
+        return Ok(());
+    }
+
+    let report = super::uninstall::uninstall_path(&current_exe);
+    if report.binary_removed {
+        eprintln!(
+            "  · removed old non-cargo install at {} after cargo install",
+            current_exe.display()
+        );
+        return Ok(());
+    }
+
+    Err(StrategyError::Fatal(format!(
+        "cargo install succeeded, but the old ND300 install at {} could not be removed: {}",
+        current_exe.display(),
+        cleanup_notes(&report)
+    )))
+}
+
+fn cleanup_current_install_for_cargo_retry() -> Result<(), StrategyError> {
+    let Some(current_exe) = current_exe_real_path() else {
+        return Ok(());
+    };
+
+    let report = super::uninstall::uninstall_path(&current_exe);
+    if report.binary_removed {
+        eprintln!(
+            "  · removed existing ND300 install at {} before retrying cargo install",
+            current_exe.display()
+        );
+        return Ok(());
+    }
+
+    Err(StrategyError::Fatal(format!(
+        "cargo reported an existing nd300/speedqx binary, but the current install at {} could not be removed: {}",
+        current_exe.display(),
+        cleanup_notes(&report)
+    )))
+}
+
+fn cleanup_notes(report: &super::uninstall::CleanupReport) -> String {
+    if report.notes.is_empty() {
+        "no additional details".to_string()
+    } else {
+        report.notes.join("; ")
+    }
+}
+
+fn current_exe_real_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.canonicalize().unwrap_or(exe))
+}
+
+fn cargo_bin_dir() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("CARGO_HOME") {
+        return Some(PathBuf::from(home).join("bin"));
+    }
+
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".cargo").join("bin"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo").join("bin"))
+    }
+}
+
+fn current_install_shadows_cargo_install(current_exe: &Path, cargo_bin_dir: &Path) -> bool {
+    if current_exe_looks_like_local_build(current_exe) {
+        return false;
+    }
+
+    let Some(current_dir) = current_exe.parent() else {
+        return false;
+    };
+    !same_path(current_dir, cargo_bin_dir)
+}
+
+fn current_exe_looks_like_local_build(current_exe: &Path) -> bool {
+    current_exe
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "debug" | "release"))
+        && current_exe
+            .parent()
+            .and_then(|dir| dir.parent())
+            .and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str())
+            == Some("target")
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .eq_ignore_ascii_case(right.to_string_lossy().trim_end_matches(['\\', '/']))
+    }
+
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn cargo_failure_suggests_existing_binary_collision(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("already exists") && (lower.contains("nd300") || lower.contains("speedqx"))
 }
 
 /// Spawn `launcher` with `args`, classify the outcome.
@@ -446,6 +598,43 @@ fn run_command_status(launcher: &str, args: &[&str]) -> Result<(), StrategyError
             launcher,
             s.code().unwrap_or(-1)
         ))),
+    }
+}
+
+fn run_command_capture(launcher: &str, args: &[&str]) -> Result<(), StrategyError> {
+    let res = Command::new(launcher).args(args).output();
+    match res {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(StrategyError::Preflight(
+            format!("{} not on PATH", launcher),
+        )),
+        Err(e) => Err(StrategyError::Preflight(format!(
+            "Failed to spawn {}: {}",
+            launcher, e
+        ))),
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(StrategyError::Runtime(format!(
+            "{} exited with code {}; {}",
+            launcher,
+            output.status.code().unwrap_or(-1),
+            summarize_output(&output)
+        ))),
+    }
+}
+
+fn summarize_output(output: &Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr).trim().to_string();
+    if combined.is_empty() {
+        return "no output".to_string();
+    }
+
+    const MAX_CHARS: usize = 4000;
+    let chars: Vec<char> = combined.chars().collect();
+    if chars.len() <= MAX_CHARS {
+        combined
+    } else {
+        chars[chars.len() - MAX_CHARS..].iter().collect()
     }
 }
 
@@ -584,5 +773,34 @@ mod tests {
         assert!(!is_newer("3.0.1", "3.0.0"));
         assert!(!is_newer("3.0.1", "3.0.1"));
         assert!(is_newer("3.0", "3.0.1"));
+    }
+
+    #[test]
+    fn cargo_failure_detection_catches_existing_nd300_or_speedqx_binary() {
+        assert!(cargo_failure_suggests_existing_binary_collision(
+            "error: binary `nd300` already exists in destination"
+        ));
+        assert!(cargo_failure_suggests_existing_binary_collision(
+            "error: failed to install binary as `speedqx` because it already exists"
+        ));
+        assert!(!cargo_failure_suggests_existing_binary_collision(
+            "error: failed to compile dependency"
+        ));
+    }
+
+    #[test]
+    fn cargo_success_cleans_only_shadowing_non_cargo_current_install() {
+        assert!(current_install_shadows_cargo_install(
+            std::path::Path::new("/usr/local/bin/nd300"),
+            std::path::Path::new("/home/alice/.cargo/bin"),
+        ));
+        assert!(!current_install_shadows_cargo_install(
+            std::path::Path::new("/repo/target/debug/nd300"),
+            std::path::Path::new("/home/alice/.cargo/bin"),
+        ));
+        assert!(!current_install_shadows_cargo_install(
+            std::path::Path::new("/home/alice/.cargo/bin/nd300"),
+            std::path::Path::new("/home/alice/.cargo/bin"),
+        ));
     }
 }

@@ -8,12 +8,12 @@ use super::{fail_icon, is_interactive, prompt_yes_no, success_icon};
 const OUR_BINARIES: &[&str] = &["nd300", "speedqx"];
 
 /// Tracks what we cleaned up for reporting.
-struct CleanupReport {
-    binary_removed: bool,
-    sibling_removed: bool,
-    receipt_removed: bool,
-    path_cleaned: bool,
-    notes: Vec<String>,
+pub(crate) struct CleanupReport {
+    pub(crate) binary_removed: bool,
+    pub(crate) sibling_removed: bool,
+    pub(crate) receipt_removed: bool,
+    pub(crate) path_cleaned: bool,
+    pub(crate) notes: Vec<String>,
 }
 
 pub async fn run(config: &Config) -> i32 {
@@ -101,7 +101,7 @@ pub async fn run(config: &Config) -> i32 {
         println!();
     }
 
-    let report = do_uninstall(&real_path, config).await;
+    let report = uninstall_path(&real_path);
 
     // Print results
     if report.binary_removed {
@@ -144,8 +144,8 @@ pub async fn run(config: &Config) -> i32 {
     }
 }
 
-async fn run_json(exe_path: &Path, config: &Config) -> i32 {
-    let report = do_uninstall(exe_path, config).await;
+async fn run_json(exe_path: &Path, _config: &Config) -> i32 {
+    let report = uninstall_path(exe_path);
 
     let output = serde_json::json!({
         "action": "uninstall",
@@ -169,7 +169,7 @@ async fn run_json(exe_path: &Path, config: &Config) -> i32 {
     }
 }
 
-async fn do_uninstall(exe_path: &Path, _config: &Config) -> CleanupReport {
+pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
     let mut report = CleanupReport {
         binary_removed: false,
         sibling_removed: false,

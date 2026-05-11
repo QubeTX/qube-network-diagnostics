@@ -237,7 +237,9 @@ The self-update feature lives in `src/actions/update.rs` and follows the same pa
    - Windows: powershell -ExecutionPolicy ByPass -c "irm {PS_INSTALLER_URL} | iex"
    - macOS/Linux: sh -c 'curl --proto "=https" --tlsv1.2 -LsSf {SHELL_INSTALLER_URL} | sh'
    - Cargo: cargo install nd300 --force
-6. Report success/failure → exit code
+6. If Cargo succeeds while the running copy is outside Cargo's bin directory, remove the old installer-managed ND300 layout so it cannot shadow the new Cargo install.
+7. If Cargo reports an existing `nd300` or `speedqx` binary collision, run ND300's uninstall cleanup for the current install and retry Cargo once.
+8. Report success/failure → exit code
 ```
 
 ### Key Constants (to customize per tool)
