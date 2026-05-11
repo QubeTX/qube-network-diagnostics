@@ -44,6 +44,8 @@ Download the `.msi` installer from the [latest release](https://github.com/QubeT
 cargo install nd300
 ```
 
+Older installed copies that still request `nd-300-installer.sh` or `nd-300-installer.ps1` are supported by compatibility aliases on every new GitHub release, so the legacy updater path can still reach the current installers.
+
 ### From Source
 
 ```sh
@@ -383,6 +385,8 @@ The updater runs a **probe-and-retry chain** so missing tools don't block the up
 3. If cargo isn't available (or fails), falls through to the cargo-dist installer for your platform — `curl | sh` then `wget | sh` on macOS/Linux, `powershell.exe` then `pwsh.exe` on Windows. The installer URL uses GitHub's `releases/latest` redirect, so it always resolves to the newest release.
 4. Whichever strategy succeeds first wins; the chain stops there.
 5. If every strategy fails, both pretty and `--json` output show a per-attempt diagnostic block listing what was tried and why each failed, so you can fix the environment manually.
+
+Current releases publish the canonical `nd300-installer.sh` and `nd300-installer.ps1` assets plus legacy `nd-300-installer.*` aliases for older installed copies.
 
 In `--json` mode, the response includes `"strategy"` (the precise variant that ran or was attempted) and, on failure, an `"attempts"` array. The legacy `"method"` field still maps to `"cargo"` or `"installer"` for backward compatibility.
 

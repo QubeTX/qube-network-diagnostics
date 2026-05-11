@@ -5,20 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.5] - 2026-05-11
 
 ### Documentation
-- Align local `CLAUDE.md` and the global Codex `AGENTS.md` with the main-branch ND300 release workflow.
+- Expanded release notes so the latest crates.io package and GitHub release explicitly document the complete ND300 publish path: main-branch source checks, full cargo-dist builds, GitHub release/updater asset hosting, legacy installer aliases, and final crates.io publishing through `CARGO_REGISTRY_TOKEN`.
+- Documented all supported install and update paths in the release notes: `cargo install nd300`, GitHub shell installer `nd300-installer.sh`, PowerShell installer `nd300-installer.ps1`, Windows MSI/archives from GitHub Releases, and legacy `nd-300-installer.*` aliases for older self-updaters.
+- Aligned local `CLAUDE.md` and the global Codex `AGENTS.md` with the main-branch ND300 release workflow so future agents use GitHub Actions as the deploy path instead of manual local publishing.
+
+### Changed
+- Bumped package and release metadata to `3.0.5` so the corrected changelog and release workflow documentation are included in the latest crates.io artifact and GitHub release. Runtime behavior is unchanged from `3.0.4`.
 
 ## [3.0.4] - 2026-05-11
 
 ### Added
-- Publish automation for crates.io and GitHub releases from `main`: every push now runs format, tests, clippy, a crates.io dry-run, the full cargo-dist build matrix, GitHub release publishing, and finally crates.io publishing when the `Cargo.toml` version is new.
+- First crates.io publication under the canonical package name `nd300`, owned by the current maintainer account, with the natural install command `cargo install nd300`.
+- Publish automation for crates.io and GitHub releases from `main`: every push now runs format, tests, clippy, a crates.io dry-run, the full cargo-dist build matrix, GitHub release publishing, updater asset upload, and finally crates.io publishing when the `Cargo.toml` version is new.
+- GitHub release assets now use the package-aligned cargo-dist names `nd300-installer.sh` and `nd300-installer.ps1` for the standard updater/install path.
 - Legacy installer aliases (`nd-300-installer.sh` and `nd-300-installer.ps1`) are uploaded with new releases so older installed copies can still self-update through their existing hardcoded URLs.
 
 ### Changed
-- The crates.io package name is now `nd300` for the natural install command `cargo install nd300`, while binary names and product branding stay `nd300`, `speedqx`, and ND300.
-- `nd300 update` / `speedqx update` now use the `nd300` crates.io package and the new `nd300-installer.*` cargo-dist assets.
+- The crates.io package name is now `nd300`, while the library target remains `nd_300`, binary names remain `nd300` and `speedqx`, and product branding remains ND300.
+- README installation instructions now advertise the supported public paths: shell installer, PowerShell installer, Windows MSI, `cargo install nd300`, and source build.
+- `nd300 update` / `speedqx update` now use `cargo install nd300 --force` when cargo is available, then fall back to the new `nd300-installer.*` cargo-dist assets from GitHub Releases.
 - Windows MSI display/install directory naming now follows the new `nd300` package slug instead of `nd-300`.
 
 ### Fixed

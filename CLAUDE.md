@@ -93,7 +93,7 @@ Triggers in user prompts: "release", "ship it", "tag the release", "push it out"
 5. **Run local verification** before pushing: `cargo fmt --check`, `cargo test --lib`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo publish --dry-run --locked --allow-dirty`, and `cargo package --list --locked --allow-dirty`. After committing, the same publish/package commands can be rerun without `--allow-dirty`.
 6. If changing installer or release behavior, **run `cargo build --release`** locally on the active platform to catch obvious packaging/build failures. Note: this only catches errors on the active platform — see "macOS / Linux-only failures" below.
 7. **Stage specific files** (`git add CHANGELOG.md Cargo.toml Cargo.lock src/... README.md` etc). Never `git add -A` / `git add .` — risks pulling in `nul`, `.env`, build artifacts, or temp files.
-8. **Commit** with a descriptive `feat:` / `fix:` / `docs:` message and a `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` trailer.
+8. **Commit** with a descriptive `feat:` / `fix:` / `docs:` message and a `Co-Authored-By: Codex Opus 4.7 (1M context) <noreply@anthropic.com>` trailer.
 9. **Push to main** with `git push origin main`. Do not create the release tag locally for the normal path; the workflow creates `vX.Y.Z` when it creates the GitHub release.
 10. **Watch CI via Monitor — never foreground `gh run watch`.** A foreground watch burns 5+ minutes of context blocking on the run. Instead, pick up the run id (`gh run list --workflow=release.yml --limit 1`) and arm the `Monitor` tool with a poll loop that emits **one notification per job state-change** plus a terminal `RUN_DONE` line. You keep working (or hand back to the user) while CI runs; events arrive as chat notifications.
 11. **Verify publish outputs** after CI succeeds: `git ls-remote --tags origin | grep vX.Y.Z`, `gh release view vX.Y.Z`, `cargo owner --list nd300`, and `cargo install nd300 --force`.
@@ -242,7 +242,7 @@ The self-update feature lives in `src/actions/update.rs` and follows the same pa
 5. Execute platform-specific update:
    - Windows: powershell -ExecutionPolicy ByPass -c "irm {PS_INSTALLER_URL} | iex"
    - macOS/Linux: sh -c 'curl --proto "=https" --tlsv1.2 -LsSf {SHELL_INSTALLER_URL} | sh'
-   - Cargo: cargo install {CRATE_NAME} --force
+   - Cargo: cargo install nd300 --force
 6. Report success/failure → exit code
 ```
 
@@ -250,8 +250,8 @@ The self-update feature lives in `src/actions/update.rs` and follows the same pa
 
 ```rust
 const RELEASES_URL: &str = "https://api.github.com/repos/{OWNER}/{REPO}/releases/latest";
-const SHELL_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/download/{NAME}-installer.sh";
-const PS_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/download/{NAME}-installer.ps1";
+const SHELL_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/download/nd300-installer.sh";
+const PS_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/download/nd300-installer.ps1";
 ```
 
 ### Wiring

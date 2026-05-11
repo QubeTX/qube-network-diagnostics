@@ -236,7 +236,7 @@ The self-update feature lives in `src/actions/update.rs` and follows the same pa
 5. Execute platform-specific update:
    - Windows: powershell -ExecutionPolicy ByPass -c "irm {PS_INSTALLER_URL} | iex"
    - macOS/Linux: sh -c 'curl --proto "=https" --tlsv1.2 -LsSf {SHELL_INSTALLER_URL} | sh'
-   - Cargo: cargo install {CRATE_NAME} --force
+   - Cargo: cargo install nd300 --force
 6. Report success/failure → exit code
 ```
 

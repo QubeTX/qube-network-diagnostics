@@ -2,17 +2,17 @@
 
 ## TL;DR
 
-ND-300 is a Rust CLI network diagnostics and recovery tool. The active work is publishing the tool as the `nd300` crates.io package and making `main` pushes run the full release/deploy path automatically.
+ND-300 is a Rust CLI network diagnostics and recovery tool. It is published as the `nd300` crates.io package, and `main` pushes with a new version run the full release/deploy path automatically.
 
 ## Current Status
 
 - Primary binaries: `nd300` and `speedqx`.
-- Current package version: `3.0.4`.
+- Current package version: `3.0.5`.
 - Crates.io package name: `nd300`.
 - Active branch: `main`.
 - Rust toolchain installed locally through `rustup` for this workspace run.
 - `nd300 fix` uses a diagnostic-driven loop under `src/actions/fix/`.
-- The current implementation focuses on seamless publishing: source verification, full cargo-dist release builds, GitHub release/updater assets, and crates.io publishing happen from the main-branch workflow when the manifest version is new.
+- The current release workflow is seamless publishing: source verification, full cargo-dist release builds, GitHub release/updater assets, and crates.io publishing happen from the main-branch workflow when the manifest version is new.
 
 ## Project Goals
 
