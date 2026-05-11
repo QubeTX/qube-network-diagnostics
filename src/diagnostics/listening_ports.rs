@@ -208,9 +208,9 @@ fn parse_ss_process(s: &str) -> (Option<u32>, Option<String>) {
         let after = &s[start + 4..];
         let pid_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
         let pid = pid_str.parse().ok();
-        let pname = s.find("((\"").and_then(|ns| {
+        let pname = s.find("((\"").map(|ns| {
             let after = &s[ns + 3..];
-            Some(after.chars().take_while(|c| *c != '"').collect())
+            after.chars().take_while(|c| *c != '"').collect()
         });
         (pid, pname)
     } else {

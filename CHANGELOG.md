@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nd300 update` / `speedqx update` now use the `nd300` crates.io package and the new `nd300-installer.*` cargo-dist assets.
 - Windows MSI display/install directory naming now follows the new `nd300` package slug instead of `nd-300`.
 
+### Fixed
+- CI Clippy compatibility with the current GitHub runner toolchain.
+
 ## [3.0.3] - 2026-05-10
 
 ### Fixed

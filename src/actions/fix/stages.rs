@@ -1568,44 +1568,42 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
 
         // Wi-Fi via wpa_cli
         let is_wifi = is_linux_wifi(&iface).await;
-        if is_wifi {
-            if is_interactive(config) {
-                let ssid_to_connect = if let Some(ssid) = saved_ssid {
-                    ssid.clone()
-                } else {
-                    prompt_string("  Enter SSID to connect to: ")
-                };
-                let passphrase = prompt_string("  Enter passphrase: ");
+        if is_wifi && is_interactive(config) {
+            let ssid_to_connect = if let Some(ssid) = saved_ssid {
+                ssid.clone()
+            } else {
+                prompt_string("  Enter SSID to connect to: ")
+            };
+            let passphrase = prompt_string("  Enter passphrase: ");
 
-                // Add network via wpa_cli
-                let spinner = create_spinner("Scanning for Wi-Fi networks...");
-                let mut scan_cmd = tokio::process::Command::new("wpa_cli");
-                scan_cmd.args(["-i", &iface, "scan"]);
-                let _ = run_cmd(scan_cmd, TIMEOUT_QUICK).await;
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                spinner.finish_and_clear();
+            // Add network via wpa_cli
+            let spinner = create_spinner("Scanning for Wi-Fi networks...");
+            let mut scan_cmd = tokio::process::Command::new("wpa_cli");
+            scan_cmd.args(["-i", &iface, "scan"]);
+            let _ = run_cmd(scan_cmd, TIMEOUT_QUICK).await;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            spinner.finish_and_clear();
 
-                // Create wpa_supplicant entry
-                let wpa_conf = format!(
-                    "network={{\n  ssid=\"{}\"\n  psk=\"{}\"\n}}\n",
-                    ssid_to_connect, passphrase,
-                );
-                // Append to wpa_supplicant.conf
-                if let Ok(mut file) = tokio::fs::OpenOptions::new()
-                    .append(true)
-                    .open("/etc/wpa_supplicant/wpa_supplicant.conf")
-                    .await
-                {
-                    use tokio::io::AsyncWriteExt;
-                    let _ = file.write_all(wpa_conf.as_bytes()).await;
-                    let mut reconf_cmd = tokio::process::Command::new("wpa_cli");
-                    reconf_cmd.args(["-i", &iface, "reconfigure"]);
-                    let _ = run_cmd(reconf_cmd, TIMEOUT_QUICK).await;
-                    completed.push(format!(
-                        "Connected to {} via wpa_supplicant",
-                        ssid_to_connect
-                    ));
-                }
+            // Create wpa_supplicant entry
+            let wpa_conf = format!(
+                "network={{\n  ssid=\"{}\"\n  psk=\"{}\"\n}}\n",
+                ssid_to_connect, passphrase,
+            );
+            // Append to wpa_supplicant.conf
+            if let Ok(mut file) = tokio::fs::OpenOptions::new()
+                .append(true)
+                .open("/etc/wpa_supplicant/wpa_supplicant.conf")
+                .await
+            {
+                use tokio::io::AsyncWriteExt;
+                let _ = file.write_all(wpa_conf.as_bytes()).await;
+                let mut reconf_cmd = tokio::process::Command::new("wpa_cli");
+                reconf_cmd.args(["-i", &iface, "reconfigure"]);
+                let _ = run_cmd(reconf_cmd, TIMEOUT_QUICK).await;
+                completed.push(format!(
+                    "Connected to {} via wpa_supplicant",
+                    ssid_to_connect
+                ));
             }
         }
     }
