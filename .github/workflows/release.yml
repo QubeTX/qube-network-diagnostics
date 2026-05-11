@@ -77,8 +77,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          package_name=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["name"])')
-          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          package_name=$(sed -n 's/^name = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
 
           publishing=false
           should_deploy=false
