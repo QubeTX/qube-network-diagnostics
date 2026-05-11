@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.7] - 2026-05-11
+
 ### Documentation
-- Aligned README, local agent docs, `CODEX_PROJECT.md`, and the original project plan with the shipped `3.0.6` release/update workflow, including Cargo-first updates, non-Cargo install cleanup, legacy installer aliases, and the canonical `cargo install nd300` path.
+- Republished the already-correct local README and documentation to crates.io so the registry page reflects the complete release/update workflow, including Cargo-first updates, non-Cargo install cleanup, legacy installer aliases, and the canonical `cargo install nd300` path.
+- Aligned local agent docs, `CODEX_PROJECT.md`, and the original project plan with the current release/update workflow. Runtime behavior is unchanged from `3.0.6`.
 
 ## [3.0.6] - 2026-05-11
 

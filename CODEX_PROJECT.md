@@ -7,7 +7,7 @@ ND-300 is a Rust CLI network diagnostics and recovery tool. It is published as t
 ## Current Status
 
 - Primary binaries: `nd300` and `speedqx`.
-- Current package version: `3.0.6`.
+- Current package version: `3.0.7`.
 - Crates.io package name: `nd300`.
 - Active branch: `main`.
 - Rust toolchain installed locally through `rustup` for this workspace run.

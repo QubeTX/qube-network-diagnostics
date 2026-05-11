@@ -10,7 +10,7 @@
 
 ---
 
-## Current Shipping Status (v3.0.6)
+## Current Shipping Status (v3.0.7)
 
 This file began as the original product plan. The implemented package now ships as the lowercase crates.io package `nd300` while keeping ND300 as the product brand. End users should install with `cargo install nd300` or the GitHub release installers (`nd300-installer.sh`, `nd300-installer.ps1`, Windows MSI/archives). GitHub releases also publish legacy `nd-300-installer.*` aliases so older installed copies can still self-update.
 
