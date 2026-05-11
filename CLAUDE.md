@@ -80,24 +80,23 @@ aarch64-apple-darwin, x86_64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unk
 
 ## Release Process
 
-Releases are automated via `cargo-dist` v0.31.0. Push a version tag (e.g., `v3.0.0`) to trigger `.github/workflows/release.yml`, which builds for all 6 targets and generates shell / PowerShell / MSI installers. The WiX manifest (`wix/main.wxs`) must include components for both `nd300.exe` and `speedqx.exe`.
+Releases are automated via `cargo-dist` v0.31.0 and crates.io publishing. Push a commit to `main` with a new `Cargo.toml` version to trigger `.github/workflows/release.yml`: it runs source checks, builds all 6 cargo-dist targets, creates the GitHub release / updater assets, uploads legacy installer aliases, and publishes the `nd300` crate to crates.io. Version tags still work as a manual release trigger, but the standard deploy path is now main-branch push. The WiX manifest (`wix/main.wxs`) must include components for both `nd300.exe` and `speedqx.exe`.
 
 ### Standard release workflow (run when shipping)
 
 Triggers in user prompts: "release", "ship it", "tag the release", "push it out", "make this live", "go for it" (after change discussion).
 
-1. **Bump version** in `Cargo.toml` (`[package] version`). Patch for fixes, minor for backward-compatible features, major for breaking changes (e.g. `--fix` semantics changed in v3.0.0).
+1. **Bump version** in `Cargo.toml` (`[package] version`). Patch for fixes, minor for backward-compatible features, major for breaking changes (e.g. `--fix` semantics changed in v3.0.0). Every deploy to `main` must use a never-published version.
 2. **Update `CHANGELOG.md`** with a new top entry in Keep-a-Changelog format. Date = today (use the host's current date, not training-data date).
 3. **Update `README.md`** if the release adds user-visible flags / commands / behavior.
-4. **Update `CLAUDE.md`** (this file) if the architecture or workflow changed.
-5. **Run `cargo build --release`** locally on Windows to confirm the build is clean. Note: this only catches errors on the active platform — see "macOS / Linux-only failures" below.
-6. **Run `cargo test --lib`** to confirm any unit tests still pass.
+4. **Update `AGENTS.md` and `CLAUDE.md`** if the architecture or workflow changed.
+5. **Run local verification** before pushing: `cargo fmt --check`, `cargo test --lib`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo publish --dry-run --locked --allow-dirty`, and `cargo package --list --locked --allow-dirty`. After committing, the same publish/package commands can be rerun without `--allow-dirty`.
+6. If changing installer or release behavior, **run `cargo build --release`** locally on the active platform to catch obvious packaging/build failures. Note: this only catches errors on the active platform — see "macOS / Linux-only failures" below.
 7. **Stage specific files** (`git add CHANGELOG.md Cargo.toml Cargo.lock src/... README.md` etc). Never `git add -A` / `git add .` — risks pulling in `nul`, `.env`, build artifacts, or temp files.
 8. **Commit** with a descriptive `feat:` / `fix:` / `docs:` message and a `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` trailer.
-9. **Tag** `git tag vX.Y.Z`.
-10. **Push commit + tag** with `git push origin main --follow-tags`.
-11. **VERIFY the tag actually pushed** with `git ls-remote --tags origin | grep vX.Y.Z`. On Windows, `--follow-tags` sometimes silently skips the tag push — if missing, run `git push origin vX.Y.Z` explicitly. The release CI only triggers on tag push, so a missing tag = no release.
-12. **Watch CI via Monitor — never foreground `gh run watch`.** A foreground watch burns 5+ minutes of context blocking on the run. Instead, pick up the run id (`gh run list --workflow=release.yml --limit 1`) and arm the `Monitor` tool with a poll loop that emits **one notification per job state-change** plus a terminal `RUN_DONE` line. You keep working (or hand back to the user) while CI runs; events arrive as chat notifications.
+9. **Push to main** with `git push origin main`. Do not create the release tag locally for the normal path; the workflow creates `vX.Y.Z` when it creates the GitHub release.
+10. **Watch CI via Monitor — never foreground `gh run watch`.** A foreground watch burns 5+ minutes of context blocking on the run. Instead, pick up the run id (`gh run list --workflow=release.yml --limit 1`) and arm the `Monitor` tool with a poll loop that emits **one notification per job state-change** plus a terminal `RUN_DONE` line. You keep working (or hand back to the user) while CI runs; events arrive as chat notifications.
+11. **Verify publish outputs** after CI succeeds: `git ls-remote --tags origin | grep vX.Y.Z`, `gh release view vX.Y.Z`, `cargo owner --list nd300`, and `cargo install nd300 --force`.
 
     Pattern (parameterize `RUN_ID`, `timeout_ms` ~1500000 for 25 min headroom, `persistent: false`):
 
@@ -143,7 +142,7 @@ When the release CI fails:
 3. **Fix the underlying issue**. Do not paper over with `#[allow]` unless the warning is genuinely platform-shape only.
 4. **Bump the PATCH version** (e.g. `v3.0.0` → `v3.0.1`). Do not retag the same version — cargo-dist treats a tag as immutable, and re-tagging confuses GitHub Releases / installers / cached artifacts. Always go forward.
 5. **Add a CHANGELOG entry** for the patch. One-line description of what was broken and that it's a build-only fix is fine — users don't need internal CI minutiae.
-6. **Re-run steps 7–12** of the standard workflow. Verify locally first; commit; tag the new patch; push; verify tag landed; watch CI.
+6. **Re-run steps 7–11** of the standard workflow. Verify locally first; commit; push to main; verify tag/release/crate after CI.
 7. **Loop** if the patch run also fails. Bump again (`v3.0.2`, `v3.0.3`, ...) — never reuse a tag.
 
 ### Don't-do list (release safety)
