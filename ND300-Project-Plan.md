@@ -10,6 +10,12 @@
 
 ---
 
+## Current Shipping Status (v3.0.6)
+
+This file began as the original product plan. The implemented package now ships as the lowercase crates.io package `nd300` while keeping ND300 as the product brand. End users should install with `cargo install nd300` or the GitHub release installers (`nd300-installer.sh`, `nd300-installer.ps1`, Windows MSI/archives). GitHub releases also publish legacy `nd-300-installer.*` aliases so older installed copies can still self-update.
+
+Release deploys are automated from `main`: a push with a new `Cargo.toml` version runs source checks, the full cargo-dist matrix, GitHub release/updater asset hosting, and then crates.io publishing with `CARGO_REGISTRY_TOKEN`. `nd300 update` is Cargo-first, falls back to cargo-dist installers, and cleans up shadowing non-Cargo ND300 installs when migrating users to the canonical Cargo package. Bare `cargo install nd300` cannot run ND300-specific cleanup hooks for unrelated old install locations, so users with a shadowing legacy install should run `nd300 update` or `nd300 uninstall` first.
+
 ## 1. Overview
 
 ND300 is a zero-config, cross-platform CLI network diagnostic tool. It must work identically in its core diagnostics across Windows, macOS, and Linux, while also leveraging platform-specific APIs to surface additional OS-native diagnostic information (such as driver status on Windows, rfkill state on Linux, or firewall configuration on macOS). The tool should detect the host OS at runtime and silently include or exclude platform-specific checks as appropriate — the user never needs to know or care about the platform logic. It runs a comprehensive battery of network tests and presents results in two tiers:
@@ -148,7 +154,7 @@ Speed tests measure throughput by transferring data to/from a known server and m
 - Report: **download speed (Mbps)**, **upload speed (Mbps)**, and optionally **loaded latency** (latency measured during the speed test, which reveals bufferbloat).
 
 **Important considerations:**
-- The speed test should be opt-in or at least clearly communicated (since it transfers real data). Consider making it run by default but offering a `--no-speed` flag to skip it.
+- The speed test should be clearly communicated (since it transfers real data). It runs by default, and the implemented skip flag is `--fast`.
 - Display a progress indicator during the speed test (e.g., `Running speed test... [=====>    ] 7s / 15s`).
 - If the speed test endpoints are unreachable (e.g., corporate firewall), fail gracefully and report that the speed test could not be completed.
 
@@ -178,7 +184,7 @@ This is the first thing the user sees. It should be a clean, scannable block of 
 - ✓ OK (or `[OK]` in ASCII mode) — green if color is enabled
 - ⚠ WARN — yellow
 - ✗ FAIL — red
-- — SKIP — gray/dim (if a test was skipped, e.g., speed test with `--no-speed`)
+- — SKIP — gray/dim (if a test was skipped, e.g., speed test with `--fast`)
 
 **Example output (conceptual, not final design):**
 
@@ -246,10 +252,15 @@ The JSON schema should be well-documented and stable across versions.
 | `nd300 --json`           | Output results as JSON                                     |
 | `nd300 --ascii`          | Force ASCII mode (no Unicode box-drawing)                  |
 | `nd300 --no-color`       | Disable colored output                                     |
-| `nd300 --no-speed`       | Skip the speed test (faster execution)                     |
+| `nd300 --fast`           | Skip the speed test (faster execution)                     |
 | `nd300 --speed-duration`  | Set speed test duration in seconds (default: 10)           |
-| `nd300 -t, --title`     | Custom title (consistent with TR-300)                      |
+| `nd300 -t, --tech`       | Technician mode                                            |
+| `nd300 -T, --title`      | Custom title (consistent with TR-300)                      |
 | `nd300 --verbose`        | Show additional debug/trace information during execution    |
+| `nd300 fix` / `nd300 -f` | Diagnostic-driven triage and recovery loop                 |
+| `nd300 update`           | Self-update to the latest release                          |
+| `nd300 clear-dns` / `-c` | Flush the DNS cache and exit                               |
+| `nd300 uninstall`        | Remove `nd300` and `speedqx` from this system              |
 
 ### 4.2 Exit Codes
 
@@ -336,7 +347,7 @@ ND300 must be fully cross-platform (Windows, macOS, Linux) and must build as a s
 6. Print the detailed technical report.
 7. Exit with appropriate code.
 
-**Target total runtime:** 15–25 seconds with speed test, < 5 seconds without (`--no-speed`).
+**Target total runtime:** 15–25 seconds with speed test, < 5 seconds without (`--fast`).
 
 ---
 
@@ -345,8 +356,10 @@ ND300 must be fully cross-platform (Windows, macOS, Linux) and must build as a s
 Consistent with TR-300:
 
 - **GitHub Releases** with prebuilt binaries for Windows (x86_64), macOS (x86_64, aarch64), Linux (x86_64, aarch64).
-- **Shell installer:** `curl ... | sh` one-liner for macOS/Linux.
-- **Cargo install:** `cargo install nd-300` for Rust developers.
+- **Shell installer:** `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.sh | sh` for macOS/Linux.
+- **PowerShell installer:** `powershell -ExecutionPolicy Bypass -c "irm https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.ps1 | iex"` for Windows.
+- **Cargo install:** `cargo install nd300` for Rust developers.
+- **Legacy updater aliases:** `nd-300-installer.sh` and `nd-300-installer.ps1` are uploaded to every release for older installed copies.
 - **Single static binary, zero runtime dependencies.**
 
 ---

@@ -29,6 +29,7 @@ ND-300 is a Rust CLI network diagnostics and recovery tool. It is published as t
 - `src/actions/fix/loop_runner.rs`: iterative fix driver, confirmation handling, reporting, and re-probe flow.
 - `src/actions/fix/stages.rs`: platform repair primitives, including macOS service recreation.
 - `src/actions/fix/action.rs`: typed fix action registry and apply dispatch.
+- `src/actions/update.rs`: self-update strategy chain, Cargo-first install path, non-Cargo install cleanup, and cargo-dist installer fallback.
 - `src/speedtest/`: shared Cloudflare, M-Lab NDT7, LibreSpeed, fast.com, and statistics aggregation code.
 - `.github/workflows/release.yml`: main-branch and tag release workflow for source checks, cargo-dist builds, GitHub release assets, and crates.io publishing.
 
@@ -38,6 +39,9 @@ ND-300 is a Rust CLI network diagnostics and recovery tool. It is published as t
 - `cargo test --lib`
 - `cargo test`
 - `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo build --release` when updater, installer, or release behavior changes
+- `cargo publish --dry-run --locked --allow-dirty`
+- `cargo package --list --locked --allow-dirty`
 - Non-mutating local fix verification where possible; elevated destructive checks should only run with explicit user approval.
 
 ## File Tree

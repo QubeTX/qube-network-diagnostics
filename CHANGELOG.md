@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+- Aligned README, local agent docs, `CODEX_PROJECT.md`, and the original project plan with the shipped `3.0.6` release/update workflow, including Cargo-first updates, non-Cargo install cleanup, legacy installer aliases, and the canonical `cargo install nd300` path.
+
 ## [3.0.6] - 2026-05-11
 
 ### Fixed

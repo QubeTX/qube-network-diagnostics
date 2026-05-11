@@ -48,7 +48,7 @@ main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
 ### Module Layout
 
 - **`src/cli.rs`** — Shared clap derive definitions (`Nd300Cli`, `SpeedQXCli`) used by both binaries and by `build.rs` for man page generation.
-- **`src/actions/`** — Exit-early operations (`--fix`, `--clear-dns`, `--uninstall`, `--dns`, `--update`). The fix flow (`actions/fix/`) implements evidence-driven network recovery with VPN detection, connectivity checks between actions, Wi-Fi reconnection, state preservation, and report generation (`report.rs` saves Markdown to `~/Downloads/`).
+- **`src/actions/`** — Exit-early operations (`--fix`, `--clear-dns`, `--uninstall`, `--dns`, `--update`). The fix flow (`actions/fix/`) implements evidence-driven network recovery with VPN detection, connectivity checks between actions, Wi-Fi reconnection, state preservation, and report generation (`report.rs` saves Markdown to `~/Downloads/`). The updater (`actions/update.rs`) prefers `cargo install nd300 --force`, cleans up shadowing non-Cargo installs when migrating users to Cargo, and falls back to cargo-dist installers.
 - **`src/diagnostics/`** — All diagnostic modules. Each is self-contained with platform-specific code via `#[cfg]` attributes. Each returns `(DiagnosticResult, Option<DetailStruct>)` — the detail struct carries rich data for rendering. `shared_cache.rs` pre-fetches subprocess outputs to deduplicate calls across tech-mode modules.
 - **`src/speedtest/`** — Quad-provider speed test engine (Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com). Provider clients: `cloudflare.rs`, `ndt7.rs`, `librespeed.rs`, `fastcom.rs`. `statistics.rs` implements the accuracy pipeline (trimean, IQR filter, slow-start discard, inverse-variance merge, bootstrap CI). `display.rs` handles speedqx-specific progress rendering. Both binaries share this module.
 - **`src/render/`** — Output formatting. `table.rs` builds Unicode/ASCII box-drawing tables with ANSI-aware string functions (`visible_len`, `truncate_visible`). `color.rs` centralizes ANSI color output. `progress.rs` handles spinners.
@@ -236,16 +236,17 @@ The self-update feature lives in `src/actions/update.rs` and follows the same pa
    - Parse JSON → tag_name (e.g. "v2.9.0")
 2. Strip 'v' prefix, compare semver numerically against current VERSION
 3. If current >= latest → print "Already on latest" → exit 0
-4. Detect installation method:
-   - If binary path contains ".cargo" + "bin" → cargo install
-   - Otherwise → cargo-dist installer (shell/PowerShell)
-5. Execute platform-specific update:
-   - Windows: powershell -ExecutionPolicy ByPass -c "irm {PS_INSTALLER_URL} | iex"
-   - macOS/Linux: sh -c 'curl --proto "=https" --tlsv1.2 -LsSf {SHELL_INSTALLER_URL} | sh'
-   - Cargo: cargo install nd300 --force
+4. Build an ordered strategy list:
+   - Cargo first when `cargo --version` succeeds.
+   - macOS/Linux fallback: cargo-dist shell installer via `curl`, then `wget`.
+   - Windows fallback: cargo-dist PowerShell installer via `powershell.exe`, then `pwsh.exe`.
+5. Cargo strategy: run `cargo install nd300 --force`.
 6. If Cargo succeeds while the running copy is outside Cargo's bin directory, remove the old installer-managed ND300 layout so it cannot shadow the new Cargo install.
 7. If Cargo reports an existing `nd300` or `speedqx` binary collision, run ND300's uninstall cleanup for the current install and retry Cargo once.
-8. Report success/failure → exit code
+8. Installer strategies:
+   - Windows: powershell -ExecutionPolicy ByPass -c "irm {PS_INSTALLER_URL} | iex"
+   - macOS/Linux: sh -c 'curl --proto "=https" --tlsv1.2 -LsSf {SHELL_INSTALLER_URL} | sh'
+9. Report success/failure → exit code
 ```
 
 ### Key Constants (to customize per tool)
@@ -277,7 +278,7 @@ const PS_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/do
 
 - **Windows**: The running `.exe` cannot be replaced in place. The PowerShell installer from cargo-dist handles this correctly (downloads to temp, replaces after process exit).
 - **macOS/Linux**: Shell installer can replace the running binary since Unix allows unlinking running executables.
-- **Cargo**: `cargo install --force` handles everything.
+- **Cargo**: `cargo install nd300 --force` installs the canonical crates.io package, but bare Cargo cannot run ND300-specific cleanup hooks for unrelated old install locations. `nd300 update` handles migration by removing a shadowing non-Cargo running copy after Cargo succeeds, and by retrying Cargo once after cleaning up the current install if Cargo reports an existing `nd300` or `speedqx` binary collision.
 - **`#[cfg(not(windows))]`** on the `SHELL_INSTALLER` constant to suppress dead code warnings on Windows builds.
 
 ### JSON Output
