@@ -1,6 +1,6 @@
 [package]
-name = "nd-300"
-version = "3.0.3"
+name = "nd300"
+version = "3.0.4"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -9,12 +9,25 @@ license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/QubeTX/qube-network-diagnostics"
 keywords = ["cli", "network", "diagnostic", "cross-platform"]
 categories = ["command-line-utilities"]
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "CHANGELOG.md",
+    "build.rs",
+    "man/**",
+    "src/**",
+]
 
 [package.metadata.wix]
 upgrade-guid = "7208E6EA-ABAE-4AF6-A69C-7C7E4DA3DDF5"
 path-guid = "D131558E-5659-455C-A5C7-3E7943C3B005"
 license = false
 eula = false
+
+[lib]
+name = "nd_300"
+path = "src/lib.rs"
 
 [[bin]]
 name = "nd300"
@@ -62,6 +75,8 @@ lto = "thin"
 [workspace.metadata.dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.31.0"
+# The release workflow is intentionally customized for main-branch deploys and crates.io.
+allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app

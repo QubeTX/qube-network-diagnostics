@@ -910,8 +910,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "nd-300"
-version = "3.0.3"
+name = "nd300"
+version = "3.0.4"
 dependencies = [
  "chrono",
  "clap",

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.4] - 2026-05-11
+
+### Added
+- Publish automation for crates.io and GitHub releases from `main`: every push now runs format, tests, clippy, a crates.io dry-run, the full cargo-dist build matrix, GitHub release publishing, and finally crates.io publishing when the `Cargo.toml` version is new.
+- Legacy installer aliases (`nd-300-installer.sh` and `nd-300-installer.ps1`) are uploaded with new releases so older installed copies can still self-update through their existing hardcoded URLs.
+
+### Changed
+- The crates.io package name is now `nd300` for the natural install command `cargo install nd300`, while binary names and product branding stay `nd300`, `speedqx`, and ND300.
+- `nd300 update` / `speedqx update` now use the `nd300` crates.io package and the new `nd300-installer.*` cargo-dist assets.
+- Windows MSI display/install directory naming now follows the new `nd300` package slug instead of `nd-300`.
+
 ## [3.0.3] - 2026-05-10
 
 ### Fixed

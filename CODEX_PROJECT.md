@@ -2,16 +2,17 @@
 
 ## TL;DR
 
-ND-300 is a Rust CLI network diagnostics and recovery tool. The active work is hardening `nd300 fix` so it only mutates network state when diagnostic evidence supports the action, and tightening the shared SpeedQX speed-test aggregation pipeline.
+ND-300 is a Rust CLI network diagnostics and recovery tool. The active work is publishing the tool as the `nd300` crates.io package and making `main` pushes run the full release/deploy path automatically.
 
 ## Current Status
 
 - Primary binaries: `nd300` and `speedqx`.
-- Current package version: `3.0.3`.
-- Active branch: `codex/fix-safety-speed-tests`.
+- Current package version: `3.0.4`.
+- Crates.io package name: `nd300`.
+- Active branch: `main`.
 - Rust toolchain installed locally through `rustup` for this workspace run.
 - `nd300 fix` uses a diagnostic-driven loop under `src/actions/fix/`.
-- The current implementation focuses on safer no-op behavior on healthy networks, staged DNS remediation, confirmation gates for medium-risk actions, macOS network-state preservation, Linux NetworkManager safety, cross-platform latency command correctness, and multi-provider speed aggregation.
+- The current implementation focuses on seamless publishing: source verification, full cargo-dist release builds, GitHub release/updater assets, and crates.io publishing happen from the main-branch workflow when the manifest version is new.
 
 ## Project Goals
 
@@ -20,6 +21,7 @@ ND-300 is a Rust CLI network diagnostics and recovery tool. The active work is h
 - Preserve user network configuration whenever a repair primitive must mutate state.
 - Share one accurate speed-test engine between `nd300` and `speedqx`.
 - Continue supporting macOS, Windows, and Linux release targets through cargo-dist.
+- Keep end-user installation and updates seamless through GitHub installer assets and `cargo install nd300`.
 
 ## Key Areas
 
@@ -28,7 +30,7 @@ ND-300 is a Rust CLI network diagnostics and recovery tool. The active work is h
 - `src/actions/fix/stages.rs`: platform repair primitives, including macOS service recreation.
 - `src/actions/fix/action.rs`: typed fix action registry and apply dispatch.
 - `src/speedtest/`: shared Cloudflare, M-Lab NDT7, LibreSpeed, fast.com, and statistics aggregation code.
-- `.github/workflows/release.yml`: cargo-dist release workflow for all supported targets.
+- `.github/workflows/release.yml`: main-branch and tag release workflow for source checks, cargo-dist builds, GitHub release assets, and crates.io publishing.
 
 ## Verification Plan
 

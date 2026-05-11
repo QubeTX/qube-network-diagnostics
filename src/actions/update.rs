@@ -14,12 +14,12 @@ const RELEASES_URL: &str =
 /// resolves to the newest published release, so this URL is permanently stable.
 #[cfg(not(windows))]
 const SHELL_INSTALLER: &str =
-    "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd-300-installer.sh";
+    "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.sh";
 
 /// PowerShell installer URL (Windows). Same `releases/latest` redirect.
 #[cfg(windows)]
 const PS_INSTALLER: &str =
-    "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd-300-installer.ps1";
+    "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.ps1";
 
 const MANUAL_INSTALL_URL: &str = "https://github.com/QubeTX/qube-network-diagnostics#install";
 
@@ -416,7 +416,7 @@ fn execute_update(strategies: &[UpdateStrategy]) -> Result<UpdateStrategy, Updat
 
 fn try_strategy(strategy: UpdateStrategy) -> Result<(), StrategyError> {
     match strategy {
-        UpdateStrategy::Cargo => run_command_status("cargo", &["install", "nd-300", "--force"]),
+        UpdateStrategy::Cargo => run_command_status("cargo", &["install", "nd300", "--force"]),
         UpdateStrategy::InstallerCurl => try_installer_curl(),
         UpdateStrategy::InstallerWget => try_installer_wget(),
         UpdateStrategy::InstallerPowerShell => try_installer_powershell("powershell"),

@@ -25,13 +25,13 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 ### Shell (macOS/Linux)
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd-300-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.sh | sh
 ```
 
 ### PowerShell (Windows)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd-300-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.ps1 | iex"
 ```
 
 ### MSI (Windows)
@@ -41,7 +41,7 @@ Download the `.msi` installer from the [latest release](https://github.com/QubeT
 ### Cargo
 
 ```sh
-cargo install nd-300
+cargo install nd300
 ```
 
 ### From Source
@@ -379,7 +379,7 @@ speedqx --update
 The updater runs a **probe-and-retry chain** so missing tools don't block the update:
 
 1. Checks the latest release on GitHub. If you're already on it, exits 0 with no action.
-2. Tries `cargo install nd-300 --force` first when `cargo --version` succeeds on your system.
+2. Tries `cargo install nd300 --force` first when `cargo --version` succeeds on your system.
 3. If cargo isn't available (or fails), falls through to the cargo-dist installer for your platform — `curl | sh` then `wget | sh` on macOS/Linux, `powershell.exe` then `pwsh.exe` on Windows. The installer URL uses GitHub's `releases/latest` redirect, so it always resolves to the newest release.
 4. Whichever strategy succeeds first wins; the chain stops there.
 5. If every strategy fails, both pretty and `--json` output show a per-attempt diagnostic block listing what was tried and why each failed, so you can fix the environment manually.
