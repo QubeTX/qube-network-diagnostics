@@ -9,7 +9,7 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 
 - **Two operating modes**: User mode (clean summary) and Technician mode (deep diagnostics)
 - **8 core diagnostics**: adapters, interfaces, gateway, DNS, public IP, latency, speed test, port connectivity
-- **17 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
+- **18 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
 - **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) with bounded N-provider inverse-variance aggregation, modified trimean (Ookla-style), and RFC 3550 jitter for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
 - **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and runs a probe-and-retry chain: cargo first when available, cargo-dist installer as universal fallback (curl → wget on macOS/Linux, PowerShell → pwsh on Windows). It cleans up shadowing non-Cargo ND300 installs when migrating to `cargo install nd300`, and surfaces per-strategy failures with specific reasons.
@@ -207,7 +207,7 @@ speedqx --duration 10 --latency-probes 5
 
 **User mode** (default) runs 8 core diagnostics and presents a clean summary table. Ideal for quick network health checks.
 
-**Technician mode** (`-t`) runs all 8 core diagnostics plus 17 additional deep diagnostic modules. Produces a detailed technical report with per-module breakdowns, suitable for troubleshooting and support workflows.
+**Technician mode** (`-t`) runs all 8 core diagnostics plus 18 additional deep diagnostic modules. Produces a detailed technical report with per-module breakdowns, suitable for troubleshooting and support workflows.
 
 ## Diagnostics Covered
 
@@ -239,6 +239,7 @@ speedqx --duration 10 --latency-probes 5
 23. Bufferbloat Detection
 24. Reverse DNS
 25. TLS Inspection
+26. Traffic Counters
 
 ## Fix Flow (`nd300 fix` / `nd300 -f`)
 
