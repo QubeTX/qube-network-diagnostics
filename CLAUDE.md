@@ -87,7 +87,7 @@ Releases are automated via `cargo-dist` v0.31.0 and crates.io publishing. Push a
 Triggers in user prompts: "release", "ship it", "tag the release", "push it out", "make this live", "go for it" (after change discussion).
 
 1. **Bump version** in `Cargo.toml` (`[package] version`). Patch for fixes, minor for backward-compatible features, major for breaking changes (e.g. `--fix` semantics changed in v3.0.0). Every deploy to `main` must use a never-published version.
-2. **Update `CHANGELOG.md`** with a new top entry in Keep-a-Changelog format. Date = today (use the host's current date, not training-data date).
+2. **Update `CHANGELOG.md`** with a new top entry in Keep-a-Changelog format. Date = today (use the host's current date, not training-data date). **Also update `HUMAN_CHANGELOG.md`** in the same commit — every CHANGELOG entry needs a plain-English counterpart there. See the "Changelog rule" section below for translation rules.
 3. **Update `README.md`** if the release adds user-visible flags / commands / behavior.
 4. **Update `AGENTS.md` and `CLAUDE.md`** if the architecture or workflow changed.
 5. **Run local verification** before pushing: `cargo fmt --check`, `cargo test --lib`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo publish --dry-run --locked --allow-dirty`, and `cargo package --list --locked --allow-dirty`. After committing, the same publish/package commands can be rerun without `--allow-dirty`.
@@ -141,7 +141,7 @@ When the release CI fails:
    - Toolchain / Rust version mismatch between local and CI.
 3. **Fix the underlying issue**. Do not paper over with `#[allow]` unless the warning is genuinely platform-shape only.
 4. **Bump the PATCH version** (e.g. `v3.0.0` → `v3.0.1`). Do not retag the same version — cargo-dist treats a tag as immutable, and re-tagging confuses GitHub Releases / installers / cached artifacts. Always go forward.
-5. **Add a CHANGELOG entry** for the patch. One-line description of what was broken and that it's a build-only fix is fine — users don't need internal CI minutiae.
+5. **Add a CHANGELOG entry** for the patch (and a matching `HUMAN_CHANGELOG.md` entry under "Behind the scenes" — a one-liner that the previous release had a build problem is fine). One-line description of what was broken and that it's a build-only fix is fine — users don't need internal CI minutiae.
 6. **Re-run steps 7–11** of the standard workflow. Verify locally first; commit; push to main; verify tag/release/crate after CI.
 7. **Loop** if the patch run also fails. Bump again (`v3.0.2`, `v3.0.3`, ...) — never reuse a tag.
 
@@ -153,6 +153,53 @@ When the release CI fails:
 - Never amend a commit that's already pushed (use a new commit).
 - Never bypass `pre-commit` hooks (`--no-verify`) without explicit user authorization.
 - Never delete a published tag or release artifact without explicit user authorization (downstream installers / package managers may already cache the URL).
+
+## Changelog rule
+
+This repo maintains two changelogs in parallel:
+
+- `CHANGELOG.md` — the technical changelog (Keep a Changelog format). Version numbers, file paths, PR/issue links, metric thresholds, env var names, and code references all belong here.
+- `HUMAN_CHANGELOG.md` — a plain-English companion. Every entry in `CHANGELOG.md` has a corresponding entry here, written for a non-engineer reader. No version numbers, no file paths, no jargon — just what changed and why it matters.
+
+**When you update `CHANGELOG.md`, you MUST also update `HUMAN_CHANGELOG.md` in the same commit.** Skipping entries is not allowed; the two files must stay in lockstep.
+
+### Translation rules
+
+When writing the human-changelog entry, strip these out of the source entry:
+
+- Version numbers (`3.0.4`, `v2.9.0`) — group by date or release name instead. For multiple releases on the same calendar day, either give each its own dated section or bundle them under one date with a descriptive subhead.
+- File paths and module names (`src/actions/fix/`, `lib/cache/lru.go`).
+- Function, class, struct, and variable names (`SharedCache::build_for_tech_mode()`, `TIMEOUT_QUICK`, `Action::apply`).
+- Specific metric values ("reduced p99 from 340ms to 110ms" → "search is roughly three times faster now").
+- Issue / PR / ticket / commit references (`#4821`, `JIRA-456`, SHAs).
+- Env vars, registry keys, config flag names *unless* they're user-visible CLI flags (CLI flags like `--fix` and `--json` are fine to mention — they're how users actually drive the tool).
+- Library / dependency version bumps unless user-facing — bundle them as "updated underlying libraries for security and stability."
+- Jargon: *refactor*, *deprecate*, *polyfill*, *transpile*, *hydrate*, *idempotent*, *cfg-gated*, *fatal_environment_change*, *DAG*, etc. Pick an everyday phrase that conveys the same idea.
+
+What to keep / add:
+
+- What changed, in everyday words — a sentence is fine; a short paragraph is fine for big releases.
+- Why it matters: the user-visible effect, or the reason the team made the change. If a change is purely internal with no user-visible effect, still record it under **Behind the scenes** — a sentence is fine.
+- Plain category labels: **Added**, **Improved**, **Fixed**, **Removed**, **Security**, **Behind the scenes**, **Changed (be aware if you script against the tool)**.
+- Honest about removals and breaking changes: say what stopped working and what to do instead. Keep CLI-flag mentions when the change actually affects user-typed commands.
+- Tone: conversational but informative — imagine explaining the release to a non-technical teammate. No marketing fluff.
+
+### Common ND300-specific translations
+
+- `nd300 fix` / `nd300 -f` → "the auto-repair command" (or just "the fix command" — both are fine).
+- `nd300 --update` / the cargo-install / installer split → "the built-in updater" or "the update command."
+- "cargo install" / "cargo-dist" / "crates.io" → say it once if relevant ("the standard public Rust package registry," "the Rust package manager"), then refer to it plainly afterward.
+- "WMI" → "the older Windows database for system info."
+- "Triage loop" / "iteration" / "stage" / "action registry" → "rounds" / "steps" / "repair steps." The fix command now runs rounds of diagnose-then-fix-then-recheck, not fixed stages — describe it that way.
+- "TCP slow-start," "trimean," "IQR," "inverse-variance merge," etc. → "the slow first few seconds of any test are properly excluded," "results are more resistant to misleading outliers," "providers with more consistent results contribute more to the final number."
+- "WebSocket subprotocol header," "rustls-native-certs," etc. → "a missing piece of connection setup info" / "support for corporate certificate authorities."
+- "Subcommand syntax" → "a new way to type the action commands."
+
+### Verification before you commit
+
+1. Open both files and confirm every release/section in `CHANGELOG.md` has a corresponding section in `HUMAN_CHANGELOG.md`.
+2. Spot-check three random entries in `HUMAN_CHANGELOG.md`: do they avoid version numbers, file paths, function names, and jargon? Does each one say *what* changed and *why* it matters?
+3. If a non-engineer skimmed the human entry, could they answer "what changed?" and "does this affect me?" If not, simplify further or add more context.
 
 ## Key Dependencies
 
