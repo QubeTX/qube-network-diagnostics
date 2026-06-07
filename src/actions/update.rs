@@ -451,6 +451,34 @@ fn try_cargo_install() -> Result<(), StrategyError> {
     }
 }
 
+/// The three outcomes of a shadow-cleanup attempt, as a function of the cleanup
+/// report. Pure so it can be unit-tested without touching the filesystem.
+#[derive(Debug, PartialEq, Eq)]
+enum ShadowCleanupDecision {
+    /// The old shadowing binary is gone now — clean success.
+    Removed,
+    /// Windows: the old binary is scheduled for deletion when this process
+    /// exits. The new cargo binary in cargo-bin will win in a *new* shell. This
+    /// is an honest, non-fatal warning, not a silent success.
+    Scheduled,
+    /// The old binary could not be removed at all — falling through would hide an
+    /// incomplete install, so this is Fatal.
+    NotRemoved,
+}
+
+/// Map a cleanup report to a shadow-cleanup decision. `binary_removed` wins;
+/// otherwise a Windows scheduled-on-exit removal is an honest warning; otherwise
+/// it's a hard failure.
+fn classify_shadow_cleanup(report: &super::uninstall::CleanupReport) -> ShadowCleanupDecision {
+    if report.binary_removed {
+        ShadowCleanupDecision::Removed
+    } else if report.binary_removal_scheduled {
+        ShadowCleanupDecision::Scheduled
+    } else {
+        ShadowCleanupDecision::NotRemoved
+    }
+}
+
 fn cleanup_shadowing_current_install_after_cargo_success() -> Result<(), StrategyError> {
     let Some(current_exe) = current_exe_real_path() else {
         return Ok(());
@@ -464,19 +492,39 @@ fn cleanup_shadowing_current_install_after_cargo_success() -> Result<(), Strateg
     }
 
     let report = super::uninstall::uninstall_path(&current_exe);
-    if report.binary_removed {
-        eprintln!(
-            "  · removed old non-cargo install at {} after cargo install",
-            current_exe.display()
-        );
-        return Ok(());
+    match classify_shadow_cleanup(&report) {
+        ShadowCleanupDecision::Removed => {
+            eprintln!(
+                "  · removed old non-cargo install at {} after cargo install",
+                current_exe.display()
+            );
+            Ok(())
+        }
+        ShadowCleanupDecision::Scheduled => {
+            // Windows: the running old copy can't be deleted in place, but a
+            // helper will delete it on exit. The new cargo binary takes
+            // precedence in a NEW shell. Warn honestly instead of claiming the
+            // shadow is already gone.
+            eprintln!(
+                "  · WARNING: cargo install succeeded, but the old ND300 install at {} is still running and could not be removed in place.",
+                current_exe.display()
+            );
+            eprintln!(
+                "    It is scheduled for deletion when this process exits. The new cargo install in {} will take precedence in a NEW shell.",
+                cargo_bin.display()
+            );
+            eprintln!(
+                "    If `nd300 --version` still reports the old version in a new shell, remove the old path manually: {}",
+                current_exe.display()
+            );
+            Ok(())
+        }
+        ShadowCleanupDecision::NotRemoved => Err(StrategyError::Fatal(format!(
+            "cargo install succeeded, but the old ND300 install at {} could not be removed: {}",
+            current_exe.display(),
+            cleanup_notes(&report)
+        ))),
     }
-
-    Err(StrategyError::Fatal(format!(
-        "cargo install succeeded, but the old ND300 install at {} could not be removed: {}",
-        current_exe.display(),
-        cleanup_notes(&report)
-    )))
 }
 
 fn cleanup_current_install_for_cargo_retry() -> Result<(), StrategyError> {
@@ -485,19 +533,28 @@ fn cleanup_current_install_for_cargo_retry() -> Result<(), StrategyError> {
     };
 
     let report = super::uninstall::uninstall_path(&current_exe);
-    if report.binary_removed {
-        eprintln!(
-            "  · removed existing ND300 install at {} before retrying cargo install",
+    match classify_shadow_cleanup(&report) {
+        ShadowCleanupDecision::Removed => {
+            eprintln!(
+                "  · removed existing ND300 install at {} before retrying cargo install",
+                current_exe.display()
+            );
+            Ok(())
+        }
+        // A scheduled-on-exit deletion is NOT good enough here: the immediate
+        // cargo retry needs the file actually gone right now, but the helper
+        // only deletes it after THIS process exits. Fail with instructions.
+        ShadowCleanupDecision::Scheduled => Err(StrategyError::Fatal(format!(
+            "cargo reported an existing nd300/speedqx binary, and removal of the current install at {} was only scheduled for process exit. \
+             A cargo retry needs the file gone now — close this nd300 process and re-run `nd300 update`.",
             current_exe.display()
-        );
-        return Ok(());
+        ))),
+        ShadowCleanupDecision::NotRemoved => Err(StrategyError::Fatal(format!(
+            "cargo reported an existing nd300/speedqx binary, but the current install at {} could not be removed: {}",
+            current_exe.display(),
+            cleanup_notes(&report)
+        ))),
     }
-
-    Err(StrategyError::Fatal(format!(
-        "cargo reported an existing nd300/speedqx binary, but the current install at {} could not be removed: {}",
-        current_exe.display(),
-        cleanup_notes(&report)
-    )))
 }
 
 fn cleanup_notes(report: &super::uninstall::CleanupReport) -> String {
@@ -802,5 +859,40 @@ mod tests {
             std::path::Path::new("/home/alice/.cargo/bin/nd300"),
             std::path::Path::new("/home/alice/.cargo/bin"),
         ));
+    }
+
+    fn cleanup_report(removed: bool, scheduled: bool) -> super::super::uninstall::CleanupReport {
+        super::super::uninstall::CleanupReport {
+            binary_removed: removed,
+            binary_removal_scheduled: scheduled,
+            sibling_removed: false,
+            receipt_removed: false,
+            path_cleaned: false,
+            notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn shadow_cleanup_decision_maps_report_to_outcome() {
+        // Actually gone → clean success.
+        assert_eq!(
+            classify_shadow_cleanup(&cleanup_report(true, false)),
+            ShadowCleanupDecision::Removed
+        );
+        // Windows scheduled-on-exit → honest warning (Ok at the call site), not Fatal.
+        assert_eq!(
+            classify_shadow_cleanup(&cleanup_report(false, true)),
+            ShadowCleanupDecision::Scheduled
+        );
+        // Neither → Fatal.
+        assert_eq!(
+            classify_shadow_cleanup(&cleanup_report(false, false)),
+            ShadowCleanupDecision::NotRemoved
+        );
+        // `binary_removed` wins even if both happen to be set.
+        assert_eq!(
+            classify_shadow_cleanup(&cleanup_report(true, true)),
+            ShadowCleanupDecision::Removed
+        );
     }
 }

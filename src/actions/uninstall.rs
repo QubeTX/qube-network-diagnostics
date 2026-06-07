@@ -9,7 +9,17 @@ const OUR_BINARIES: &[&str] = &["nd300", "speedqx"];
 
 /// Tracks what we cleaned up for reporting.
 pub(crate) struct CleanupReport {
+    /// True only when the binary is actually gone now (Unix `remove_file`, or a
+    /// non-running sibling delete). On Windows the *running* exe can't be deleted
+    /// in place, so this stays false even on a successful uninstall — see
+    /// `binary_removal_scheduled`.
     pub(crate) binary_removed: bool,
+    /// Windows-only: the running exe couldn't be removed now, but a background
+    /// `cmd /C … del` was successfully spawned to delete it once this process
+    /// exits. Kept distinct from `binary_removed` so the updater's shadow-cleanup
+    /// guard can tell "already gone" from "scheduled for removal on exit" and not
+    /// be silently defeated by an optimistic "removed".
+    pub(crate) binary_removal_scheduled: bool,
     pub(crate) sibling_removed: bool,
     pub(crate) receipt_removed: bool,
     pub(crate) path_cleaned: bool,
@@ -106,6 +116,12 @@ pub async fn run(config: &Config) -> i32 {
     // Print results
     if report.binary_removed {
         print_ok("nd300 binary removed", config);
+    } else if report.binary_removal_scheduled {
+        // Windows: the running exe is deleted by the spawned helper once we exit.
+        print_ok(
+            "nd300 binary scheduled for removal (completes when this process exits)",
+            config,
+        );
     } else {
         print_fail("Failed to remove nd300 binary", config);
     }
@@ -127,7 +143,7 @@ pub async fn run(config: &Config) -> i32 {
     }
 
     println!();
-    if report.binary_removed {
+    if report.binary_removed || report.binary_removal_scheduled {
         println!(
             "  {} {}",
             color::green(success_icon(config), config),
@@ -147,10 +163,15 @@ pub async fn run(config: &Config) -> i32 {
 async fn run_json(exe_path: &Path, _config: &Config) -> i32 {
     let report = uninstall_path(exe_path);
 
+    // `binary_removed` stays a literal "is it gone right now?" so existing
+    // scripts read the same field; `success` and the exit code key off the OR so
+    // a Windows scheduled-on-exit removal is reported as success.
+    let succeeded = report.binary_removed || report.binary_removal_scheduled;
     let output = serde_json::json!({
         "action": "uninstall",
-        "success": report.binary_removed,
+        "success": succeeded,
         "binary_removed": report.binary_removed,
+        "binary_removal_scheduled": report.binary_removal_scheduled,
         "sibling_removed": report.sibling_removed,
         "receipt_removed": report.receipt_removed,
         "path_cleaned": report.path_cleaned,
@@ -162,7 +183,7 @@ async fn run_json(exe_path: &Path, _config: &Config) -> i32 {
         serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
     );
 
-    if report.binary_removed {
+    if succeeded {
         0
     } else {
         2
@@ -172,6 +193,7 @@ async fn run_json(exe_path: &Path, _config: &Config) -> i32 {
 pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
     let mut report = CleanupReport {
         binary_removed: false,
+        binary_removal_scheduled: false,
         sibling_removed: false,
         receipt_removed: false,
         path_cleaned: false,
@@ -265,24 +287,62 @@ pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
     {
         // On Windows, a running exe cannot be deleted directly.
         // Spawn a background cmd that waits briefly, then deletes the file.
-        let exe_str = exe_path.to_string_lossy();
-        let script = format!("ping localhost -n 3 > nul & del \"{}\"", exe_str);
-
-        match std::process::Command::new("cmd")
-            .args(["/C", &script])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(_) => report.binary_removed = true,
-            Err(e) => report
-                .notes
-                .push(format!("Failed to spawn cleanup process: {}", e)),
+        // The file is NOT gone yet, so we set `binary_removal_scheduled` (not
+        // `binary_removed`) — the updater's shadow guard depends on the
+        // distinction.
+        match build_delayed_delete_command(exe_path) {
+            Some(script) => {
+                match std::process::Command::new("cmd")
+                    .args(["/C", &script])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(_) => report.binary_removal_scheduled = true,
+                    Err(e) => report
+                        .notes
+                        .push(format!("Failed to spawn cleanup process: {}", e)),
+                }
+            }
+            None => {
+                // The path contains characters that can't be safely embedded in a
+                // `cmd /C` string. Refuse rather than risk a malformed/dangerous
+                // command — neither flag is set, so this is reported as a failure.
+                report.notes.push(format!(
+                    "Could not schedule binary removal: path contains characters unsafe for a Windows shell command: {}",
+                    exe_path.display()
+                ));
+            }
         }
     }
 
     report
+}
+
+/// Build the `cmd /C` script that deletes `exe_path` shortly after the current
+/// process exits (Windows can't delete a running exe in place).
+///
+/// Returns `None` if the path contains any character that is either illegal in a
+/// real Windows path or unsafe to embed in a `cmd` command line — `"`, newline,
+/// carriage return, or any cmd metacharacter (`& ^ | < >`). All of these are
+/// already illegal in genuine Windows file paths, so `None` is an honest refusal
+/// rather than a real limitation. `%` is escaped to `%%` so `cmd`'s
+/// environment-variable expansion can't mangle a path containing a literal `%`.
+#[cfg(windows)]
+fn build_delayed_delete_command(exe_path: &Path) -> Option<String> {
+    let raw = exe_path.to_string_lossy();
+
+    // Reject anything that would break out of the quoted `del "..."` argument or
+    // that cmd would interpret as a metacharacter.
+    const FORBIDDEN: [char; 8] = ['"', '\n', '\r', '&', '^', '|', '<', '>'];
+    if raw.chars().any(|c| FORBIDDEN.contains(&c)) {
+        return None;
+    }
+
+    // Escape `%` so cmd doesn't try to expand `%VAR%`-style sequences in the path.
+    let safe = raw.replace('%', "%%");
+    Some(format!("ping localhost -n 3 > nul & del \"{}\"", safe))
 }
 
 fn print_ok(label: &str, config: &Config) {
@@ -348,6 +408,19 @@ fn is_sole_package_in_dir(dir: &Path) -> bool {
     }
 }
 
+/// True if a single PATH entry refers to the same directory as `target`,
+/// ignoring surrounding whitespace, ASCII case, and a trailing `\` or `/`.
+///
+/// Only the comparison is normalized — callers keep the original (untrimmed)
+/// slice for any entry they retain, so non-matching paths are never rewritten.
+#[cfg(windows)]
+fn path_entry_matches_target(entry: &str, target: &str) -> bool {
+    let norm = |s: &str| -> String { s.trim().trim_end_matches(['\\', '/']).to_lowercase() };
+    let entry_norm = norm(entry);
+    // An empty entry (e.g. a stray `;;`) never matches a real target dir.
+    !entry_norm.is_empty() && entry_norm == norm(target)
+}
+
 /// Remove a directory from the user-level PATH environment variable (Windows registry).
 /// Returns Ok(true) if the entry was found and removed, Ok(false) if it wasn't in PATH.
 #[cfg(windows)]
@@ -382,14 +455,15 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
     };
 
     let dir_str = dir_to_remove.to_string_lossy();
-    // Filter out the directory we want to remove (case-insensitive on Windows)
-    let dir_lower = dir_str.to_lowercase();
+    // Filter out the directory we want to remove. The comparison is
+    // case-insensitive AND trailing-slash-insensitive (mirroring `same_path` in
+    // update.rs) so a PATH entry with a trailing `\` or `/` still matches and is
+    // removed — but we keep the ORIGINAL (untrimmed) slices for any entries we
+    // retain, so we never rewrite paths we aren't removing.
     let new_parts: Vec<&str> = current_path
         .split(';')
-        .filter(|part| {
-            let part_clean = part.trim();
-            !part_clean.is_empty() && part_clean.to_lowercase() != dir_lower
-        })
+        .filter(|part| !path_entry_matches_target(part, &dir_str))
+        .filter(|part| !part.trim().is_empty())
         .collect();
 
     let original_count = current_path
@@ -431,5 +505,78 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
         Ok(true)
     } else {
         Err("Failed to write updated PATH to registry".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    use super::*;
+
+    // ── L3: PATH-entry matching ignores case, whitespace, and trailing slash ──
+    #[cfg(windows)]
+    #[test]
+    fn path_entry_matches_target_variants() {
+        let target = r"C:\x\bin";
+
+        // Exact, trailing-backslash, trailing-forward-slash, mixed case, and
+        // surrounding whitespace all match.
+        assert!(path_entry_matches_target(r"C:\x\bin", target));
+        assert!(path_entry_matches_target(r"C:\x\bin\", target));
+        assert!(path_entry_matches_target("C:\\x\\bin/", target));
+        assert!(path_entry_matches_target(r"c:\X\BIN", target));
+        assert!(path_entry_matches_target("  C:\\x\\bin\\  ", target));
+        assert!(path_entry_matches_target(r"C:\x\bin//", target));
+
+        // A trailing slash on the TARGET side is normalized too.
+        assert!(path_entry_matches_target(r"C:\x\bin", r"C:\x\bin\"));
+
+        // A different (longer) directory must NOT match.
+        assert!(!path_entry_matches_target(r"C:\x\bingo", target));
+        assert!(!path_entry_matches_target(r"C:\x", target));
+        assert!(!path_entry_matches_target("", target));
+        assert!(!path_entry_matches_target("   ", target));
+    }
+
+    // ── L4: delayed-delete command is built safely or honestly refused ────────
+    #[cfg(windows)]
+    #[test]
+    fn build_delayed_delete_command_normal_path() {
+        let cmd = build_delayed_delete_command(Path::new(r"C:\Users\me\.cargo\bin\nd300.exe"))
+            .expect("a normal path yields a command");
+        assert!(cmd.contains(r#"del "C:\Users\me\.cargo\bin\nd300.exe""#));
+        assert!(cmd.starts_with("ping localhost -n 3 > nul & del \""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn build_delayed_delete_command_escapes_percent() {
+        let cmd = build_delayed_delete_command(Path::new(r"C:\weird%path\nd300.exe"))
+            .expect("a percent in a path is escaped, not refused");
+        assert!(cmd.contains(r"C:\weird%%path\nd300.exe"));
+        // The single literal percent must not survive un-escaped.
+        assert!(!cmd.contains(r"weird%path"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn build_delayed_delete_command_refuses_metacharacters() {
+        // Every cmd metacharacter / quote / newline yields a refusal (None).
+        for bad in [
+            r#"C:\a"b\nd300.exe"#,
+            r"C:\a&b\nd300.exe",
+            r"C:\a^b\nd300.exe",
+            r"C:\a|b\nd300.exe",
+            r"C:\a<b\nd300.exe",
+            r"C:\a>b\nd300.exe",
+            "C:\\a\nb\\nd300.exe",
+            "C:\\a\rb\\nd300.exe",
+        ] {
+            assert!(
+                build_delayed_delete_command(Path::new(bad)).is_none(),
+                "expected refusal for path: {:?}",
+                bad
+            );
+        }
     }
 }
