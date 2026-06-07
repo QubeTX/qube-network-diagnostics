@@ -39,14 +39,27 @@ async fn main() {
     // Subcommand form takes precedence over the legacy action flags.
     // Both forms produce identical behavior — the subcommand is the preferred
     // surface going forward; flags remain so older scripts keep working.
+    //
+    // `dns` is special: like the legacy `-d`/`--dns` flag it is *semi*-exit-early
+    // (exit on failure, fall through to diagnostics on success), so it must NOT
+    // go through the terminal subcommand block below. It instead sets the same
+    // `run_dns` intent the flag does, making `nd300 dns` ≡ `nd300 --dns`.
+    let mut run_dns = cli.dns;
     if let Some(cmd) = cli.command.clone() {
-        let exit_code = match cmd {
-            Nd300Command::Fix(args) => nd_300::actions::fix::run(&config, args).await,
-            Nd300Command::Update => nd_300::actions::update::run(&config).await,
-            Nd300Command::ClearDns => nd_300::actions::clear_dns::run(&config).await,
-            Nd300Command::Uninstall => nd_300::actions::uninstall::run(&config).await,
-        };
-        std::process::exit(exit_code);
+        match cmd {
+            Nd300Command::Dns => run_dns = true,
+            terminal => {
+                let exit_code = match terminal {
+                    Nd300Command::Fix(args) => nd_300::actions::fix::run(&config, args).await,
+                    Nd300Command::Update => nd_300::actions::update::run(&config).await,
+                    Nd300Command::ClearDns => nd_300::actions::clear_dns::run(&config).await,
+                    Nd300Command::Uninstall => nd_300::actions::uninstall::run(&config).await,
+                    // `Dns` is handled above (semi-exit-early), never reaches here.
+                    Nd300Command::Dns => unreachable!(),
+                };
+                std::process::exit(exit_code);
+            }
+        }
     }
 
     // Legacy flag form: `nd300 -f`, `nd300 --update`, etc. Identical effects.
@@ -67,8 +80,9 @@ async fn main() {
         std::process::exit(exit_code);
     }
 
-    // Semi-exit-early: exits on failure, falls through to diagnostics on success
-    if cli.dns {
+    // Semi-exit-early: exits on failure, falls through to diagnostics on success.
+    // Driven by either the `-d`/`--dns` flag or the `nd300 dns` subcommand.
+    if run_dns {
         let dns_result = nd_300::actions::dns::run(&config).await;
         if dns_result != 0 {
             std::process::exit(dns_result);
@@ -81,7 +95,23 @@ async fn main() {
     // overall wall-clock cap and a Ctrl-C handler so the tool always returns
     // promptly with a clear message instead of appearing to hang. On a healthy
     // network the diagnostics finish first and this is invisible.
-    const RUN_ALL_CAP: std::time::Duration = std::time::Duration::from_secs(90);
+    //
+    // The cap must scale with `--speed-duration`: the diagnostic speed test runs
+    // the CF + NDT7 providers sequentially, each doing a download AND an upload
+    // for `speed_duration` seconds per direction, so the legitimate speed-test
+    // floor is ~`4 * speed_duration` (2 providers × 2 directions). A fixed 90s
+    // would falsely truncate a deliberately long speed test (e.g.
+    // `--speed-duration 60`) and misreport it as a "severely degraded network."
+    // 30s of headroom covers discovery/latency probes and the non-speed
+    // diagnostics; a 90s floor keeps the default/`--fast` behavior unchanged.
+    const RUN_ALL_CAP_FLOOR: std::time::Duration = std::time::Duration::from_secs(90);
+    const RUN_ALL_CAP_HEADROOM: u64 = 30;
+    let run_all_cap = if config.skip_speed {
+        RUN_ALL_CAP_FLOOR
+    } else {
+        std::time::Duration::from_secs(4 * config.speed_duration + RUN_ALL_CAP_HEADROOM)
+            .max(RUN_ALL_CAP_FLOOR)
+    };
     let is_json = matches!(config.format, OutputFormat::Json);
 
     let results = tokio::select! {
@@ -96,7 +126,7 @@ async fn main() {
             std::process::exit(130);
         }
 
-        outcome = tokio::time::timeout(RUN_ALL_CAP, diagnostics::run_all(&config)) => {
+        outcome = tokio::time::timeout(run_all_cap, diagnostics::run_all(&config)) => {
             match outcome {
                 Ok(results) => results,
                 Err(_) => {
@@ -107,7 +137,7 @@ async fn main() {
                             "Diagnostics timed out after {}s — your network appears to be \
                              severely degraded or unreachable. Check your connection and \
                              try again.",
-                            RUN_ALL_CAP.as_secs()
+                            run_all_cap.as_secs()
                         );
                     }
                     std::process::exit(2);

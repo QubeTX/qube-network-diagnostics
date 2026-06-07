@@ -20,6 +20,18 @@ const AUTO_UPLOAD_SECS: u64 = 10;
 /// Upload chunk size (4 MB).
 const UPLOAD_CHUNK_SIZE: usize = 4_000_000;
 
+/// Minimum per-request timeout floor (see cloudflare.rs::remaining_budget).
+const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Time left until `deadline`, floored at `MIN_REQUEST_TIMEOUT`. Used as the
+/// per-request `.timeout()` so a stalled transfer can't outlive the phase
+/// (the 120s client timeout would otherwise dominate the deadline loop).
+fn remaining_budget(deadline: Instant) -> Duration {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .max(MIN_REQUEST_TIMEOUT)
+}
+
 /// Run the fast.com (Netflix) speed test: server discovery, download, optional upload.
 pub async fn run<F>(config: &SpeedTestConfig, progress: F) -> ProviderResult
 where
@@ -131,7 +143,12 @@ where
         url_idx += 1;
 
         let req_start = Instant::now();
-        match client.get(url).send().await {
+        match client
+            .get(url)
+            .timeout(remaining_budget(dl_deadline))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.bytes().await {
                     let req_bytes = body.len() as u64;
@@ -181,7 +198,9 @@ where
         match client
             .post(url)
             .body(upload_payload.clone())
-            .timeout(Duration::from_secs(30))
+            // Bound by the remaining phase budget (capped at the original 30s)
+            // so a stalled upload near the deadline can't run far past it.
+            .timeout(remaining_budget(ul_deadline).min(Duration::from_secs(30)))
             .send()
             .await
         {
@@ -216,6 +235,16 @@ where
         Some(statistics::accurate_upload_bandwidth(&ul_mbps_samples))
     };
 
+    // Honest failure: discovery succeeded but neither direction produced a
+    // usable transfer sample. fast.com upload is best-effort (often unsupported),
+    // so this fires when the download also collected nothing. Report an explicit
+    // error so the speedqx table shows an error row (and aggregation excludes it).
+    let error = if dl_mbps_samples.is_empty() && ul_mbps_samples.is_empty() {
+        Some("no successful transfers".to_string())
+    } else {
+        None
+    };
+
     Ok(ProviderResult {
         provider: "fast.com".to_string(),
         server: urls
@@ -232,7 +261,7 @@ where
         download_duration_s: dl_elapsed,
         upload_duration_s: ul_elapsed,
         packet_loss_pct: None,
-        error: None,
+        error,
         bandwidth_samples: Some(BandwidthSamples {
             download: dl_mbps_samples,
             upload: ul_mbps_samples,

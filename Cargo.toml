@@ -1,6 +1,6 @@
 [package]
 name = "nd300"
-version = "3.0.11"
+version = "3.1.0"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -17,6 +17,8 @@ include = [
     "build.rs",
     "man/**",
     "src/**",
+    "wix-corporate/**",
+    "inno/**",
 ]
 
 [package.metadata.wix]
@@ -58,6 +60,12 @@ url = "2"
 wmi = "0.14"
 winapi = { version = "0.3", features = ["consoleapi", "wincon", "iphlpapi", "tcpmib", "udpmib", "ifdef", "winsock2", "ws2def", "ws2tcpip", "netioapi", "iptypes"] }
 ipconfig = "0.3"
+# SHA-256 verification of MSI/EXE installers downloaded by `nd300 update`
+# against their `.sha256` sidecar (refuse-on-mismatch).
+sha2 = "0.10"
+# HKCU\Software\ND300\InstallSource registry marker read by the updater to pick
+# the matching installer (MSI/EXE × Global/Corporate) for in-place upgrades.
+winreg = "0.52"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["net", "socket"] }
@@ -76,7 +84,9 @@ lto = "thin"
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.31.0"
 # The release workflow is intentionally customized for main-branch deploys and crates.io.
-allow-dirty = ["ci"]
+# "msi" allows the customized wix/main.wxs (InstallSourceMarker component) to
+# coexist with cargo-dist's generated MSI without dist complaining.
+allow-dirty = ["ci", "msi"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app

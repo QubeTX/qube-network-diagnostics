@@ -14,6 +14,18 @@ const UPLOAD_CHUNK_SIZE: usize = 4_000_000;
 /// Download chunk size parameter (ckSize=100 ≈ 100MB).
 const DOWNLOAD_CHUNK_PARAM: u32 = 100;
 
+/// Minimum per-request timeout floor (see cloudflare.rs::remaining_budget).
+const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Time left until `deadline`, floored at `MIN_REQUEST_TIMEOUT`. Used as the
+/// per-request `.timeout()` so a stalled transfer can't outlive the phase
+/// (the 120s client timeout would otherwise dominate the deadline loop).
+fn remaining_budget(deadline: Instant) -> Duration {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .max(MIN_REQUEST_TIMEOUT)
+}
+
 /// Fallback servers if the server list fetch fails.
 const FALLBACK_SERVERS: &[FallbackServer] = &[
     FallbackServer {
@@ -166,7 +178,12 @@ where
 
     while Instant::now() < dl_deadline {
         let req_start = Instant::now();
-        match client.get(&dl_url).send().await {
+        match client
+            .get(&dl_url)
+            .timeout(remaining_budget(dl_deadline))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.bytes().await {
                     let req_bytes = body.len() as u64;
@@ -210,6 +227,7 @@ where
         match client
             .post(&ul_url)
             .body(upload_payload.clone())
+            .timeout(remaining_budget(ul_deadline))
             .send()
             .await
         {
@@ -238,6 +256,15 @@ where
         Some(statistics::accurate_upload_bandwidth(&ul_mbps_samples))
     };
 
+    // Honest failure: server selection succeeded but neither direction produced
+    // a usable transfer sample. Report an explicit error so the speedqx table
+    // shows an error row (and aggregation excludes this provider).
+    let error = if dl_mbps_samples.is_empty() && ul_mbps_samples.is_empty() {
+        Some("no successful transfers".to_string())
+    } else {
+        None
+    };
+
     Ok(ProviderResult {
         provider: "LibreSpeed".to_string(),
         server: selected.name.clone(),
@@ -251,7 +278,7 @@ where
         download_duration_s: dl_elapsed,
         upload_duration_s: ul_elapsed,
         packet_loss_pct,
-        error: None,
+        error,
         bandwidth_samples: Some(BandwidthSamples {
             download: dl_mbps_samples,
             upload: ul_mbps_samples,
