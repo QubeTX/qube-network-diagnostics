@@ -192,25 +192,30 @@ When the release CI fails:
 
 ### Module layout under `src/actions/fix/`
 
-- **`action.rs`** — `Action`, `ActionId`, `Cost`, `Risk`, `Reversibility`, `RiskExplanation` types. The registry (`all_actions()`) returns every `Action` available on the current platform. `Action::apply` dispatches to a free function per `ActionId` via match. `Risk::High(RiskExplanation)` is a sealed enum variant: a high-risk Action *cannot* be constructed without a complete plain-language explanation.
+- **`action.rs`** — `Action`, `ActionId`, `Cost`, `Risk`, `Reversibility`, `RiskExplanation` types. The registry (`all_actions()`) returns every `Action` available on the current platform. `Action::apply(&self, config, restore: &RestoreRegistry)` dispatches to a free function per `ActionId` via match; destructive `apply_*` fns register their inverse op on the registry before mutating state. `Risk::High(RiskExplanation)` is a sealed enum variant: a high-risk Action *cannot* be constructed without a complete plain-language explanation.
 - **`triage.rs`** — Pure planning. `actionable_failures()`, `group_by_root_cause()` (walks the hardcoded dependency DAG), `hard_block_detected()`, `build_plan()`. No IO. Unit-tested via `cargo test --lib actions::fix::triage`.
-- **`session.rs`** — `Session` (per-run state: attempts, effectiveness, snapshots, action_log) + `Reporter` (plain-language output for stdout) + `FinalOutcome`. `WALL_CLOCK_CAP = 240s`.
-- **`loop_runner.rs`** — `run_and_finalize(config) -> i32`: pre-flight elevation check, runs the loop, persists Markdown report, returns exit code. Handles JSON output via `print_json_outcome`.
-- **`report.rs`** — Iteration-oriented Markdown report. Saves to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`.
-- **`stages.rs`** — Platform primitives (`disable_interface`, `enable_interface`, `restart_services`, `platform_stage3`, etc.) — kept and made `pub` so the action registry calls them directly. The legacy `run_stage1/2/3` orchestrators are still in this file but unused; safe to remove in a follow-up.
+- **`session.rs`** — `Session` (per-run state: attempts, effectiveness, snapshots, action_log) + `Reporter` (plain-language output for stdout) + `FinalOutcome` (incl. `Interrupted` → exit 130) + the **`RestoreRegistry`** / `RestoreOp` / `restore_op` interrupt-safe restore machinery (see "Interrupt-safe restore"). `WALL_CLOCK_CAP = 240s`.
+- **`loop_runner.rs`** — `run_and_finalize(config) -> i32`: pre-flight elevation check, constructs `Session` + `RestoreRegistry`, races `run(config, &mut session, &restore)` against `tokio::signal::ctrl_c` with the loop wrapped in `catch_unwind`, then **always drains** the registry (90s outer cap) before persisting the report and returning the exit code. Ctrl-C → exit 130; caught panic → drain then `exit(101)`. Handles JSON via `print_json_outcome` (now with `interrupted` + `manual_recovery_needed`).
+- **`report.rs`** — Iteration-oriented Markdown report. Saves to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`. `save_session_report_with_recovery` adds a "Manual recovery needed" section for drain failures.
+- **`stages.rs`** — Platform primitives (`disable_interface`, `enable_interface`, `restart_services`, `platform_stage3`, `recreate_and_restore_macos_service`, etc.) — kept and made `pub` so the action registry calls them directly. The legacy `run_stage1/2/3` orchestrators are still in this file but unused; safe to remove in a follow-up.
 - **`cmd.rs`** — `run_cmd` (legacy, returns `Result<Output, String>`) + `run_cmd_capture` (new, returns structured `CmdOutcome` with stdout/stderr/exit/duration). Reports render `CmdOutcome` payloads.
 
 ### High-risk prompts
 
 In interactive mode, every High-risk Action renders a multi-line block with `what`, `why`, side-effects, reversibility, and typical duration before running. Requires an **explicit `y`** — Enter alone, blank, or any non-`y` is treated as N. **`--yes` does NOT bypass these prompts** (by design — protects non-technicians from accidentally OK'ing destructive actions). In `--json` / non-interactive contexts, High-risk Actions are *skipped* (not auto-applied) with a clear marker in the report.
 
+### Interrupt-safe restore (v3.0.9+)
+
+`nd300 fix` is safe to cancel / time out / crash mid-repair. A **`RestoreRegistry`** (`session.rs`; `Arc<tokio::sync::Mutex<Vec<RegisteredOp>>>`, non-poisoning) threads through `Action::apply`. Destructive actions `register` a `RestoreOp` (`ReEnableInterface`, `ReEnableVpn`, or macOS-only `RecreateMacosService`) *before* mutating state and `mark_resolved` after restoring it on the normal path. `run_and_finalize` races the loop against `Ctrl-C` and wraps it in `catch_unwind`, then **always `drain()`s** the registry (90s outer cap, 30s per-op cap) on every terminal path — rolling back a disabled adapter, a disconnected VPN, or a removed macOS service. Anything the drain can't restore surfaces as "Manual recovery needed" (stdout + report; `manual_recovery_needed`/`interrupted` in JSON). The macOS `RestoreOp` variant + its `restore_op`/`label` arms are `#[cfg(target_os = "macos")]`; the matches are exhaustive per platform. Keep `kill_on_drop` at its default (false) on destructive commands.
+
 ### What to do when adding a new fix primitive
 
 1. Add an `ActionId` variant in `action.rs`.
-2. Add a free `apply_*` function for it.
+2. Add a free `apply_*` function for it (take `&RestoreRegistry` if it mutates restorable state).
 3. Add a match arm in `Action::apply`.
 4. Append an `Action { ... }` entry in `all_actions()` declaring `targets`, `cost`, `risk`, `max_attempts`, `stabilization`. For `Risk::High`, attach a complete `RiskExplanation`.
 5. Triage planning picks it up automatically — no changes needed in `triage.rs`.
+6. If the primitive makes a destructive, restorable change: add a `RestoreOp` variant (cfg-gate platform-only types), exhaustive-per-platform `restore_op`/`label` arms, then `register` before mutating and `mark_resolved` after restoring.
 
 Enterprise VPNs (Cisco, Zscaler, Palo Alto / GlobalProtect, F5, Check Point, Juniper) are never auto-disabled. Fix reports always go to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`.
 

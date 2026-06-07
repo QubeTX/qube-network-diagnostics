@@ -240,11 +240,11 @@ What to keep / add:
 
 ### Module layout under `src/actions/fix/`
 
-- **`action.rs`** — `Action`, `ActionId`, `Cost`, `Risk`, `Reversibility`, `RiskExplanation` types. The registry (`all_actions()`) returns every `Action` available on the current platform. `Action::apply` dispatches to a free function per `ActionId` via match. `Risk::High(RiskExplanation)` is a sealed enum variant: a high-risk Action *cannot* be constructed without a complete plain-language explanation.
+- **`action.rs`** — `Action`, `ActionId`, `Cost`, `Risk`, `Reversibility`, `RiskExplanation` types. The registry (`all_actions()`) returns every `Action` available on the current platform. `Action::apply(&self, config, restore: &RestoreRegistry)` dispatches to a free function per `ActionId` via match. Destructive `apply_*` fns (`apply_disable_consumer_vpns`, `apply_bounce_interface`, `apply_deep_stack_reset`) register their inverse op on the `RestoreRegistry` *before* mutating state; non-destructive ones ignore it. `Risk::High(RiskExplanation)` is a sealed enum variant: a high-risk Action *cannot* be constructed without a complete plain-language explanation.
 - **`triage.rs`** — Pure planning. `actionable_failures()`, `group_by_root_cause()` (walks the hardcoded dependency DAG), `hard_block_detected()`, `build_plan()`. No IO. Unit-tested via `cargo test --lib actions::fix::triage`.
-- **`session.rs`** — `Session` (per-run state: attempts, effectiveness, snapshots, action_log) + `Reporter` (plain-language output for stdout) + `FinalOutcome`. `WALL_CLOCK_CAP = 240s`.
-- **`loop_runner.rs`** — `run_and_finalize(config) -> i32`: pre-flight elevation check, runs the loop, persists Markdown report, returns exit code. Handles JSON output via `print_json_outcome`.
-- **`report.rs`** — Iteration-oriented Markdown report. Saves to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`.
+- **`session.rs`** — `Session` (per-run state: attempts, effectiveness, snapshots, action_log) + `Reporter` (plain-language output for stdout) + `FinalOutcome` (now includes `Interrupted(Vec<DiagnosticKey>)` → exit 130) + the **`RestoreRegistry`** / `RestoreOp` / `restore_op` interrupt-safe restore machinery (see "Interrupt-safe restore" below). `WALL_CLOCK_CAP = 240s`.
+- **`loop_runner.rs`** — `run_and_finalize(config) -> i32`: pre-flight elevation check, constructs the caller-owned `Session` + `RestoreRegistry`, races `run(config, &mut session, &restore)` against `tokio::signal::ctrl_c` inside a `tokio::select!` with the loop wrapped in `catch_unwind`, then **always drains the registry** (bounded by a 90s outer cap), persists the Markdown report, returns the exit code. On Ctrl-C → outcome `Interrupted`, exit 130; on caught panic → drain, then `std::process::exit(101)`. Handles JSON output via `print_json_outcome`.
+- **`report.rs`** — Iteration-oriented Markdown report. Saves to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`. `save_session_report_with_recovery` appends a "Manual recovery needed" section for any drain failures.
 - **`stages.rs`** — Platform primitives (`disable_interface`, `enable_interface`, `restart_services`, `platform_stage3`, etc.) — kept and made `pub` so the action registry calls them directly. The legacy `run_stage1/2/3` orchestrators are still in this file but unused; safe to remove in a follow-up.
 - **`cmd.rs`** — `run_cmd` (legacy, returns `Result<Output, String>`) + `run_cmd_capture` (new, returns structured `CmdOutcome` with stdout/stderr/exit/duration). Reports render `CmdOutcome` payloads.
 
@@ -254,13 +254,26 @@ In interactive mode, every High-risk Action renders a multi-line block with `wha
 
 Medium-risk actions (VPN disable, DHCP reset, service restart, interface restart, and public-DNS changes) render a shorter confirmation prompt. `--yes` auto-confirms only these medium-risk prompts. JSON/non-interactive runs skip them when confirmation is required. Consumer VPNs are never disabled from JSON/non-interactive runs, and enterprise VPNs are never auto-disabled in any mode.
 
+### Interrupt-safe restore (v3.0.9+)
+
+`nd300 fix` is safe to cancel, time out, or crash mid-repair. The mechanism is a **restore registry + interrupt-safe drain**:
+
+- **`RestoreRegistry`** (`session.rs`) is an `Arc<tokio::sync::Mutex<Vec<RegisteredOp>>>` (cheaply cloneable; **non-poisoning** mutex so a caught panic can't wedge cleanup). It threads through `Action::apply` into the destructive `apply_*` fns.
+- **`RestoreOp`** is the inverse of a destructive change: `ReEnableInterface { iface }`, `ReEnableVpn(Arc<DisabledVpn>)`, and (macOS-only, `#[cfg(target_os = "macos")]`) `RecreateMacosService { iface, service, snapshot }`. The macOS variant and its `restore_op`/`label` match arms are cfg-gated so non-macOS builds never reference `MacosNetworkSnapshot`; the match is exhaustive per platform.
+- **Contract:** a destructive action calls `restore.register(op)` *before* mutating state (getting a token), then `restore.mark_resolved(token)` once it has restored the state itself on the normal path. Anything still unresolved at the end is replayed by `restore.drain()`.
+- **`drain()`** snapshots pending ops under the lock, releases it, runs each via the async `restore_op` dispatcher with a per-op 30s timeout, and returns a `Vec<String>` of human-readable failures for anything it couldn't restore.
+- **`run_and_finalize`** races the loop against `Ctrl-C` and wraps it in `catch_unwind`, then **always drains** (bounded by an outer 90s `tokio::time::timeout`) on every terminal path. Ctrl-C → `FinalOutcome::Interrupted` (exit 130); caught panic → drain then `exit(101)`. Drain failures print as "Manual recovery needed" (non-JSON) / `manual_recovery_needed` + `interrupted` fields (JSON), and land in the Markdown report.
+- **Per-finding wiring:** VPN disable (H2) registers a re-enable per VPN and wires up the formerly-dead `vpn::offer_reenable`; interface bounce (H4) registers a re-enable before disabling and retries the re-enable once, leaving the op registered + a loud message on final failure; macOS deep reset (H3) registers `RecreateMacosService` before `-removenetworkservice` and recreates via `stages::recreate_and_restore_macos_service` (retry-once + snapshot restore); Linux deep reset (M3) checks the `nmcli connection delete` result before recreating.
+- **Keep `kill_on_drop` at its default (false) on destructive commands** — never interrupt a half-done `netsh int ip reset`.
+
 ### What to do when adding a new fix primitive
 
 1. Add an `ActionId` variant in `action.rs`.
-2. Add a free `apply_*` function for it.
+2. Add a free `apply_*` function for it (taking `&RestoreRegistry` if it mutates restorable state).
 3. Add a match arm in `Action::apply`.
 4. Append an `Action { ... }` entry in `all_actions()` declaring `targets`, `cost`, `risk`, `max_attempts`, `stabilization`. For `Risk::High`, attach a complete `RiskExplanation`.
 5. Triage planning picks it up automatically — no changes needed in `triage.rs`.
+6. **If the primitive makes a destructive, restorable change:** add a `RestoreOp` variant (cfg-gate it if it references platform-only types), a `restore_op` dispatch arm and a `label` arm (both exhaustive per platform), then `register` before mutating and `mark_resolved` after restoring.
 
 Clean networks produce zero fix actions. Latency-only findings are advisory because ICMP can be rate-limited or deprioritized by otherwise healthy networks. DNS remediation is staged: flush cache first, restore router-provided DNS next, and consider public DNS only after DNS-specific evidence remains. macOS deep reset snapshots DNS, proxy, service order, IPv4/IPv6 mode, and SSID and restores the original settings after service recreation unless the user explicitly chose a DNS change. Linux NetworkManager actions operate on the active connection profile instead of assuming the profile name equals the device name.
 

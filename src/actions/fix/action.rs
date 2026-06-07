@@ -14,6 +14,7 @@ use super::arp;
 use super::cmd::CmdOutcome;
 use super::dhcp;
 use super::dns::{self, DnsProvider};
+use super::session::{RestoreOp, RestoreRegistry};
 use super::stages;
 use super::vpn;
 
@@ -198,7 +199,13 @@ impl Action {
     /// Run this action against the current system. Always returns an
     /// `ActionOutcome` — apply failures are encoded inside it, never
     /// propagated as Rust errors.
-    pub async fn apply(&self, config: &Config) -> ActionOutcome {
+    ///
+    /// `restore` is the run's [`RestoreRegistry`]: destructive actions
+    /// (VPN disable, interface bounce, deep stack reset) register the inverse
+    /// op here *before* mutating state, so any abort (Ctrl-C / timeout / panic)
+    /// can roll the change back. Non-destructive actions (flush / DNS / DHCP /
+    /// service restart) ignore it.
+    pub async fn apply(&self, config: &Config, restore: &RestoreRegistry) -> ActionOutcome {
         match self.id {
             ActionId::FlushDns => apply_flush_dns().await,
             ActionId::SetDnsCloudflare => apply_set_dns(DnsProvider::Cloudflare).await,
@@ -206,9 +213,9 @@ impl Action {
             ActionId::FlushArp => apply_flush_arp().await,
             ActionId::RestartNetworkServices => apply_restart_services().await,
             ActionId::RenewDhcp => apply_renew_dhcp().await,
-            ActionId::DisableConsumerVpns => apply_disable_consumer_vpns(config).await,
-            ActionId::BounceInterface => apply_bounce_interface().await,
-            ActionId::DeepStackReset => apply_deep_stack_reset(config).await,
+            ActionId::DisableConsumerVpns => apply_disable_consumer_vpns(config, restore).await,
+            ActionId::BounceInterface => apply_bounce_interface(restore).await,
+            ActionId::DeepStackReset => apply_deep_stack_reset(config, restore).await,
         }
     }
 }
@@ -244,7 +251,7 @@ async fn apply_renew_dhcp() -> ActionOutcome {
     }
 }
 
-async fn apply_disable_consumer_vpns(config: &Config) -> ActionOutcome {
+async fn apply_disable_consumer_vpns(config: &Config, restore: &RestoreRegistry) -> ActionOutcome {
     if !crate::actions::is_interactive(config) {
         return ActionOutcome::fail(
             "Skipped: disabling VPNs requires an interactive session so they can be re-enabled safely.",
@@ -253,33 +260,104 @@ async fn apply_disable_consumer_vpns(config: &Config) -> ActionOutcome {
 
     let disabled = vpn::detect_and_disable(config).await;
     if disabled.is_empty() {
-        ActionOutcome::ok("No consumer VPNs were active")
-    } else {
-        let names: Vec<String> = disabled.iter().map(|v| v.name.clone()).collect();
-        ActionOutcome::ok(format!("Disabled consumer VPNs: {}", names.join(", ")))
-            .with_fatal_env_change()
+        return ActionOutcome::ok("No consumer VPNs were active");
     }
+
+    // Register a re-enable op for every VPN we disabled BEFORE we report
+    // success. If the run is interrupted (Ctrl-C / timeout / panic) before the
+    // normal-path offer below runs, the drain re-connects each still-registered
+    // VPN so the user isn't left disconnected.
+    let mut tokens = Vec::with_capacity(disabled.len());
+    for v in &disabled {
+        let token = restore
+            .register(RestoreOp::ReEnableVpn(std::sync::Arc::new(v.clone())))
+            .await;
+        tokens.push(token);
+    }
+
+    let names: Vec<String> = disabled.iter().map(|v| v.name.clone()).collect();
+
+    // Normal path: offer to re-enable now (default No keeps them off for the
+    // re-probe). Whatever the user chooses, the offer has happened, so mark the
+    // restore ops resolved — the drain must not blindly re-enable them on a
+    // normal terminal path (that would undo a successful fix).
+    vpn::offer_reenable(&disabled, config).await;
+    for token in tokens {
+        restore.mark_resolved(token).await;
+    }
+
+    ActionOutcome::ok(format!("Disabled consumer VPNs: {}", names.join(", ")))
+        .with_fatal_env_change()
 }
 
-async fn apply_bounce_interface() -> ActionOutcome {
+async fn apply_bounce_interface(restore: &RestoreRegistry) -> ActionOutcome {
     let iface = match adapters::detect_default_interface().await {
         Some(i) => i,
         None => return ActionOutcome::fail("Could not detect a default network interface"),
     };
+
+    // Register the re-enable BEFORE disabling, so an interrupt between disable
+    // and re-enable still brings the adapter back up via the drain.
+    let token = restore
+        .register(RestoreOp::ReEnableInterface {
+            iface: iface.clone(),
+        })
+        .await;
+
     if let Err(e) = stages::disable_interface(&iface).await {
+        // Disable never happened — nothing to restore.
+        restore.mark_resolved(token).await;
         return ActionOutcome::fail(format!("Disable {} failed: {}", iface, e));
     }
+
     tokio::time::sleep(Duration::from_secs(3)).await;
-    if let Err(e) = stages::enable_interface(&iface).await {
-        return ActionOutcome::fail(format!("Re-enable {} failed: {}", iface, e));
+
+    // Re-enable with one retry. Leaving an adapter disabled is far worse than a
+    // slow retry, so mirror the legacy 2s-wait retry that the old Stage 2 had.
+    if let Err(first_err) = stages::enable_interface(&iface).await {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if let Err(retry_err) = stages::enable_interface(&iface).await {
+            // Still down. Leave the restore op REGISTERED so the drain retries
+            // it on the terminal path, and surface a loud, actionable message.
+            let cmd_hint = reenable_command_hint(&iface);
+            return ActionOutcome::fail(format!(
+                "Your network adapter \"{}\" is still DISABLED — re-enable failed twice ({}; retry: {}). \
+                 nd300 will try again as it exits. If you still have no connection, run: {}",
+                iface, first_err, retry_err, cmd_hint
+            ))
+            .with_fatal_env_change();
+        }
     }
+
+    // Adapter is back up — the action restored it itself.
+    restore.mark_resolved(token).await;
     ActionOutcome::ok(format!("{} bounced (disable → 3s wait → re-enable)", iface))
         .with_fatal_env_change()
 }
 
-async fn apply_deep_stack_reset(config: &Config) -> ActionOutcome {
+/// Platform-specific manual command to bring an interface back up, for the
+/// loud failure message when an automated re-enable fails twice.
+fn reenable_command_hint(iface: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("netsh interface set interface \"{}\" enabled", iface)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        format!(
+            "networksetup -setairportpower {} on  (Wi-Fi)  or  ifconfig {} up  (wired)",
+            iface, iface
+        )
+    }
+    #[cfg(target_os = "linux")]
+    {
+        format!("sudo ip link set {} up", iface)
+    }
+}
+
+async fn apply_deep_stack_reset(config: &Config, restore: &RestoreRegistry) -> ActionOutcome {
     let saved_ssid = super::wifi::capture_current_ssid().await;
-    match stages::platform_stage3(config, &saved_ssid).await {
+    match stages::platform_stage3(config, &saved_ssid, restore).await {
         Ok(steps) => {
             if steps.is_empty() {
                 ActionOutcome::fail("Stack reset attempted but no steps succeeded")
@@ -493,7 +571,10 @@ mod tests {
 
     #[tokio::test]
     async fn json_mode_does_not_disable_consumer_vpns() {
-        let outcome = apply_disable_consumer_vpns(&Config::new().with_json()).await;
+        // The JSON path early-returns before touching the registry, so a fresh
+        // empty registry is sufficient and the assertion is unchanged.
+        let outcome =
+            apply_disable_consumer_vpns(&Config::new().with_json(), &RestoreRegistry::new()).await;
 
         assert!(!outcome.ok);
         assert!(

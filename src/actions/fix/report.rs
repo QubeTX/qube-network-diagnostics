@@ -47,12 +47,23 @@ fn downloads_dir() -> PathBuf {
 /// on success, or `None` on any IO failure (the loop is best-effort about
 /// reports — a write failure should never block exit).
 pub fn save_session_report(session: &Session, outcome: &FinalOutcome) -> Option<PathBuf> {
+    save_session_report_with_recovery(session, outcome, &[])
+}
+
+/// Like [`save_session_report`], but also records any manual-recovery items the
+/// restore drain could not handle (a still-disabled adapter, a VPN that
+/// wouldn't reconnect, a macOS service that couldn't be recreated).
+pub fn save_session_report_with_recovery(
+    session: &Session,
+    outcome: &FinalOutcome,
+    recovery_needed: &[String],
+) -> Option<PathBuf> {
     let dir = downloads_dir();
     let _ = std::fs::create_dir_all(&dir);
 
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let path = dir.join(format!("nd300-fix-report-{}.md", stamp));
-    let markdown = render_markdown(session, outcome);
+    let markdown = render_markdown(session, outcome, recovery_needed);
 
     match std::fs::write(&path, markdown) {
         Ok(()) => Some(path),
@@ -62,7 +73,11 @@ pub fn save_session_report(session: &Session, outcome: &FinalOutcome) -> Option<
 
 // ── Markdown renderer ────────────────────────────────────────────────────────
 
-fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
+fn render_markdown(
+    session: &Session,
+    outcome: &FinalOutcome,
+    recovery_needed: &[String],
+) -> String {
     let mut md = String::with_capacity(8 * 1024);
 
     let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -87,6 +102,20 @@ fn render_markdown(session: &Session, outcome: &FinalOutcome) -> String {
     md.push_str("## Verdict\n\n");
     md.push_str(&render_verdict(outcome));
     md.push('\n');
+
+    // Manual recovery needed (drain failures) — surfaced prominently right
+    // under the verdict so a stranded user finds it first.
+    if !recovery_needed.is_empty() {
+        md.push_str("## ⚠️ Manual recovery needed\n\n");
+        md.push_str(
+            "nd300 tried to restore the network state it changed, but the following could not be \
+             completed automatically. Please address them manually:\n\n",
+        );
+        for item in recovery_needed {
+            md.push_str(&format!("- {}\n", item));
+        }
+        md.push('\n');
+    }
 
     // Baseline
     if let Some(baseline) = &session.baseline {
@@ -246,6 +275,16 @@ fn render_verdict(outcome: &FinalOutcome) -> String {
         FinalOutcome::PreflightFailed(reason) => {
             format!("❌ **Could not start.** {}\n", reason)
         }
+        FinalOutcome::Interrupted(remaining) => {
+            if remaining.is_empty() {
+                "⚠️ **Interrupted** — The fix was stopped before it finished. nd300 attempted to restore any network state it had changed.\n".to_string()
+            } else {
+                format!(
+                    "⚠️ **Interrupted** — The fix was stopped before it finished. nd300 attempted to restore any network state it had changed. Still outstanding when interrupted: {}\n",
+                    describe_keys(remaining)
+                )
+            }
+        }
     }
 }
 
@@ -254,7 +293,8 @@ fn remaining_failures(outcome: &FinalOutcome) -> Vec<DiagnosticKey> {
         FinalOutcome::Partial(rs)
         | FinalOutcome::Exhausted(rs)
         | FinalOutcome::Timeout(rs)
-        | FinalOutcome::UserDeclined(rs) => rs.clone(),
+        | FinalOutcome::UserDeclined(rs)
+        | FinalOutcome::Interrupted(rs) => rs.clone(),
         _ => Vec::new(),
     }
 }

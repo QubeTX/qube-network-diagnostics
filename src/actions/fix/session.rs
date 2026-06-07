@@ -1,6 +1,9 @@
 //! Session state + plain-language reporter for the fix loop.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use tokio::sync::Mutex;
 
 use crate::config::Config;
 use crate::diagnostics::DiagnosticResults;
@@ -8,6 +11,7 @@ use crate::render::color;
 
 use super::action::{Action, ActionOutcome, DiagnosticKey, Risk};
 use super::triage::{Attempts, Effectiveness, HardBlock};
+use super::vpn::DisabledVpn;
 
 /// Hard wall-clock cap for a single `nd300 fix` run. Combined with the
 /// per-iteration count and per-action attempt caps, this guarantees the loop
@@ -37,6 +41,12 @@ pub enum FinalOutcome {
     UserDeclined(Vec<DiagnosticKey>),
     /// Pre-flight check failed (e.g. not elevated). No diagnostics ran.
     PreflightFailed(String),
+    /// The run was interrupted before it could finish — a Ctrl-C, a caught
+    /// panic, or the outer drain timeout. The restore registry is drained on
+    /// this path so any half-applied network state is rolled back; the carried
+    /// keys are whatever failures were still outstanding when the interrupt
+    /// landed (best-effort, may be empty if the interrupt arrived early).
+    Interrupted(Vec<DiagnosticKey>),
 }
 
 impl FinalOutcome {
@@ -49,7 +59,185 @@ impl FinalOutcome {
             FinalOutcome::Timeout(_) => 2,
             FinalOutcome::UserDeclined(_) => 1,
             FinalOutcome::PreflightFailed(_) => 2,
+            // 130 = process terminated by SIGINT, the conventional Ctrl-C code.
+            FinalOutcome::Interrupted(_) => 130,
         }
+    }
+}
+
+// ── Restore registry ──────────────────────────────────────────────────────────
+
+/// Per-op timeout for a single restore operation during the drain. Restores
+/// run best-effort on a terminal path (normal end, Ctrl-C, panic, or the outer
+/// drain cap), so each one is individually bounded to keep the drain prompt.
+const RESTORE_OP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// An inverse operation that undoes a destructive change applied during the fix.
+///
+/// Destructive actions register the matching `RestoreOp` *before* mutating
+/// state and `mark_resolved` it once they have restored the state themselves
+/// on a normal path. Anything still unresolved when the run ends — whether it
+/// ended normally, via Ctrl-C, via a caught panic, or via the wall-clock cap —
+/// is replayed by [`RestoreRegistry::drain`].
+#[derive(Debug, Clone)]
+pub enum RestoreOp {
+    /// Bring a network interface back up (idempotent — safe if already up).
+    ReEnableInterface { iface: String },
+    /// Re-connect a consumer VPN that the fix disabled.
+    ReEnableVpn(Arc<DisabledVpn>),
+    /// Recreate a removed macOS network service and restore its captured
+    /// settings. macOS-only by construction so non-macOS builds never reference
+    /// the macOS snapshot type.
+    #[cfg(target_os = "macos")]
+    RecreateMacosService {
+        iface: String,
+        service: String,
+        snapshot: super::stages::MacosNetworkSnapshot,
+    },
+}
+
+impl RestoreOp {
+    /// Short human-readable label for reports / manual-recovery guidance.
+    fn label(&self) -> String {
+        match self {
+            RestoreOp::ReEnableInterface { iface } => {
+                format!("re-enable network adapter {}", iface)
+            }
+            RestoreOp::ReEnableVpn(vpn) => format!("re-enable VPN {}", vpn.name),
+            #[cfg(target_os = "macos")]
+            RestoreOp::RecreateMacosService { service, .. } => {
+                format!("recreate macOS network service {}", service)
+            }
+        }
+    }
+}
+
+/// Run a single restore operation. Returns `Ok(())` on success, `Err(reason)`
+/// on failure — the caller turns failures into manual-recovery guidance.
+async fn restore_op(op: &RestoreOp) -> Result<(), String> {
+    match op {
+        RestoreOp::ReEnableInterface { iface } => super::stages::enable_interface(iface).await,
+        RestoreOp::ReEnableVpn(vpn) => {
+            if super::vpn::reenable_vpn(vpn).await {
+                Ok(())
+            } else {
+                Err(format!("could not re-enable VPN {}", vpn.name))
+            }
+        }
+        #[cfg(target_os = "macos")]
+        RestoreOp::RecreateMacosService {
+            iface,
+            service,
+            snapshot,
+        } => super::stages::recreate_and_restore_macos_service(iface, service, snapshot).await,
+    }
+}
+
+/// One entry in the restore registry: an inverse op plus whether the owning
+/// action already resolved it on a normal path.
+#[derive(Debug, Clone)]
+struct RegisteredOp {
+    op: RestoreOp,
+    resolved: bool,
+}
+
+/// Token identifying a registered restore op so the owning action can mark it
+/// resolved once it has restored the state itself.
+pub type RestoreToken = usize;
+
+/// Tracks the inverse of every destructive change the fix has applied, so any
+/// terminal path can roll back half-applied state.
+///
+/// Cheaply cloneable (it is an `Arc` around a single mutex), so the same
+/// registry can be shared into the loop future and the Ctrl-C / drain arm of
+/// the outer `select!`. The mutex is `tokio::sync::Mutex`, which is
+/// **non-poisoning** — a panic inside the loop (caught by `catch_unwind`) does
+/// not wedge the registry, so the post-panic drain still works.
+#[derive(Clone, Default)]
+pub struct RestoreRegistry {
+    inner: Arc<Mutex<Vec<RegisteredOp>>>,
+}
+
+impl RestoreRegistry {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Register an inverse op and return a token to resolve it later. Call this
+    /// *before* applying the matching destructive change.
+    pub async fn register(&self, op: RestoreOp) -> RestoreToken {
+        let mut guard = self.inner.lock().await;
+        guard.push(RegisteredOp {
+            op,
+            resolved: false,
+        });
+        guard.len() - 1
+    }
+
+    /// Mark a previously-registered op resolved — the owning action restored the
+    /// state itself, so the drain should skip it.
+    pub async fn mark_resolved(&self, token: RestoreToken) {
+        let mut guard = self.inner.lock().await;
+        if let Some(entry) = guard.get_mut(token) {
+            entry.resolved = true;
+        }
+    }
+
+    /// Run every still-unresolved restore op, best-effort. Snapshots the
+    /// pending ops under the lock, releases the lock, then runs each with its
+    /// own timeout so a wedged restore can't stall the others. Returns a
+    /// human-readable failure string per op that could not be restored
+    /// (empty `Vec` = everything restored cleanly / nothing to do).
+    ///
+    /// Resolved ops are cleared from the registry as they succeed, so a second
+    /// drain (should one ever happen) is a no-op for already-restored state.
+    pub async fn drain(&self) -> Vec<String> {
+        // Snapshot pending ops + their indices under the lock, then release it
+        // so the restore subprocess calls don't hold the mutex.
+        let pending: Vec<(usize, RestoreOp)> = {
+            let guard = self.inner.lock().await;
+            guard
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !e.resolved)
+                .map(|(i, e)| (i, e.op.clone()))
+                .collect()
+        };
+
+        let mut failures = Vec::new();
+        for (idx, op) in pending {
+            let result = match tokio::time::timeout(RESTORE_OP_TIMEOUT, restore_op(&op)).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(format!("timed out after {}s", RESTORE_OP_TIMEOUT.as_secs())),
+            };
+            match result {
+                Ok(()) => {
+                    // Mark resolved so a re-drain won't repeat it.
+                    let mut guard = self.inner.lock().await;
+                    if let Some(entry) = guard.get_mut(idx) {
+                        entry.resolved = true;
+                    }
+                }
+                Err(reason) => {
+                    failures.push(format!("Could not {}: {}", op.label(), reason));
+                }
+            }
+        }
+        failures
+    }
+
+    /// Number of still-unresolved restore ops. Test-only inspection helper.
+    #[cfg(test)]
+    pub(crate) async fn pending_count(&self) -> usize {
+        self.inner
+            .lock()
+            .await
+            .iter()
+            .filter(|e| !e.resolved)
+            .count()
     }
 }
 
@@ -487,6 +675,16 @@ impl<'a> Reporter<'a> {
                     color::red(reason, self.config),
                 );
             }
+            FinalOutcome::Interrupted(_) => {
+                println!(
+                    "  {} {}",
+                    color::yellow("⚠ Interrupted", self.config),
+                    color::yellow(
+                        "The fix was stopped before it finished. nd300 attempted to restore any network state it had changed — see below for anything that needs manual recovery.",
+                        self.config,
+                    ),
+                );
+            }
         }
 
         if let Some(path) = report_path {
@@ -604,4 +802,79 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
         lines.push(current);
     }
     lines
+}
+
+#[cfg(test)]
+mod restore_registry_tests {
+    use super::*;
+    use crate::actions::fix::vpn::{DisableMethod, DisabledVpn};
+
+    /// A restore op that fails fast and deterministically: a vendor CLI whose
+    /// binary does not exist, so `restore_op` returns a spawn error without
+    /// touching any real network state.
+    fn failing_vpn_op(name: &str) -> RestoreOp {
+        RestoreOp::ReEnableVpn(Arc::new(DisabledVpn {
+            name: name.to_string(),
+            method: DisableMethod::VendorCli(
+                "nd300-nonexistent-vpn-binary".to_string(),
+                vec!["connect".to_string()],
+            ),
+        }))
+    }
+
+    #[tokio::test]
+    async fn empty_registry_drains_to_no_failures() {
+        let reg = RestoreRegistry::new();
+        assert_eq!(reg.pending_count().await, 0);
+        assert!(reg.drain().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn register_then_resolve_clears_pending() {
+        let reg = RestoreRegistry::new();
+        let t1 = reg.register(failing_vpn_op("VpnA")).await;
+        let _t2 = reg.register(failing_vpn_op("VpnB")).await;
+        assert_eq!(reg.pending_count().await, 2);
+
+        reg.mark_resolved(t1).await;
+        assert_eq!(reg.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn drain_skips_resolved_and_reports_unresolved_failures() {
+        let reg = RestoreRegistry::new();
+        let resolved = reg.register(failing_vpn_op("ResolvedVpn")).await;
+        let _pending = reg.register(failing_vpn_op("PendingVpn")).await;
+
+        // The first op is restored by its owning action — mark it resolved so
+        // the drain must skip it entirely.
+        reg.mark_resolved(resolved).await;
+
+        let failures = reg.drain().await;
+
+        // Exactly one failure, for the still-unresolved op, and it must name
+        // that VPN (proving the resolved one was skipped, not attempted).
+        assert_eq!(failures.len(), 1, "failures: {:?}", failures);
+        assert!(
+            failures[0].contains("PendingVpn"),
+            "unexpected failure text: {}",
+            failures[0]
+        );
+        assert!(
+            !failures[0].contains("ResolvedVpn"),
+            "resolved op should not have been drained: {}",
+            failures[0]
+        );
+
+        // After a drain, even failed ops are not retried as "pending success",
+        // but the unresolved op stays unresolved (drain only marks resolved on
+        // success), so a second drain re-attempts it and fails the same way.
+        let second = reg.drain().await;
+        assert_eq!(second.len(), 1);
+    }
+
+    #[test]
+    fn interrupted_exit_code_is_130() {
+        assert_eq!(FinalOutcome::Interrupted(Vec::new()).exit_code(), 130);
+    }
 }

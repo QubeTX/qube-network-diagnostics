@@ -18,19 +18,28 @@ use crate::config::{Config, OutputFormat};
 use crate::diagnostics;
 
 use super::action::{self, DiagnosticKey};
-use super::session::{FinalOutcome, Reporter, Session, DEFAULT_ITERATION_DELAY};
+use super::session::{FinalOutcome, Reporter, RestoreRegistry, Session, DEFAULT_ITERATION_DELAY};
 use super::triage::{
     actionable_failures, build_plan, hard_block_detected, requires_confirmation,
     requires_high_risk_consent, HardBlock, MAX_ITERATIONS,
 };
 
-/// Top-level entry point. Runs the full triage loop and returns a process
-/// exit code. Always produces a `Session` populated with the timeline; the
-/// caller persists the Markdown report.
-pub async fn run(config: &Config) -> (Session, FinalOutcome) {
+/// Outer timeout on the whole restore drain. The drain runs on every terminal
+/// path (normal end, Ctrl-C, panic, wall-clock cap); each op is individually
+/// bounded too, but this caps the aggregate so cleanup itself can never hang.
+const DRAIN_CAP: Duration = Duration::from_secs(90);
+
+/// Runs the full triage loop, populating the caller-owned `session` so the
+/// report stays rich even if the run is interrupted or panics. Returns the
+/// `FinalOutcome`. Destructive actions register inverse ops on `restore`; the
+/// caller drains it on every terminal path.
+pub async fn run(
+    config: &Config,
+    session: &mut Session,
+    restore: &RestoreRegistry,
+) -> FinalOutcome {
     let interactive = is_interactive(config);
     let reporter = Reporter::new(config);
-    let mut session = Session::new();
 
     if interactive {
         reporter.header();
@@ -56,7 +65,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
             if interactive {
                 reporter.final_verdict(&outcome, None);
             }
-            return (session, outcome);
+            return outcome;
         }
 
         let failures = actionable_failures(&current);
@@ -66,7 +75,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
             if interactive {
                 reporter.final_verdict(&outcome, None);
             }
-            return (session, outcome);
+            return outcome;
         }
 
         // Hard-block check — short-circuits before any action runs.
@@ -76,7 +85,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
             if interactive {
                 reporter.final_verdict(&outcome, None);
             }
-            return (session, outcome);
+            return outcome;
         }
 
         if interactive {
@@ -98,7 +107,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
             if interactive {
                 reporter.final_verdict(&outcome, None);
             }
-            return (session, outcome);
+            return outcome;
         }
 
         // Apply actions in cost-order. Fatal env changes break early so we
@@ -154,7 +163,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
                 reporter.announce_action(action);
             }
             let started = Instant::now();
-            let outcome = action.apply(config).await;
+            let outcome = action.apply(config, restore).await;
             let duration = started.elapsed();
             if interactive {
                 reporter.finish_action(&outcome, duration);
@@ -182,7 +191,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
             if interactive {
                 reporter.final_verdict(&outcome, None);
             }
-            return (session, outcome);
+            return outcome;
         }
 
         // Light delay between iterations to let the OS settle.
@@ -221,7 +230,7 @@ pub async fn run(config: &Config) -> (Session, FinalOutcome) {
     if interactive {
         reporter.final_verdict(&outcome, None);
     }
-    (session, outcome)
+    outcome
 }
 
 /// True when the loop can render interactive prompts (TTY + non-JSON output).
@@ -232,14 +241,24 @@ fn is_interactive(config: &Config) -> bool {
 
 /// Convenience wrapper used by `actions::fix::run`. Persists the Markdown
 /// report and returns the exit code derived from the `FinalOutcome`.
+///
+/// This is the interrupt-safe boundary: the triage loop runs inside a
+/// `tokio::select!` that races it against `Ctrl-C`, and the loop future is
+/// wrapped in `catch_unwind` so a panic is caught rather than aborting the
+/// process. On EVERY terminal path — normal end, user-declined, wall-clock cap,
+/// Ctrl-C, or panic — the restore registry is drained so any half-applied
+/// network change (a disabled adapter, a disconnected VPN, a removed macOS
+/// service) is rolled back before the process exits.
 pub async fn run_and_finalize(config: &Config) -> i32 {
+    use futures_util::FutureExt;
+
     // Pre-flight: elevation
     if !crate::platform::is_elevated() {
         let outcome = FinalOutcome::PreflightFailed(
             "The fix flow requires elevated privileges. Run with sudo (Unix) or as Administrator (Windows).".to_string(),
         );
         if config.format == OutputFormat::Json {
-            print_json_outcome(&Session::new(), &outcome, None);
+            print_json_outcome(&Session::new(), &outcome, None, &[]);
         } else {
             let reporter = Reporter::new(config);
             reporter.final_verdict(&outcome, None);
@@ -247,14 +266,98 @@ pub async fn run_and_finalize(config: &Config) -> i32 {
         return outcome.exit_code();
     }
 
-    let (session, outcome) = run(config).await;
-    let report_path = super::report::save_session_report(&session, &outcome);
+    let is_json = config.format == OutputFormat::Json;
+    let mut session = Session::new();
+    let restore = RestoreRegistry::new();
 
-    if config.format == OutputFormat::Json {
-        print_json_outcome(&session, &outcome, report_path.as_deref());
+    // Race the loop against Ctrl-C, and catch any panic from the loop so we can
+    // still drain restores instead of leaving the network half-broken.
+    //
+    // `AssertUnwindSafe` is sound here: the registry uses a non-poisoning
+    // `tokio::sync::Mutex`, and after a caught panic we only READ the partially
+    // populated `Session` to build a best-effort report — we never rely on it
+    // being in a logically-consistent state.
+    let loop_result = {
+        let fut = std::panic::AssertUnwindSafe(run(config, &mut session, &restore)).catch_unwind();
+        tokio::select! {
+            biased;
+            _ = tokio::signal::ctrl_c() => None,
+            r = fut => Some(r),
+        }
+    };
+
+    // Classify the terminal path.
+    //   None                -> Ctrl-C interrupted the loop.
+    //   Some(Ok(outcome))   -> loop finished normally (verdict already printed).
+    //   Some(Err(_panic))   -> loop panicked (caught); re-raise after cleanup.
+    let (outcome, panicked) = match loop_result {
+        Some(Ok(outcome)) => (outcome, false),
+        Some(Err(_panic)) => (
+            FinalOutcome::Interrupted(remaining_after_interrupt(&session)),
+            true,
+        ),
+        None => {
+            // Ctrl-C: print a clear interrupted line now (the loop never
+            // returned, so it never printed a verdict).
+            if !is_json {
+                println!();
+                println!("  Interrupted — cleaning up and restoring network state...");
+            }
+            (
+                FinalOutcome::Interrupted(remaining_after_interrupt(&session)),
+                false,
+            )
+        }
+    };
+
+    if panicked && !is_json {
+        println!();
+        println!(
+            "  A fatal internal error occurred mid-fix — restoring network state before exiting..."
+        );
+    }
+
+    // ALWAYS drain restores, regardless of how we got here. Bound the whole
+    // drain so cleanup itself can never hang.
+    let drain_failures = match tokio::time::timeout(DRAIN_CAP, restore.drain()).await {
+        Ok(failures) => failures,
+        Err(_) => vec![format!(
+            "Network-state cleanup did not finish within {}s; some changes may not have been restored.",
+            DRAIN_CAP.as_secs()
+        )],
+    };
+
+    // For the Interrupted path, print the verdict now (after the drain attempt)
+    // so the manual-recovery guidance reads in order.
+    if matches!(outcome, FinalOutcome::Interrupted(_)) && !is_json {
+        let reporter = Reporter::new(config);
+        reporter.final_verdict(&outcome, None);
+    }
+
+    // Surface anything that couldn't be restored as explicit manual-recovery
+    // guidance (non-JSON; JSON carries it in the structured object).
+    if !drain_failures.is_empty() && !is_json {
+        println!();
+        println!(
+            "  {}",
+            crate::render::color::yellow("Manual recovery needed:", config)
+        );
+        for f in &drain_failures {
+            println!("    • {}", crate::render::color::yellow(f, config));
+        }
+    }
+
+    // Record the final outcome on the session so the report reflects it even on
+    // the interrupted / panic path.
+    session.final_outcome = Some(outcome.clone());
+
+    let report_path =
+        super::report::save_session_report_with_recovery(&session, &outcome, &drain_failures);
+
+    if is_json {
+        print_json_outcome(&session, &outcome, report_path.as_deref(), &drain_failures);
     } else if let Some(path) = &report_path {
         // Re-print the path under the verdict so users see where to find it.
-        // (final_verdict was already called inside run(); this just adds a follow-up.)
         println!(
             "  {} {}",
             crate::render::color::dim("Saved report:", config),
@@ -262,13 +365,33 @@ pub async fn run_and_finalize(config: &Config) -> i32 {
         );
     }
 
-    outcome.exit_code()
+    let code = outcome.exit_code();
+
+    // If the loop panicked, re-raise the failure as exit 101 AFTER cleanup so
+    // the operator sees the standard panic exit code, having had the network
+    // restored first.
+    if panicked {
+        std::process::exit(101);
+    }
+
+    code
+}
+
+/// Best-effort remaining-failure set for an interrupted run: the actionable
+/// failures from the most recent diagnostics snapshot, or empty if none ran.
+fn remaining_after_interrupt(session: &Session) -> Vec<DiagnosticKey> {
+    session
+        .snapshots
+        .last()
+        .map(|s| actionable_failures(&s.results).into_iter().collect())
+        .unwrap_or_default()
 }
 
 fn print_json_outcome(
     session: &Session,
     outcome: &FinalOutcome,
     report_path: Option<&std::path::Path>,
+    recovery_needed: &[String],
 ) {
     use serde_json::json;
 
@@ -280,13 +403,15 @@ fn print_json_outcome(
         FinalOutcome::Timeout(_) => "timeout",
         FinalOutcome::UserDeclined(_) => "user_declined",
         FinalOutcome::PreflightFailed(_) => "preflight_failed",
+        FinalOutcome::Interrupted(_) => "interrupted",
     };
 
     let remaining: Vec<&str> = match outcome {
         FinalOutcome::Partial(rs)
         | FinalOutcome::Exhausted(rs)
         | FinalOutcome::Timeout(rs)
-        | FinalOutcome::UserDeclined(rs) => rs.iter().map(|k| diagnostic_key_str(*k)).collect(),
+        | FinalOutcome::UserDeclined(rs)
+        | FinalOutcome::Interrupted(rs) => rs.iter().map(|k| diagnostic_key_str(*k)).collect(),
         _ => Vec::new(),
     };
 
@@ -316,6 +441,8 @@ fn print_json_outcome(
         "applied_actions": actions_json,
         "elapsed_seconds": session.elapsed().as_secs(),
         "report_path": report_path.map(|p| p.display().to_string()),
+        "interrupted": matches!(outcome, FinalOutcome::Interrupted(_)),
+        "manual_recovery_needed": recovery_needed,
         "preflight_error": match outcome {
             FinalOutcome::PreflightFailed(s) => Some(s.clone()),
             _ => None,
