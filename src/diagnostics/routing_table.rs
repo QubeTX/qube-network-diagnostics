@@ -123,23 +123,17 @@ async fn collect_linux() -> Option<Vec<RouteEntry>> {
         let mut i = 1;
         while i < parts.len() {
             match parts[i] {
-                "via" => {
-                    if i + 1 < parts.len() {
-                        gateway = parts[i + 1].to_string();
-                        i += 1;
-                    }
+                "via" if i + 1 < parts.len() => {
+                    gateway = parts[i + 1].to_string();
+                    i += 1;
                 }
-                "dev" => {
-                    if i + 1 < parts.len() {
-                        iface = parts[i + 1].to_string();
-                        i += 1;
-                    }
+                "dev" if i + 1 < parts.len() => {
+                    iface = parts[i + 1].to_string();
+                    i += 1;
                 }
-                "metric" => {
-                    if i + 1 < parts.len() {
-                        metric = parts[i + 1].parse().ok();
-                        i += 1;
-                    }
+                "metric" if i + 1 < parts.len() => {
+                    metric = parts[i + 1].parse().ok();
+                    i += 1;
                 }
                 _ => {}
             }
