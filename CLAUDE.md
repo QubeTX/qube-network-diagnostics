@@ -36,12 +36,14 @@ main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
   → Conditional exit: nd300 dns / --dns (exits on failure, falls through to diagnostics on success)
   → config.rs (Config builder: colors, unicode, mode, format)
   → diagnostics/mod.rs (concurrent runner via tokio::join!)
-    → 7 core diagnostics (concurrent)
-    → Speed test (sequential — bandwidth-saturating)
-    → 17 tech-mode diagnostics (concurrent, behind -t flag, uses SharedCache)
+    → 7 core diagnostics (concurrent) + speed test (sequential) = 8 core total
+    → Speed test (sequential — bandwidth-saturating; the 8th core diagnostic)
+    → tech mode (-t): 17 deep diagnostics (concurrent) + bufferbloat (sequential) = 18 total, uses SharedCache
   → render/ (user_mode | tech_mode | json — selected by format + mode)
   → Exit code: 0=OK, 1=Warn, 2=Fail
 ```
+
+Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **18 deep**). The flow box splits each total into its concurrent group plus the one sequential outlier (speed test for core, bufferbloat for tech) — same modules, just grouped by how they run. Keep these reconciled when adding a module.
 
 `Nd300Cli` defines a `command: Option<Nd300Command>` field alongside the legacy boolean flags. If a subcommand is given, it takes precedence; otherwise the flag-form dispatch runs. Both forms produce identical behavior. Output flags (`--json`, `--ascii`, `--no-color`, `--verbose`), fix confirmation (`--yes`), and speed controls (`--fast`, `--speed-duration`) are marked `global = true` so they work in both positions. `Nd300Command::Dns` is special: it is routed through the same *semi*-exit-early path as the `-d`/`--dns` flag (exit on failure, fall through to diagnostics on success) rather than the terminal subcommand block, so `nd300 dns` ≡ `nd300 --dns`. All other subcommands are terminal.
 
@@ -66,7 +68,7 @@ main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
 
 **SharedCache (tech mode):** `diagnostics/shared_cache.rs` pre-fetches netstat, ipconfig, sysinfo::Networks, and default gateway data once, shared across 10+ tech-mode diagnostic modules. Built via `SharedCache::build_for_tech_mode()` before the tech diagnostic `tokio::join!`.
 
-**DiagnosticStatus enum:** `Ok`, `Warn`, `Fail`, `Skip` — only the 8 core diagnostics contribute to exit code aggregation.
+**DiagnosticStatus enum:** `Ok`, `Warn`, `Fail`, `Skip` — only the 8 core diagnostics (the 7 concurrent + speed test) contribute to exit code aggregation; tech-mode deep diagnostics do not.
 
 **Build script:** `build.rs` generates man pages (`man/nd300.1`, `man/speedqx.1`) at build time via `clap_mangen`. It uses a `#[path = "src/cli.rs"]` include with a stub `speedtest` module to compile the CLI structs in the build context.
 
