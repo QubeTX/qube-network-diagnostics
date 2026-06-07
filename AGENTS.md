@@ -276,8 +276,8 @@ const PS_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/do
 
 ### Platform Notes
 
-- **Windows**: The running `.exe` cannot be replaced in place. The PowerShell installer from cargo-dist handles this correctly (downloads to temp, replaces after process exit).
-- **macOS/Linux**: Shell installer can replace the running binary since Unix allows unlinking running executables.
+- **Windows**: The running `.exe` cannot be replaced or deleted in place. The PowerShell installer from cargo-dist handles this correctly (downloads to temp, replaces after process exit). The uninstall/shadow-cleanup path likewise can only *schedule* deletion of the running copy (a background `cmd /C … del` that fires once the process exits), so `CleanupReport` distinguishes `binary_removed` (gone now) from `binary_removal_scheduled` (gone on exit). The updater's shadow-cleanup treats a scheduled removal as success **with an honest warning** (the new cargo binary wins in a new shell; manual cleanup instructions are printed if it doesn't), while the cargo-collision retry path treats a scheduled removal as Fatal **with instructions** (an immediate cargo retry needs the file gone *now*, so it asks the user to close this process and re-run `nd300 update`).
+- **macOS/Linux**: Shell installer can replace the running binary since Unix allows unlinking running executables; uninstall really removes the file (`binary_removed = true`, `binary_removal_scheduled` always `false`).
 - **Cargo**: `cargo install nd300 --force` installs the canonical crates.io package, but bare Cargo cannot run ND300-specific cleanup hooks for unrelated old install locations. `nd300 update` handles migration by removing a shadowing non-Cargo running copy after Cargo succeeds, and by retrying Cargo once after cleaning up the current install if Cargo reports an existing `nd300` or `speedqx` binary collision.
 - **`#[cfg(not(windows))]`** on the `SHELL_INSTALLER` constant to suppress dead code warnings on Windows builds.
 

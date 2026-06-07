@@ -6,6 +6,19 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 7, 2026 — installing and updating are more robust, especially on locked-down machines
+
+**Fixed**
+- Installing the tool through the Rust package manager can no longer fail on locked-down or read-only machines. As part of installing, the tool generates its built-in manual pages and used to insist on saving them into a folder that, on some hardened or sandboxed computers, can't be written to — which would make the whole install crash. Now it only writes those pages where it's actually allowed to, and quietly skips the write if it can't, so the install always finishes. The manual pages still ship inside the package, so nothing is lost.
+- On Windows, updating from an older copy that wasn't installed through the Rust package manager is now honest about what happened. Windows can't delete a program file while that program is still running, so the old copy is actually removed the moment the tool exits — not instantly. The tool used to claim the old copy was already gone, which could leave you quietly stuck on the old version. Now it tells you plainly that the old copy will be removed when the tool closes, that the freshly installed version will take over in a new window, and exactly what to delete by hand in the rare case it doesn't.
+- Uninstalling on Windows now fully cleans up the leftover entry it adds to your system's list of program locations, even when that entry has an extra slash on the end. Before, a trailing slash could leave a dead entry behind; now it's matched and removed regardless.
+- Hardened the internal cleanup step that schedules the old program file for deletion on Windows so it can't be tripped up by unusual characters in the install path. (These characters can't appear in real Windows paths anyway, so in practice this is just extra safety.)
+
+**Changed (worth knowing if you read the machine-readable output)**
+- The machine-readable output of the uninstall command gains one new yes/no field that says whether the program file is scheduled to be removed when the tool exits (this is the normal case on Windows). The existing "was it removed" field keeps its exact old meaning — "is it gone right now" — and the overall success flag now counts a scheduled-on-exit removal as a success. This is a purely additive change; nothing existing was renamed or removed, and on Mac and Linux the behavior is unchanged.
+
+---
+
 ## June 7, 2026 — the auto-repair command now cleans up after itself
 
 **Added**
