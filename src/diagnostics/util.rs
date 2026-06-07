@@ -135,11 +135,13 @@ mod tests {
         );
     }
 
-    /// A nanosecond budget forces the resolver to time out to `None`.
-    #[tokio::test]
-    async fn nanosecond_resolve_times_out_to_none() {
-        let addrs =
-            lookup_host_timeout("example.com:80".to_string(), Duration::from_nanos(1)).await;
-        assert!(addrs.is_none(), "1ns budget should time out to None");
-    }
+    // The resolver timeout-elapse → `None` path is covered deterministically by
+    // `slow_command_times_out_to_none` above: both `run_with_timeout` and
+    // `lookup_host_timeout` wrap the same `tokio::time::timeout`, so the
+    // elapse → `None` branch is identical. A prior test raced a real
+    // `lookup_host("example.com")` against a 1ns budget, which is
+    // non-deterministic — `tokio::time::timeout` polls the inner future first, so
+    // a fast/cached resolve can return `Some` before the timer fires (observed
+    // flaking under concurrent test load). It was removed to keep the release
+    // `cargo test` gate stable.
 }

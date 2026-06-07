@@ -6,6 +6,20 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 7, 2026 — honest results when the speed test can't run, plus quieter behind-the-scenes work
+
+**Fixed**
+- A speed test that completely fails now says so honestly, instead of pretending your connection is just slow. Before, if every speed-test server failed to respond, the tool would report "0.00 Mbps" and "download too slow," which made a total failure look like a working-but-slow connection — and it counted that as a minor warning. Now, when nothing could actually be measured, the tool clearly reports that the speed test failed and treats it as a real problem. A connection that genuinely is slow but working is still reported the same way as before.
+- Fixed a safety time limit in the speed test that wasn't actually working. The speed test has a built-in cap meant to stop any single download or upload run from dragging on too long, but a coding slip meant the timer kept resetting and so never actually triggered. It now fires correctly, and the same safety cap was added to the upload side, which previously had none — so a stuck transfer can't make the speed test hang.
+
+**Behind the scenes**
+- Some quick system-information lookups (your network adapters and your router address) used to run in a way that could very briefly freeze the tool's other simultaneous checks. They now run out of the way so everything keeps flowing smoothly. No change to what you see — it's purely a smoothness improvement under the hood.
+
+**Heads up**
+- For anyone running Windows in a language other than English: a few of the advanced checks can come back blank because they currently look for English wording in Windows' output. We've noted this and plan to make those checks language-independent in a future update.
+
+---
+
 ## June 7, 2026 — installing and updating are more robust, especially on locked-down machines
 
 **Fixed**
