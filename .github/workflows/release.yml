@@ -96,7 +96,9 @@ jobs:
             tag="v$version"
             tag_flag="--tag=$tag"
 
-            crate_status=$(curl -sS -o /tmp/crate-version.json -w "%{http_code}" "https://crates.io/api/v1/crates/${package_name}/${version}")
+            crate_status=$(curl -sS --retry 5 --retry-delay 3 --retry-all-errors \
+              -H "User-Agent: nd300-release-ci (+https://github.com/QubeTX/qube-network-diagnostics)" \
+              -o /tmp/crate-version.json -w "%{http_code}" "https://crates.io/api/v1/crates/${package_name}/${version}")
             case "$crate_status" in
               200) crate_exists=true ;;
               404) crate_exists=false ;;
@@ -424,7 +426,9 @@ jobs:
             exit 1
           fi
 
-          status=$(curl -sS -o /tmp/crate-version.json -w "%{http_code}" "https://crates.io/api/v1/crates/${PACKAGE_NAME}/${PACKAGE_VERSION}")
+          status=$(curl -sS --retry 5 --retry-delay 3 --retry-all-errors \
+            -H "User-Agent: nd300-release-ci (+https://github.com/QubeTX/qube-network-diagnostics)" \
+            -o /tmp/crate-version.json -w "%{http_code}" "https://crates.io/api/v1/crates/${PACKAGE_NAME}/${PACKAGE_VERSION}")
           case "$status" in
             200)
               echo "${PACKAGE_NAME} ${PACKAGE_VERSION} is already published on crates.io; skipping."
