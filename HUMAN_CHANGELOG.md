@@ -6,6 +6,25 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 7, 2026 — the auto-repair command now cleans up after itself
+
+**Added**
+- The auto-repair command now puts your network back the way it found it if it's interrupted or hits a problem. Before, if you cancelled a repair partway through, or it ran out of time, or it hit an unexpected error, you could be left worse off than when you started — your Wi-Fi adapter switched off, your VPN disconnected, or (on a Mac) your network settings removed. Now the tool keeps a running list of everything it changes, and on any exit — you press Ctrl-C, it times out, or it crashes — it goes back through that list and restores what it touched: your Wi-Fi adapter, your VPN, and your Mac network settings all get put back instead of left broken. Press Ctrl-C any time and it cleans up after itself before quitting.
+
+**Fixed**
+- Disconnected VPNs are reconnected. When the repair temporarily turns off a personal VPN to test your connection, it now reliably offers to turn it back on (and reconnects it automatically if the repair is interrupted first). Previously a turned-off VPN could be left off without warning. Work/company VPNs are still never touched automatically.
+- A Mac can no longer be left with no working network connection. The deep-reset step that removes and recreates a Mac's network service now retries the recreate and restores your previous settings; if it still can't recreate the service, it tells you exactly what to fix by hand instead of quietly giving up halfway.
+- Restarting your network adapter no longer risks leaving it switched off. If the tool can't switch the adapter back on the first time, it waits and tries again; if it still can't, it shows you the exact command to turn it back on yourself, in big clear letters, rather than leaving you disconnected.
+- On Linux, the repair no longer claims it deleted a network profile when the deletion actually failed — it now checks and reports the real result.
+
+**Changed (worth knowing if you read the machine-readable output or the report)**
+- The repair's machine-readable output now says whether it was interrupted and lists anything it couldn't put back on its own. The saved repair report gets a clearly-marked "Manual recovery needed" section for the same information.
+
+**Behind the scenes**
+- One existing automated timing test from the previous release can occasionally report a false failure on very fast machines; it was left as-is to keep this update focused, and confirmed to be a pre-existing quirk rather than something this update introduced.
+
+---
+
 ## June 7, 2026 — no more hanging on a broken network; faster results
 
 **Fixed**

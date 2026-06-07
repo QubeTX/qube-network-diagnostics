@@ -628,7 +628,10 @@ pub async fn run_stage3(config: &Config, saved_ssid: &Option<String>) -> (Vec<St
         }
     }
 
-    let result = platform_stage3(config, saved_ssid).await;
+    // Legacy orchestrator (unused — superseded by the triage loop). It is still
+    // compiled, so it gets its own throwaway registry; the loop path threads the
+    // real run-scoped registry through `Action::apply` instead.
+    let result = platform_stage3(config, saved_ssid, &super::session::RestoreRegistry::new()).await;
     match result {
         Ok(msgs) => {
             for msg in &msgs {
@@ -709,19 +712,27 @@ fn platform_stage3_warning() -> &'static str {
 pub async fn platform_stage3(
     config: &Config,
     saved_ssid: &Option<String>,
+    restore: &super::session::RestoreRegistry,
 ) -> Result<Vec<String>, String> {
     #[cfg(windows)]
     {
+        // Windows stack reset is in-place and self-recovering (no service is
+        // removed), so there is nothing to register for restore.
+        let _ = restore;
         stage3_windows(config, saved_ssid).await
     }
 
     #[cfg(target_os = "macos")]
     {
-        stage3_macos(config, saved_ssid).await
+        stage3_macos(config, saved_ssid, restore).await
     }
 
     #[cfg(target_os = "linux")]
     {
+        // Linux deletes/recreates the connection profile in one in-function
+        // sequence; the M3 fix makes the delete failure abort before recreate,
+        // so there is no half-applied state to register externally.
+        let _ = restore;
         stage3_linux(config, saved_ssid).await
     }
 }
@@ -916,9 +927,15 @@ impl MacosProxySnapshot {
     }
 }
 
+/// Snapshot of a macOS network service's settings, captured before the deep
+/// reset removes the service so they can be restored after recreation.
+///
+/// `pub(crate)` so it can be carried in [`super::session::RestoreOp`] for the
+/// interrupt-safe drain. Fields stay private — only this module constructs,
+/// captures, and restores it.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MacosNetworkSnapshot {
+pub(crate) struct MacosNetworkSnapshot {
     service_name: String,
     dns_servers: Vec<String>,
     service_order: Vec<String>,
@@ -1206,8 +1223,67 @@ async fn restore_macos_network_snapshot(snapshot: &MacosNetworkSnapshot) -> Vec<
     restored
 }
 
+/// Create (or recreate) a macOS network service for the given interface. One
+/// attempt; returns `Ok(())` on success. Extracted so the deep reset and the
+/// restore-registry drain share exactly one create path.
 #[cfg(target_os = "macos")]
-async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Vec<String>, String> {
+async fn create_macos_service(service: &str, iface: &str) -> Result<(), String> {
+    let mut cmd = tokio::process::Command::new("networksetup");
+    cmd.args(["-createnetworkservice", service, iface]);
+    match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                Err(format!("Failed to recreate service: {}", service))
+            } else {
+                Err(format!(
+                    "Failed to recreate service {}: {}",
+                    service, stderr
+                ))
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Recreate a removed macOS network service and restore its captured settings.
+/// Used by the restore-registry drain when a deep reset is interrupted (or its
+/// own recreate failed). Retries the create once, then best-effort restores the
+/// snapshot. Returns `Err` only when the service still cannot be recreated —
+/// that is the case where the Mac is genuinely left without the service and the
+/// user needs manual recovery.
+#[cfg(target_os = "macos")]
+pub(crate) async fn recreate_and_restore_macos_service(
+    iface: &str,
+    service: &str,
+    snapshot: &MacosNetworkSnapshot,
+) -> Result<(), String> {
+    // Retry create once — leaving the Mac with no network service is the worst
+    // possible outcome.
+    if let Err(first) = create_macos_service(service, iface).await {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Err(retry) = create_macos_service(service, iface).await {
+            return Err(format!(
+                "could not recreate network service \"{}\" for {} ({}; retry: {}). \
+                 Open System Settings ▸ Network and re-add the service manually",
+                service, iface, first, retry
+            ));
+        }
+    }
+    // Service exists again — best-effort restore of its previous settings.
+    let _ = restore_macos_network_snapshot(snapshot).await;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn stage3_macos(
+    config: &Config,
+    saved_ssid: &Option<String>,
+    restore: &super::session::RestoreRegistry,
+) -> Result<Vec<String>, String> {
+    use super::session::RestoreOp;
+
     let mut completed = Vec::new();
 
     // Detect default interface and its network service name
@@ -1220,6 +1296,17 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
         .ok_or_else(|| format!("Could not find network service for {}", iface))?;
     let snapshot = capture_macos_network_snapshot(&service_name).await;
 
+    // Register the recreate-and-restore op BEFORE removing the service, so any
+    // interrupt between remove and recreate (or a failed recreate) leaves the
+    // drain holding a job that puts the service back.
+    let token = restore
+        .register(RestoreOp::RecreateMacosService {
+            iface: iface.clone(),
+            service: service_name.clone(),
+            snapshot: snapshot.clone(),
+        })
+        .await;
+
     // 1. Remove network service
     {
         let spinner = create_spinner(&format!("Removing service \"{}\"...", service_name));
@@ -1231,31 +1318,39 @@ async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
             Ok(output) if output.status.success() => {
                 completed.push(format!("Removed service: {}", service_name));
             }
-            _ => return Err(format!("Failed to remove service: {}", service_name)),
-        }
-    }
-
-    // 2. Recreate
-    {
-        let spinner = create_spinner(&format!("Recreating service \"{}\"...", service_name));
-        let mut cmd = tokio::process::Command::new("networksetup");
-        cmd.args(["-createnetworkservice", &service_name, &iface]);
-        let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
-        spinner.finish_and_clear();
-        match r {
-            Ok(output) if output.status.success() => {
-                completed.push(format!("Recreated service: {}", service_name));
+            _ => {
+                // The remove never succeeded — the service is still present, so
+                // there's nothing to restore. Resolve the op and bail.
+                restore.mark_resolved(token).await;
+                return Err(format!("Failed to remove service: {}", service_name));
             }
-            _ => return Err(format!("Failed to recreate service: {}", service_name)),
         }
     }
 
-    // 3. Restore the service's previous settings. This avoids converting a
+    // 2 + 3. Recreate the service and restore its previous settings via the
+    // shared helper (retries create once). This avoids converting a
     // DHCP/default-DNS service into a hard-coded public-DNS service.
     {
-        let restored = restore_macos_network_snapshot(&snapshot).await;
-        if !restored.is_empty() {
-            completed.push("Restored previous macOS network service settings".to_string());
+        let spinner = create_spinner(&format!("Recreating service \"{}\"...", service_name));
+        let result = recreate_and_restore_macos_service(&iface, &service_name, &snapshot).await;
+        spinner.finish_and_clear();
+        match result {
+            Ok(()) => {
+                // Service is back and settings restored — resolve so the drain
+                // won't repeat the work.
+                restore.mark_resolved(token).await;
+                completed.push(format!("Recreated service: {}", service_name));
+                completed.push("Restored previous macOS network service settings".to_string());
+            }
+            Err(e) => {
+                // Leave the op REGISTERED so the terminal drain retries it, and
+                // return Err with manual-recovery text.
+                return Err(format!(
+                    "Network service \"{}\" was removed but could not be recreated: {}. \
+                     nd300 will try again as it exits.",
+                    service_name, e
+                ));
+            }
         }
     }
 
@@ -1487,14 +1582,38 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
             None
         };
 
-        // Delete active connection profile
+        // Delete active connection profile. Check the result before claiming
+        // success — if the delete failed, the old (possibly broken) profile is
+        // still present, so recreating on top of it would be misleading.
         if let Some(profile) = detect_nm_profile(&iface).await {
             let spinner = create_spinner(&format!("Deleting profile \"{}\"...", profile));
             let mut cmd = tokio::process::Command::new("nmcli");
             cmd.args(["connection", "delete", &profile]);
-            let _ = run_cmd(cmd, TIMEOUT_MEDIUM).await;
+            let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
             spinner.finish_and_clear();
-            completed.push(format!("Deleted profile: {}", profile));
+            match r {
+                Ok(output) if output.status.success() => {
+                    completed.push(format!("Deleted profile: {}", profile));
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    return Err(format!(
+                        "Failed to delete connection profile \"{}\"{}",
+                        profile,
+                        if stderr.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {}", stderr)
+                        }
+                    ));
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "Failed to delete connection profile \"{}\": {}",
+                        profile, e
+                    ));
+                }
+            }
         }
 
         // Recreate

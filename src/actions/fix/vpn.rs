@@ -7,11 +7,16 @@ use super::{print_step_fail, print_step_ok, warn_icon};
 use crate::actions::{is_interactive, prompt_yes_no};
 
 /// Info about a VPN that was disabled during the fix, for potential re-enable.
+///
+/// `Clone` so a copy can be stowed in the restore registry (wrapped in `Arc`)
+/// while the original list is still passed to [`offer_reenable`].
+#[derive(Debug, Clone)]
 pub struct DisabledVpn {
     pub name: String,
     pub method: DisableMethod,
 }
 
+#[derive(Debug, Clone)]
 pub enum DisableMethod {
     VendorCli(String, Vec<String>), // (binary, args)
     Netsh(String),                  // adapter name (Windows)
@@ -358,7 +363,7 @@ pub async fn offer_reenable(disabled: &[DisabledVpn], config: &Config) {
     }
 }
 
-async fn reenable_vpn(vpn: &DisabledVpn) -> bool {
+pub(super) async fn reenable_vpn(vpn: &DisabledVpn) -> bool {
     match &vpn.method {
         DisableMethod::VendorCli(bin, reconnect_args) => {
             let mut cmd = tokio::process::Command::new(bin);
@@ -406,7 +411,7 @@ async fn reenable_vpn(vpn: &DisabledVpn) -> bool {
     }
 }
 
-async fn redisable_vpn(vpn: &DisabledVpn) -> bool {
+pub(super) async fn redisable_vpn(vpn: &DisabledVpn) -> bool {
     match &vpn.method {
         DisableMethod::VendorCli(bin, reconnect_args) => {
             let disconnect_args: Vec<String> = reconnect_args

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.9] - 2026-06-07
+
+### Added
+- **`nd300 fix` is now safe to cancel, time out, or crash mid-repair.** A new restore registry (`actions/fix/session.rs`) records the inverse of every destructive change before it is applied, and `loop_runner::run_and_finalize` now races the triage loop against `Ctrl-C` (`tokio::signal::ctrl_c`) and wraps it in `catch_unwind`. On *every* terminal path — normal completion, user-declined, wall-clock cap, Ctrl-C, or a caught panic — the registry is drained (bounded by a 90s outer cap plus a 30s per-op cap) so any half-applied network state is rolled back. Ctrl-C now exits 130 via the new `FinalOutcome::Interrupted`; a caught panic restores state first, then re-raises as exit 101. The registry uses a non-poisoning `tokio::sync::Mutex` so a panic mid-loop never wedges cleanup.
+
+### Fixed
+- **H2 — Consumer VPNs are now re-enabled instead of being left off silently.** `apply_disable_consumer_vpns` (`actions/fix/action.rs`) registers a `ReEnableVpn` restore op per disabled VPN before reporting success and wires up the previously-dead `vpn::offer_reenable` (now reachable). If the run is interrupted before the offer, the drain reconnects each still-registered VPN. Enterprise VPNs are still never auto-disabled, and JSON/non-interactive runs still skip VPN disabling entirely.
+- **H3 — A macOS deep reset can no longer strand the Mac with no network service.** `stage3_macos` (`actions/fix/stages.rs`) registers a `RecreateMacosService` restore op (capturing iface/service/snapshot) before `-removenetworkservice`. Recreate now goes through a shared `recreate_and_restore_macos_service` helper that retries the create once and then restores the captured DNS/proxy/service-order/IPv4/IPv6 snapshot. If recreate still fails, the op is left registered (so the terminal drain retries it) and a manual-recovery message is returned, instead of returning early and skipping the snapshot restore.
+- **H4 — An interface bounce no longer leaves the adapter disabled if re-enable fails.** `apply_bounce_interface` registers a `ReEnableInterface` op before disabling and re-enables with a retry-once (porting the legacy Stage 2 2s-wait retry). If both attempts fail, the op stays registered for the drain and the action returns a loud, actionable message including the exact platform command to bring the adapter back up.
+- **M3 — Linux `stage3_linux` no longer claims "Deleted profile" when the delete failed.** The result of `nmcli connection delete` is now checked; on failure the function returns an error with the `nmcli` stderr instead of unconditionally recreating on top of the still-present profile.
+
+### Changed (be aware if you script against the tool)
+- `nd300 fix --json` output gains two fields: `interrupted` (bool) and `manual_recovery_needed` (array of human-readable strings for anything the drain could not restore). A new `outcome` value `"interrupted"` is emitted on Ctrl-C / caught panic, with `exit_code` 130.
+- The fix report (`~/Downloads/nd300-fix-report-*.md`) gains a prominent "⚠️ Manual recovery needed" section listing any restore the drain could not complete.
+
+### Behind the scenes
+- The pre-existing `diagnostics/util.rs` unit test `nanosecond_resolve_times_out_to_none` (added in 3.0.8) is timing-dependent and can flake on fast machines when the resolver answers within the 1-nanosecond budget; it was left unchanged here to keep this release scoped to the fix flow, and verified to be a pre-existing flake on the prior release rather than a Phase 2 regression.
+
 ## [3.0.8] - 2026-06-07
 
 ### Fixed
