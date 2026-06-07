@@ -14,38 +14,72 @@ pub struct InterfaceInfo {
     pub tx_bytes: u64,
 }
 
+/// Owned, Send-safe per-interface fields extracted from `sysinfo::Networks`
+/// inside the blocking closure, so the (blocking) enumeration runs off the
+/// async runtime while the data crosses back to the async loop below.
+struct RawInterface {
+    name: String,
+    mac_bytes: [u8; 6],
+    ip_addrs: Vec<String>,
+    rx_bytes: u64,
+    tx_bytes: u64,
+}
+
 pub async fn check() -> (DiagnosticResult, Vec<InterfaceInfo>) {
-    let networks = Networks::new_with_refreshed_list();
+    // `Networks::new_with_refreshed_list` is a synchronous, blocking system
+    // enumeration — the heaviest sync call in the core diagnostics. Run it off
+    // the async runtime and return owned data. A JoinError falls back to an
+    // empty list (same as no interfaces).
+    let raw_interfaces: Vec<RawInterface> = tokio::task::spawn_blocking(|| {
+        let networks = Networks::new_with_refreshed_list();
+        networks
+            .iter()
+            .map(|(name, data)| RawInterface {
+                name: name.clone(),
+                mac_bytes: data.mac_address().0,
+                ip_addrs: data
+                    .ip_networks()
+                    .iter()
+                    .map(|n| n.addr.to_string())
+                    .collect(),
+                rx_bytes: data.total_received(),
+                tx_bytes: data.total_transmitted(),
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+
     let mut details = Vec::new();
     let mut active_count = 0;
     let mut wifi_info = String::new();
 
-    for (name, data) in &networks {
-        let mac = format_mac(data.mac_address().0);
-        let ip_addrs: Vec<String> = data
-            .ip_networks()
-            .iter()
-            .map(|n| n.addr.to_string())
-            .collect();
-        let is_up = !ip_addrs.is_empty() && data.total_received() > 0;
+    for raw in raw_interfaces {
+        let mac = format_mac(raw.mac_bytes);
+        let ip_addrs = raw.ip_addrs;
+        // Preserve exact original semantics: up iff it has at least one IP and
+        // has received bytes.
+        let is_up = !ip_addrs.is_empty() && raw.rx_bytes > 0;
 
-        let iface_type = detect_interface_type(name);
+        let iface_type = detect_interface_type(&raw.name);
 
         if is_up {
             active_count += 1;
             if iface_type == "Wi-Fi" && wifi_info.is_empty() {
+                // Kept OUTSIDE the blocking closure: this is its own async,
+                // timeout-wrapped subprocess call with platform cfg branches.
                 wifi_info = get_wifi_summary().await;
             }
         }
 
         details.push(InterfaceInfo {
-            name: name.clone(),
+            name: raw.name,
             mac,
             ip_addresses: ip_addrs,
             is_up,
             interface_type: iface_type,
-            rx_bytes: data.total_received(),
-            tx_bytes: data.total_transmitted(),
+            rx_bytes: raw.rx_bytes,
+            tx_bytes: raw.tx_bytes,
         });
     }
 

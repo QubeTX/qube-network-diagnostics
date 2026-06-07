@@ -334,12 +334,17 @@ where
     let mut total_received: u64 = 0;
     let start = Instant::now();
     let deadline = tokio::time::Instant::from_std(start + duration);
+    // Pinned absolute safety cap computed ONCE: a single fixed instant the
+    // select! fires at no matter how many loop iterations run. (The previous
+    // `sleep(SINGLE_TEST_TIMEOUT)` re-armed a fresh 30s timer every iteration,
+    // so it could never actually fire and was dead.)
+    let hard_cap = tokio::time::Instant::from_std(start + SINGLE_TEST_TIMEOUT);
 
     loop {
         let msg = tokio::select! {
             msg = read.next() => msg,
             _ = tokio::time::sleep_until(deadline) => break,
-            _ = tokio::time::sleep(SINGLE_TEST_TIMEOUT) => break,
+            _ = tokio::time::sleep_until(hard_cap) => break,
         };
 
         match msg {
@@ -428,6 +433,10 @@ where
     let mut upload_data = vec![0u8; frame_size];
     let start = Instant::now();
     let send_deadline = start + duration;
+    // Pinned absolute safety cap computed ONCE: bounds the whole upload loop so
+    // a `write.send` that wedges (e.g. a half-open socket that never flushes)
+    // can't hang past SINGLE_TEST_TIMEOUT. Mirrors the download loop's cap.
+    let hard_cap = tokio::time::Instant::from_std(start + SINGLE_TEST_TIMEOUT);
     let mut frame_count: u64 = 0;
 
     let mut min_rtts: Vec<f64> = Vec::new();
@@ -444,6 +453,9 @@ where
         }
 
         tokio::select! {
+            // Absolute safety cap: fires once at a fixed instant regardless of
+            // how the send/read arms behave, so a stuck send can't hang here.
+            _ = tokio::time::sleep_until(hard_cap) => break,
             // Try to send a frame
             send_result = write.send(Message::Binary(upload_data.clone())) => {
                 match send_result {

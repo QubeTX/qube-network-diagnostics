@@ -123,13 +123,25 @@ async fn fetch_ipconfig() -> Option<IpconfigCache> {
 // ── Sysinfo Networks ──────────────────────────────────────────────────────
 
 async fn fetch_sysinfo_networks() -> Option<sysinfo::Networks> {
-    Some(sysinfo::Networks::new_with_refreshed_list())
+    // Blocking system enumeration — run it off the async runtime. `Networks`
+    // is Send, so the object itself crosses back (the cache contract needs the
+    // whole object). A JoinError falls back to None, identical to a fetch
+    // failure, so consumers use their own subprocess fallback.
+    tokio::task::spawn_blocking(|| Some(sysinfo::Networks::new_with_refreshed_list()))
+        .await
+        .unwrap_or(None)
 }
 
 // ── Gateway IP ─────────────────────────────────────────────────────────────
 
 async fn fetch_gateway() -> Option<String> {
-    default_net::get_default_gateway()
-        .ok()
-        .map(|gw| gw.ip_addr.to_string())
+    // Blocking syscall — run it off the async runtime. A JoinError falls back
+    // to None, identical to the Err path.
+    tokio::task::spawn_blocking(|| {
+        default_net::get_default_gateway()
+            .ok()
+            .map(|gw| gw.ip_addr.to_string())
+    })
+    .await
+    .unwrap_or(None)
 }

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.11] - 2026-06-07
+
+### Fixed
+- **M5 — a completely failed speed test now reports failure (exit 2) instead of a misleading "too slow" warning.** When every speed-test provider errors out (or returns zero throughput), `diagnostics/speed.rs` previously fell through `determine_speed_status` to the slow-link branch, producing a `0.00 Mbps down / up` aggregate, a "Download too slow for most activities" warning, and exit 1. `determine_speed_status` now first checks whether *any* provider succeeded (no `error`) **and** reported positive throughput in either direction; if not, it returns the new `SpeedStatus::Failed`, which `check()` maps to a `Fail`-status diagnostic with an honest standalone summary ("Speed test failed — no provider returned a result", with no fabricated 0.00 Mbps line). A genuinely slow-but-working link (e.g. 0.3 Mbps from a successful provider) is unaffected — the positive-throughput guard keeps it `Poor` → Warn.
+- **L1 — the NDT7 speed test's per-direction safety timeout now actually fires.** The NDT7 download loop (`speedtest/ndt7.rs`) re-armed a fresh 30s `tokio::time::sleep(SINGLE_TEST_TIMEOUT)` on every `tokio::select!` iteration, so the safety cap could never elapse and was dead code. It is now a single pinned absolute deadline (`Instant::from_std(start + SINGLE_TEST_TIMEOUT)`) computed once before the loop and driven with `sleep_until`, mirroring the existing per-session `deadline` arm. The upload loop, which previously had **no** safety cap at all, gets a symmetric pinned cap so a wedged `write.send` is now bounded.
+
+### Changed (be aware if you script against the tool)
+- The exit code for a fully-failed speed test (every provider errored / zero throughput) is now **2** (Fail) instead of **1** (Warn), and the `Speed` diagnostic's summary is `Speed test failed — no provider returned a result` rather than a `0.00 Mbps … too slow` line. A slow-but-working connection is unchanged (still Warn / exit 1).
+
+### Behind the scenes
+- **L5 — system-info lookups in the core diagnostics no longer briefly block the async runtime.** The synchronous, potentially-blocking `sysinfo::Networks::new_with_refreshed_list()` and `default_net::get_default_gateway()` calls in `diagnostics/gateway.rs`, `diagnostics/public_ip.rs`, `diagnostics/interfaces.rs`, and `diagnostics/shared_cache.rs` are now wrapped in `tokio::task::spawn_blocking`, returning owned `Send` data with a `JoinError` fallback to the pre-existing empty/`None` result (never an `unwrap` panic). `interfaces.rs` extracts owned per-interface fields (name, MAC bytes, IPs, rx/tx) inside the blocking closure and keeps its async, timeout-wrapped `get_wifi_summary()` call outside it; the `is_up` semantics (`has an IP && rx > 0`) are byte-for-byte preserved. Mirrors the existing `spawn_blocking` pattern in `actions/fix/adapters.rs` and `diagnostics/vpn.rs`.
+
+### Known limitations
+- **L2 (deferred) — localized (non-English) Windows.** On non-English Windows display languages, some deep-diagnostic modules that parse localized `netsh` / `ipconfig` / `netstat` output may return empty or partial results, because they match English labels and decode console output as UTF-8. This is tracked for a future locale-invariant parsing pass and is not addressed in this release.
+
 ## [3.0.10] - 2026-06-07
 
 ### Fixed

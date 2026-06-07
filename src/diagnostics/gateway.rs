@@ -12,7 +12,7 @@ pub struct GatewayInfo {
 }
 
 pub async fn check() -> (DiagnosticResult, Option<GatewayInfo>) {
-    let gateway_ip = match get_default_gateway() {
+    let gateway_ip = match get_default_gateway().await {
         Some(ip) => ip,
         None => {
             return (
@@ -44,11 +44,18 @@ pub async fn check() -> (DiagnosticResult, Option<GatewayInfo>) {
     (result, Some(info))
 }
 
-fn get_default_gateway() -> Option<String> {
-    match default_net::get_default_gateway() {
-        Ok(gw) => Some(gw.ip_addr.to_string()),
-        Err(_) => None,
-    }
+async fn get_default_gateway() -> Option<String> {
+    // `default_net::get_default_gateway` is a synchronous, potentially-blocking
+    // syscall; run it off the async runtime so it can't stall the executor.
+    // A JoinError (panic in the blocking task) falls back to None, identical
+    // to the pre-existing Err path.
+    tokio::task::spawn_blocking(|| {
+        default_net::get_default_gateway()
+            .ok()
+            .map(|gw| gw.ip_addr.to_string())
+    })
+    .await
+    .unwrap_or(None)
 }
 
 async fn ping_host(host: &str) -> (bool, Option<f64>) {

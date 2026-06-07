@@ -41,6 +41,13 @@ pub async fn check(config: &Config) -> (DiagnosticResult, Option<SpeedTestResult
         SpeedStatus::Poor(note) => {
             DiagnosticResult::warn("Speed", format!("{}\n{}", summary, note))
         }
+        // No provider returned a usable measurement — report an honest failure
+        // (exit 2) rather than a misleading "too slow" warning built on a
+        // 0.00 Mbps aggregate. The standalone summary intentionally omits the
+        // "0.00 Mbps down / up" line since nothing was actually measured.
+        SpeedStatus::Failed => {
+            DiagnosticResult::fail("Speed", "Speed test failed — no provider returned a result")
+        }
     };
 
     (diag, Some(result))
@@ -108,9 +115,25 @@ enum SpeedStatus {
     Good,
     Warning(String),
     Poor(String),
+    /// Every provider errored (or returned zero throughput) — nothing was
+    /// actually measured. Distinct from a genuinely slow-but-working link.
+    Failed,
 }
 
 fn determine_speed_status(result: &SpeedTestResult) -> SpeedStatus {
+    // A run counts as "measured" only if at least one provider succeeded
+    // (no error) AND reported positive throughput in either direction. The
+    // `> 0.0` guard is critical: a real-but-slow link (e.g. 0.3 Mbps) has a
+    // successful provider with positive throughput, so it stays Poor → Warn.
+    // Only an all-errored / all-zero run is Failed → Fail (exit 2).
+    let measured = result.providers.iter().any(|p| {
+        p.error.is_none()
+            && (p.download_mbps.unwrap_or(0.0) > 0.0 || p.upload_mbps.unwrap_or(0.0) > 0.0)
+    });
+    if !measured {
+        return SpeedStatus::Failed;
+    }
+
     let download = result.download_mbps;
     let upload = result.upload_mbps;
 
@@ -124,5 +147,123 @@ fn determine_speed_status(result: &SpeedTestResult) -> SpeedStatus {
         SpeedStatus::Warning("Upload may be slow for video calls".to_string())
     } else {
         SpeedStatus::Good
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::DiagnosticStatus;
+    use crate::speedtest::ProviderResult;
+
+    /// Build a ProviderResult with the given outcome. `error` Some marks a
+    /// failed provider; `dl`/`ul` are Option throughput values.
+    fn provider(error: Option<&str>, dl: Option<f64>, ul: Option<f64>) -> ProviderResult {
+        ProviderResult {
+            provider: "Test".to_string(),
+            server: "test-server".to_string(),
+            location: None,
+            ping_ms: None,
+            jitter_ms: None,
+            download_mbps: dl,
+            upload_mbps: ul,
+            download_bytes: 0,
+            upload_bytes: 0,
+            download_duration_s: 0.0,
+            upload_duration_s: 0.0,
+            packet_loss_pct: None,
+            error: error.map(|e| e.to_string()),
+            bandwidth_samples: None,
+        }
+    }
+
+    fn result(
+        providers: Vec<ProviderResult>,
+        download_mbps: f64,
+        upload_mbps: f64,
+    ) -> SpeedTestResult {
+        SpeedTestResult {
+            ping_ms: None,
+            jitter_ms: None,
+            download_mbps,
+            upload_mbps,
+            packet_loss_pct: None,
+            providers,
+            duration_s: 0.0,
+            stability: None,
+            provider_divergence: None,
+        }
+    }
+
+    #[test]
+    fn all_errored_providers_report_failed() {
+        // Every provider errored; throughput None and aggregate 0.0/0.0.
+        let res = result(
+            vec![
+                provider(Some("connect failed"), None, None),
+                provider(Some("discovery failed"), None, None),
+            ],
+            0.0,
+            0.0,
+        );
+        assert!(matches!(determine_speed_status(&res), SpeedStatus::Failed));
+    }
+
+    #[test]
+    fn all_zero_throughput_reports_failed() {
+        // Providers "succeeded" (no error) but reported zero throughput —
+        // still nothing measured, so Failed.
+        let res = result(vec![provider(None, Some(0.0), Some(0.0))], 0.0, 0.0);
+        assert!(matches!(determine_speed_status(&res), SpeedStatus::Failed));
+    }
+
+    #[test]
+    fn slow_but_working_link_is_poor_not_failed() {
+        // A real link that's genuinely slow: a successful provider with a
+        // small positive download. Must be Poor (→ Warn), NOT Failed. This
+        // guards against the false-Fail on a working-but-slow connection.
+        let res = result(vec![provider(None, Some(0.3), None)], 0.3, 0.0);
+        match determine_speed_status(&res) {
+            SpeedStatus::Poor(_) => {}
+            other => panic!(
+                "expected Poor for a slow-but-working link, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn check_maps_failed_to_fail_status() {
+        // Verify the enum → DiagnosticResult mapping: an all-errored run
+        // becomes a Fail-status diagnostic (which aggregates to exit 2),
+        // with an honest standalone summary (no "0.00 Mbps" line).
+        let res = result(vec![provider(Some("connect failed"), None, None)], 0.0, 0.0);
+        let status = determine_speed_status(&res);
+        assert!(matches!(status, SpeedStatus::Failed));
+
+        // Mirror the mapping in `check()` for the Failed branch.
+        let diag = match status {
+            SpeedStatus::Failed => {
+                DiagnosticResult::fail("Speed", "Speed test failed — no provider returned a result")
+            }
+            _ => unreachable!("constructed an all-errored result"),
+        };
+        assert_eq!(diag.status, DiagnosticStatus::Fail);
+        assert!(!diag.summary.contains("0.00"));
+    }
+
+    #[test]
+    fn good_link_with_one_failed_provider_is_not_failed() {
+        // Mixed: one provider failed, one succeeded with good throughput.
+        // The successful provider means the run was measured → not Failed.
+        let res = result(
+            vec![
+                provider(Some("connect failed"), None, None),
+                provider(None, Some(120.0), Some(40.0)),
+            ],
+            120.0,
+            40.0,
+        );
+        assert!(matches!(determine_speed_status(&res), SpeedStatus::Good));
     }
 }
