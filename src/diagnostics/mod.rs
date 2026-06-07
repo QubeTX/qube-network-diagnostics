@@ -24,6 +24,7 @@ pub mod shared_cache;
 pub mod speed;
 pub mod tls_inspection;
 pub mod traffic_counters;
+pub mod util;
 pub mod vpn;
 
 use serde::Serialize;

@@ -34,11 +34,9 @@ pub async fn collect() -> Option<FirewallInfo> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<FirewallInfo> {
-    let output = tokio::process::Command::new("netsh")
-        .args(["advfirewall", "show", "allprofiles", "state"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netsh");
+    cmd.args(["advfirewall", "show", "allprofiles", "state"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut profiles = Vec::new();
@@ -68,11 +66,9 @@ async fn collect_windows() -> Option<FirewallInfo> {
     }
 
     // Get policy info
-    if let Ok(output) = tokio::process::Command::new("netsh")
-        .args(["advfirewall", "show", "allprofiles"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("netsh");
+    cmd.args(["advfirewall", "show", "allprofiles"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         let mut idx = 0;
 
@@ -114,22 +110,17 @@ async fn collect_windows() -> Option<FirewallInfo> {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<FirewallInfo> {
-    let output = tokio::process::Command::new("/usr/libexec/ApplicationFirewall/socketfilterfw")
-        .args(["--getglobalstate"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("/usr/libexec/ApplicationFirewall/socketfilterfw");
+    cmd.args(["--getglobalstate"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let enabled = text.contains("enabled");
 
     let mut stealth = false;
-    if let Ok(output) =
-        tokio::process::Command::new("/usr/libexec/ApplicationFirewall/socketfilterfw")
-            .args(["--getstealthmode"])
-            .output()
-            .await
-    {
+    let mut cmd = tokio::process::Command::new("/usr/libexec/ApplicationFirewall/socketfilterfw");
+    cmd.args(["--getstealthmode"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         stealth = text.contains("enabled");
     }
@@ -159,11 +150,9 @@ async fn collect_macos() -> Option<FirewallInfo> {
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<FirewallInfo> {
     // Try ufw first
-    if let Ok(output) = tokio::process::Command::new("ufw")
-        .args(["status"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("ufw");
+    cmd.args(["status"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         if text.contains("Status:") {
             let enabled = text.contains("active");
@@ -185,11 +174,9 @@ async fn collect_linux() -> Option<FirewallInfo> {
     }
 
     // Try iptables
-    if let Ok(output) = tokio::process::Command::new("iptables")
-        .args(["-L", "-n", "--line-numbers"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("iptables");
+    cmd.args(["-L", "-n", "--line-numbers"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         let rule_count = text
             .lines()

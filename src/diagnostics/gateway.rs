@@ -56,19 +56,21 @@ async fn ping_host(host: &str) -> (bool, Option<f64>) {
     let start = Instant::now();
 
     #[cfg(windows)]
-    let result = tokio::process::Command::new("ping")
-        .args(["-n", "1", "-w", "2000", host])
-        .output()
-        .await;
+    let result = {
+        let mut cmd = tokio::process::Command::new("ping");
+        cmd.args(["-n", "1", "-w", "2000", host]);
+        super::util::run_with_timeout(cmd, super::util::SLOW).await
+    };
 
     #[cfg(unix)]
-    let result = tokio::process::Command::new("ping")
-        .args(["-c", "1", "-W", "2", host])
-        .output()
-        .await;
+    let result = {
+        let mut cmd = tokio::process::Command::new("ping");
+        cmd.args(["-c", "1", "-W", "2", host]);
+        super::util::run_with_timeout(cmd, super::util::SLOW).await
+    };
 
     match result {
-        Ok(output) if output.status.success() => {
+        Some(output) if output.status.success() => {
             let elapsed = start.elapsed();
             let text = String::from_utf8_lossy(&output.stdout);
 

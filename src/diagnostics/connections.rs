@@ -88,11 +88,9 @@ fn parse_windows_connections(
 async fn collect_windows() -> Option<Vec<ConnectionEntry>> {
     use sysinfo::System;
 
-    let output = tokio::process::Command::new("netstat")
-        .args(["-ano"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-ano"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -130,11 +128,9 @@ fn parse_macos_connections(lines: &[String]) -> Vec<ConnectionEntry> {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<Vec<ConnectionEntry>> {
-    let output = tokio::process::Command::new("netstat")
-        .args(["-anp", "tcp"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-anp", "tcp"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -143,11 +139,9 @@ async fn collect_macos() -> Option<Vec<ConnectionEntry>> {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<Vec<ConnectionEntry>> {
-    let output = tokio::process::Command::new("ss")
-        .args(["-tupn"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("ss");
+    cmd.args(["-tupn"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut entries = Vec::new();

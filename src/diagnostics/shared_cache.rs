@@ -47,11 +47,9 @@ impl SharedCache {
 async fn fetch_netstat() -> Option<NetstatCache> {
     use sysinfo::System;
 
-    let output = tokio::process::Command::new("netstat")
-        .args(["-ano"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-ano"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -74,11 +72,9 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 
 #[cfg(target_os = "macos")]
 async fn fetch_netstat() -> Option<NetstatCache> {
-    let output = tokio::process::Command::new("netstat")
-        .args(["-anp", "tcp"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-anp", "tcp"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -93,11 +89,9 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 async fn fetch_netstat() -> Option<NetstatCache> {
     // Linux modules use `ss` and `netstat -an`, not `netstat -ano`.
     // We still fetch `netstat -an` for connection_states.
-    let output = tokio::process::Command::new("netstat")
-        .args(["-an"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-an"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -112,11 +106,9 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 
 #[cfg(windows)]
 async fn fetch_ipconfig() -> Option<IpconfigCache> {
-    let output = tokio::process::Command::new("ipconfig")
-        .args(["/all"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("ipconfig");
+    cmd.args(["/all"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let raw = String::from_utf8_lossy(&output.stdout).to_string();
     Some(IpconfigCache { raw })

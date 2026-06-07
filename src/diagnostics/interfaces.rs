@@ -111,12 +111,10 @@ fn format_mac(bytes: [u8; 6]) -> String {
 async fn get_wifi_summary() -> String {
     #[cfg(windows)]
     {
-        match tokio::process::Command::new("netsh")
-            .args(["wlan", "show", "interfaces"])
-            .output()
-            .await
-        {
-            Ok(output) => {
+        let mut cmd = tokio::process::Command::new("netsh");
+        cmd.args(["wlan", "show", "interfaces"]);
+        match super::util::run_with_timeout(cmd, super::util::QUICK).await {
+            Some(output) => {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let mut band = String::new();
                 let mut ssid = String::new();
@@ -175,33 +173,46 @@ async fn get_wifi_summary() -> String {
                     "Wi-Fi".to_string()
                 }
             }
-            Err(_) => "Wi-Fi".to_string(),
+            None => "Wi-Fi".to_string(),
         }
     }
 
     #[cfg(target_os = "macos")]
     {
-        match tokio::process::Command::new("/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport")
-            .args(["-I"])
-            .output()
-            .await
-        {
-            Ok(output) => {
+        let mut cmd = tokio::process::Command::new("/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport");
+        cmd.args(["-I"]);
+        match super::util::run_with_timeout(cmd, super::util::QUICK).await {
+            Some(output) => {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let mut ssid = String::new();
                 let mut channel = 0u32;
                 for line in text.lines() {
                     let line = line.trim();
                     if line.starts_with("SSID:") {
-                        ssid = line.split(':').nth(1).map(|s| s.trim().to_string()).unwrap_or_default();
+                        ssid = line
+                            .split(':')
+                            .nth(1)
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_default();
                     }
                     if line.starts_with("channel:") {
                         if let Some(val) = line.split(':').nth(1) {
-                            channel = val.trim().split(',').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                            channel = val
+                                .trim()
+                                .split(',')
+                                .next()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0);
                         }
                     }
                 }
-                let band = if channel > 14 && channel <= 177 { "5 GHz" } else if channel <= 14 && channel > 0 { "2.4 GHz" } else { "" };
+                let band = if channel > 14 && channel <= 177 {
+                    "5 GHz"
+                } else if channel <= 14 && channel > 0 {
+                    "2.4 GHz"
+                } else {
+                    ""
+                };
                 if !ssid.is_empty() {
                     if !band.is_empty() {
                         format!("Wi-Fi ({}) - {}", band, ssid)
@@ -212,26 +223,22 @@ async fn get_wifi_summary() -> String {
                     "Wi-Fi".to_string()
                 }
             }
-            Err(_) => "Wi-Fi".to_string(),
+            None => "Wi-Fi".to_string(),
         }
     }
 
     #[cfg(target_os = "linux")]
     {
-        match tokio::process::Command::new("iwgetid")
-            .args(["-r"])
-            .output()
-            .await
-        {
-            Ok(output) => {
+        let mut cmd = tokio::process::Command::new("iwgetid");
+        cmd.args(["-r"]);
+        match super::util::run_with_timeout(cmd, super::util::QUICK).await {
+            Some(output) => {
                 let ssid = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 // Try to get frequency
-                let band = match tokio::process::Command::new("iwgetid")
-                    .args(["--freq", "-r"])
-                    .output()
-                    .await
-                {
-                    Ok(freq_out) => {
+                let mut freq_cmd = tokio::process::Command::new("iwgetid");
+                freq_cmd.args(["--freq", "-r"]);
+                let band = match super::util::run_with_timeout(freq_cmd, super::util::QUICK).await {
+                    Some(freq_out) => {
                         let freq_str = String::from_utf8_lossy(&freq_out.stdout).trim().to_string();
                         if let Ok(freq) = freq_str.parse::<f64>() {
                             if freq > 5.0 {
@@ -245,7 +252,7 @@ async fn get_wifi_summary() -> String {
                             String::new()
                         }
                     }
-                    Err(_) => String::new(),
+                    None => String::new(),
                 };
 
                 if !ssid.is_empty() {
@@ -258,7 +265,7 @@ async fn get_wifi_summary() -> String {
                     "Wi-Fi".to_string()
                 }
             }
-            Err(_) => "Wi-Fi".to_string(),
+            None => "Wi-Fi".to_string(),
         }
     }
 }

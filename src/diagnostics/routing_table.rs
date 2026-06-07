@@ -29,11 +29,9 @@ pub async fn collect() -> Option<Vec<RouteEntry>> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<Vec<RouteEntry>> {
-    let output = tokio::process::Command::new("route")
-        .args(["print", "-4"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("route");
+    cmd.args(["print", "-4"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut entries = Vec::new();
@@ -72,11 +70,9 @@ async fn collect_windows() -> Option<Vec<RouteEntry>> {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<Vec<RouteEntry>> {
-    let output = tokio::process::Command::new("netstat")
-        .args(["-rn", "-f", "inet"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-rn", "-f", "inet"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut entries = Vec::new();
@@ -106,11 +102,9 @@ async fn collect_macos() -> Option<Vec<RouteEntry>> {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<Vec<RouteEntry>> {
-    let output = tokio::process::Command::new("ip")
-        .args(["route", "show"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("ip");
+    cmd.args(["route", "show"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut entries = Vec::new();

@@ -92,11 +92,9 @@ async fn get_dns_servers() -> Vec<String> {
 async fn get_dns_servers_windows() -> Vec<String> {
     let mut servers = Vec::new();
 
-    if let Ok(output) = tokio::process::Command::new("netsh")
-        .args(["interface", "ip", "show", "dns"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("netsh");
+    cmd.args(["interface", "ip", "show", "dns"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             let line = line.trim();
@@ -111,11 +109,9 @@ async fn get_dns_servers_windows() -> Vec<String> {
 
     if servers.is_empty() {
         // Fallback: try ipconfig
-        if let Ok(output) = tokio::process::Command::new("ipconfig")
-            .args(["/all"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("ipconfig");
+        cmd.args(["/all"]);
+        if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
             let mut in_dns_section = false;
             for line in text.lines() {
@@ -145,11 +141,9 @@ async fn get_dns_servers_windows() -> Vec<String> {
 async fn get_dns_servers_macos() -> Vec<String> {
     let mut servers = Vec::new();
 
-    if let Ok(output) = tokio::process::Command::new("scutil")
-        .args(["--dns"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("scutil");
+    cmd.args(["--dns"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             if line.contains("nameserver") {
@@ -182,11 +176,9 @@ async fn get_dns_servers_linux() -> Vec<String> {
 
     // Fallback: try resolvectl
     if servers.is_empty() || servers.iter().all(|s| s == "127.0.0.53") {
-        if let Ok(output) = tokio::process::Command::new("resolvectl")
-            .args(["status"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("resolvectl");
+        cmd.args(["status"]);
+        if let Some(output) = super::util::run_with_timeout(cmd, super::util::SLOW).await {
             let text = String::from_utf8_lossy(&output.stdout);
             for line in text.lines() {
                 if line.contains("DNS Servers") || line.contains("Current DNS") {
@@ -228,11 +220,11 @@ async fn test_dns_resolution() -> Option<DnsResolutionTest> {
     let domain = "dns.google";
     let start = Instant::now();
 
-    // Use system DNS resolution
-    match tokio::net::lookup_host(format!("{}:443", domain)).await {
-        Ok(addrs) => {
+    // Use system DNS resolution (bounded so a black-holed resolver can't hang).
+    match super::util::lookup_host_timeout(format!("{}:443", domain), super::util::RESOLVE).await {
+        Some(addrs) => {
             let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-            let ips: Vec<String> = addrs.map(|a| a.ip().to_string()).collect();
+            let ips: Vec<String> = addrs.into_iter().map(|a| a.ip().to_string()).collect();
             Some(DnsResolutionTest {
                 domain: domain.to_string(),
                 resolved: !ips.is_empty(),
@@ -240,7 +232,7 @@ async fn test_dns_resolution() -> Option<DnsResolutionTest> {
                 resolved_ips: ips,
             })
         }
-        Err(_) => Some(DnsResolutionTest {
+        None => Some(DnsResolutionTest {
             domain: domain.to_string(),
             resolved: false,
             resolution_time_ms: start.elapsed().as_secs_f64() * 1000.0,

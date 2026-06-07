@@ -305,7 +305,7 @@ async fn collect_adapters_windows() -> Vec<AdapterInfo> {
 
             // Skip adapters with no MAC (virtual/software adapters)
             let mac = adapter.physical_address();
-            let is_zero_mac = mac.map_or(true, |m| m.iter().all(|b| *b == 0));
+            let is_zero_mac = mac.is_none_or(|m| m.iter().all(|b| *b == 0));
             if is_zero_mac {
                 continue;
             }
@@ -388,7 +388,7 @@ async fn collect_adapters_windows() -> Vec<AdapterInfo> {
 /// Matches by description (hardware chip name) which is more reliable
 /// than the old name-based substring match.
 #[cfg(windows)]
-pub async fn enrich_driver_info(adapters: &mut Vec<AdapterInfo>) {
+pub async fn enrich_driver_info(adapters: &mut [AdapterInfo]) {
     use std::collections::HashMap;
     use wmi::{COMLibrary, WMIConnection};
 
@@ -434,7 +434,7 @@ pub async fn enrich_driver_info(adapters: &mut Vec<AdapterInfo>) {
 
     for (drv_name, version, date) in &driver_data {
         for adapter in adapters.iter_mut() {
-            let matches = adapter.description.as_ref().map_or(false, |desc| {
+            let matches = adapter.description.as_ref().is_some_and(|desc| {
                 desc.contains(drv_name.as_str()) || drv_name.contains(desc.as_str())
             });
 
@@ -448,7 +448,7 @@ pub async fn enrich_driver_info(adapters: &mut Vec<AdapterInfo>) {
 }
 
 #[cfg(not(windows))]
-pub async fn enrich_driver_info(_adapters: &mut Vec<AdapterInfo>) {
+pub async fn enrich_driver_info(_adapters: &mut [AdapterInfo]) {
     // No-op on non-Windows — driver info already collected per-platform
 }
 
@@ -456,11 +456,9 @@ pub async fn enrich_driver_info(_adapters: &mut Vec<AdapterInfo>) {
 async fn collect_adapters_macos() -> Vec<AdapterInfo> {
     let mut adapters = Vec::new();
 
-    if let Ok(output) = tokio::process::Command::new("networksetup")
-        .args(["-listallhardwareports"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("networksetup");
+    cmd.args(["-listallhardwareports"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         let mut current_name = String::new();
 
@@ -519,11 +517,9 @@ fn detect_macos_type(name: &str) -> String {
 
 #[cfg(target_os = "macos")]
 async fn check_interface_up(device: &str) -> bool {
-    if let Ok(output) = tokio::process::Command::new("ifconfig")
-        .arg(device)
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("ifconfig");
+    cmd.arg(device);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         text.contains("status: active") || text.contains("inet ")
     } else {
@@ -535,11 +531,9 @@ async fn check_interface_up(device: &str) -> bool {
 async fn collect_adapters_linux() -> Vec<AdapterInfo> {
     let mut adapters = Vec::new();
 
-    if let Ok(output) = tokio::process::Command::new("ip")
-        .args(["-o", "link", "show"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("ip");
+    cmd.args(["-o", "link", "show"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();

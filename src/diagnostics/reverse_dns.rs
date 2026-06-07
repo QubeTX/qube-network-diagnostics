@@ -76,11 +76,9 @@ pub async fn collect() -> Option<Vec<ReverseDnsEntry>> {
 async fn reverse_lookup(ip: &str) -> Option<String> {
     #[cfg(windows)]
     {
-        let output = tokio::process::Command::new("nslookup")
-            .args([ip])
-            .output()
-            .await
-            .ok()?;
+        let mut cmd = tokio::process::Command::new("nslookup");
+        cmd.args([ip]);
+        let output = super::util::run_with_timeout(cmd, super::util::SLOW).await?;
 
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
@@ -93,11 +91,9 @@ async fn reverse_lookup(ip: &str) -> Option<String> {
 
     #[cfg(unix)]
     {
-        let output = tokio::process::Command::new("dig")
-            .args(["-x", ip, "+short"])
-            .output()
-            .await
-            .ok()?;
+        let mut cmd = tokio::process::Command::new("dig");
+        cmd.args(["-x", ip, "+short"]);
+        let output = super::util::run_with_timeout(cmd, super::util::SLOW).await?;
 
         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if text.is_empty() {

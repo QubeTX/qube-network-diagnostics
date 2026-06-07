@@ -120,11 +120,9 @@ fn parse_dhcp_from_ipconfig(text: &str) -> Option<Vec<DhcpLease>> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<Vec<DhcpLease>> {
-    let output = tokio::process::Command::new("ipconfig")
-        .args(["/all"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("ipconfig");
+    cmd.args(["/all"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     parse_dhcp_from_ipconfig(&text)
@@ -136,11 +134,9 @@ async fn collect_macos() -> Option<Vec<DhcpLease>> {
     let mut leases = Vec::new();
 
     for iface in &["en0", "en1"] {
-        if let Ok(output) = tokio::process::Command::new("ipconfig")
-            .args(["getpacket", iface])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("ipconfig");
+        cmd.args(["getpacket", iface]);
+        if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let mut lease = DhcpLease {

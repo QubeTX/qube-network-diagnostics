@@ -179,11 +179,9 @@ fn parse_vpn_from_ipconfig(text: &str, vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(windows)]
 async fn collect_windows_ipconfig(vpns: &mut Vec<VpnAdapter>) {
-    if let Ok(output) = tokio::process::Command::new("ipconfig")
-        .args(["/all"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("ipconfig");
+    cmd.args(["/all"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         parse_vpn_from_ipconfig(&text, vpns);
     }
@@ -262,7 +260,8 @@ async fn collect_windows_wmi(vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos_ifconfig(vpns: &mut Vec<VpnAdapter>) {
-    if let Ok(output) = tokio::process::Command::new("ifconfig").output().await {
+    let cmd = tokio::process::Command::new("ifconfig");
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         let mut current_iface = String::new();
         let mut current_ip = None;
@@ -317,11 +316,9 @@ async fn collect_macos_ifconfig(vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos_scutil(vpns: &mut Vec<VpnAdapter>) {
-    if let Ok(output) = tokio::process::Command::new("scutil")
-        .args(["--nc", "list"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("scutil");
+    cmd.args(["--nc", "list"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             // Lines like: * (Connected)      "VPN Name" [L2TP]
@@ -378,11 +375,9 @@ async fn collect_macos_scutil(vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux_ip_link(vpns: &mut Vec<VpnAdapter>) {
-    if let Ok(output) = tokio::process::Command::new("ip")
-        .args(["link", "show"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("ip");
+    cmd.args(["link", "show"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -409,18 +404,16 @@ async fn collect_linux_ip_link(vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux_nmcli(vpns: &mut Vec<VpnAdapter>) {
-    if let Ok(output) = tokio::process::Command::new("nmcli")
-        .args([
-            "-t",
-            "-f",
-            "TYPE,NAME,DEVICE",
-            "connection",
-            "show",
-            "--active",
-        ])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("nmcli");
+    cmd.args([
+        "-t",
+        "-f",
+        "TYPE,NAME,DEVICE",
+        "connection",
+        "show",
+        "--active",
+    ]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             let parts: Vec<&str> = line.splitn(3, ':').collect();
@@ -457,11 +450,9 @@ async fn collect_linux_nmcli(vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux_wireguard(vpns: &mut Vec<VpnAdapter>) {
-    if let Ok(output) = tokio::process::Command::new("wg")
-        .args(["show", "interfaces"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("wg");
+    cmd.args(["show", "interfaces"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
             for iface in text.split_whitespace() {

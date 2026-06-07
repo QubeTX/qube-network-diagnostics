@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.8] - 2026-06-07
+
+### Fixed
+- **Diagnostics no longer hang on a broken network.** Every diagnostic subprocess call (`ping`, `netsh`, `ipconfig`, `scutil`, `nmcli`, `ip`, `arp`, `route`, `netstat`, `dig`, `nslookup`, `resolvectl`, `wg`, etc.) and both DNS resolver calls (`diagnostics/dns.rs` resolution test, `diagnostics/ports.rs` port test) are now wrapped in explicit timeouts via a new `diagnostics/util.rs` helper (`run_with_timeout`, `lookup_host_timeout`). Budgets: 5s for DNS resolution, 10s for network-touching probes (`ping`/`nslookup`/`dig`/`resolvectl`), 5s for local state queries. On timeout the call returns the same "unreachable/empty" result it already returned on spawn failure, so behavior on a healthy network is unchanged. Previously a black-holed resolver or wedged subprocess could stall `nd300` (and `nd300 fix`, which re-runs diagnostics) for the OS resolver's full timeout.
+- `main.rs` now wraps the top-level `diagnostics::run_all` in an overall 90-second wall-clock cap and a `Ctrl-C` handler. Ctrl-C prints `Interrupted.` and exits 130 (`{"error":"interrupted","interrupted":true}` in `--json`); the wall-clock timeout prints a degraded-network message and exits 2 (`{"error":"timeout","timed_out":true}` in `--json`).
+
+### Changed
+- **Latency check now pings its three targets concurrently** instead of sequentially (`diagnostics/latency.rs`), via `futures_util::future::join_all`. Worst-case latency-phase time on a dead network drops from ~24s to ~10s while the reachable/average math is byte-identical (order is preserved). The `ping` inside `ping_multiple` is also bounded by the 10s subprocess budget.
+
+### Build
+- Resolved pre-existing Clippy lints surfaced by the current toolchain (`unnecessary_map_or`, `manual_split_once`, `nonminimal_bool`, `ptr_arg`) in `diagnostics/adapters.rs`, `diagnostics/dns_cache.rs`, and `diagnostics/listening_ports.rs` so `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly. Behavior is unchanged; these are mechanical, lint-only rewrites.
+
 ## [3.0.7] - 2026-05-11
 
 ### Documentation

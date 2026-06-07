@@ -75,18 +75,20 @@ pub async fn collect() -> Option<BufferbloatResult> {
 
 async fn measure_latency(host: &str, count: u32) -> Option<f64> {
     #[cfg(windows)]
-    let output = tokio::process::Command::new("ping")
-        .args(["-n", &count.to_string(), "-w", "2000", host])
-        .output()
-        .await;
+    let output = {
+        let mut cmd = tokio::process::Command::new("ping");
+        cmd.args(["-n", &count.to_string(), "-w", "2000", host]);
+        super::util::run_with_timeout(cmd, super::util::SLOW).await
+    };
 
     #[cfg(unix)]
-    let output = tokio::process::Command::new("ping")
-        .args(["-c", &count.to_string(), "-W", "2", host])
-        .output()
-        .await;
+    let output = {
+        let mut cmd = tokio::process::Command::new("ping");
+        cmd.args(["-c", &count.to_string(), "-W", "2", host]);
+        super::util::run_with_timeout(cmd, super::util::SLOW).await
+    };
 
-    let output = output.ok()?;
+    let output = output?;
     if !output.status.success() {
         return None;
     }

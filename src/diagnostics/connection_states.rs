@@ -67,18 +67,20 @@ fn parse_connection_states(lines: &[String]) -> ConnectionStates {
 
 pub async fn collect() -> Option<ConnectionStates> {
     #[cfg(windows)]
-    let output = tokio::process::Command::new("netstat")
-        .args(["-an"])
-        .output()
-        .await;
+    let output = {
+        let mut cmd = tokio::process::Command::new("netstat");
+        cmd.args(["-an"]);
+        super::util::run_with_timeout(cmd, super::util::QUICK).await
+    };
 
     #[cfg(unix)]
-    let output = tokio::process::Command::new("netstat")
-        .args(["-an"])
-        .output()
-        .await;
+    let output = {
+        let mut cmd = tokio::process::Command::new("netstat");
+        cmd.args(["-an"]);
+        super::util::run_with_timeout(cmd, super::util::QUICK).await
+    };
 
-    let output = output.ok()?;
+    let output = output?;
     let text = String::from_utf8_lossy(&output.stdout);
 
     let mut states = ConnectionStates {
