@@ -9,6 +9,19 @@ const UPLOAD_URL: &str = "https://speed.cloudflare.com/__up";
 /// Chunk size for upload payloads (2 MB).
 const UPLOAD_CHUNK_SIZE: usize = 2_000_000;
 
+/// Minimum per-request timeout floor. A request started just before the phase
+/// deadline still gets at least this long so a near-deadline request isn't
+/// instantly aborted — the deadline-based `while` loop stops launching new ones.
+const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Time left until `deadline`, floored at `MIN_REQUEST_TIMEOUT`. Used as the
+/// per-request `.timeout()` so a stalled transfer can't outlive the phase.
+fn remaining_budget(deadline: Instant) -> Duration {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .max(MIN_REQUEST_TIMEOUT)
+}
+
 /// Run the Cloudflare speed test: latency, download, upload.
 pub async fn run<F>(config: &SpeedTestConfig, progress: F) -> ProviderResult
 where
@@ -84,7 +97,15 @@ where
 
     while Instant::now() < dl_deadline {
         let req_start = Instant::now();
-        match client.get(DOWNLOAD_URL).send().await {
+        // Per-request timeout = remaining phase budget. Without it, a stalled CDN
+        // socket could block a single `send()`/`resp.bytes().await` for the full
+        // 120s client timeout, blowing past the deadline-based loop bound.
+        match client
+            .get(DOWNLOAD_URL)
+            .timeout(remaining_budget(dl_deadline))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.bytes().await {
                     let req_bytes = body.len() as u64;
@@ -127,6 +148,7 @@ where
         match client
             .post(UPLOAD_URL)
             .body(upload_payload.clone())
+            .timeout(remaining_budget(ul_deadline))
             .send()
             .await
         {
@@ -155,6 +177,16 @@ where
         Some(statistics::accurate_upload_bandwidth(&ul_mbps_samples))
     };
 
+    // Honest failure: latency probing reached the server but neither direction
+    // produced a single usable transfer sample. Report an explicit error so the
+    // speedqx table shows an error row instead of a silent N/A (and aggregation,
+    // which filters on `error.is_none()`, correctly excludes this provider).
+    let error = if dl_mbps_samples.is_empty() && ul_mbps_samples.is_empty() {
+        Some("no successful transfers".to_string())
+    } else {
+        None
+    };
+
     ProviderResult {
         provider: "Cloudflare".to_string(),
         server: "speed.cloudflare.com".to_string(),
@@ -168,7 +200,7 @@ where
         download_duration_s: dl_elapsed,
         upload_duration_s: ul_elapsed,
         packet_loss_pct,
-        error: None,
+        error,
         bandwidth_samples: Some(BandwidthSamples {
             download: dl_mbps_samples,
             upload: ul_mbps_samples,

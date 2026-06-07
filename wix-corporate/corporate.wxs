@@ -1,0 +1,171 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Copyright (C) 2017 Christopher R. Field.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<!--
+  ND-300 Corporate Edition (perUser MSI).
+
+  Ships alongside `wix/main.wxs` (the Global / perMachine MSI). Built by
+  `.github/workflows/windows-installers.yml` after release.yml finishes
+  publishing the GitHub Release, then uploaded as
+  `nd300-x86_64-pc-windows-msvc-corporate.msi`.
+
+  ND-300 ships TWO binaries (nd300.exe + speedqx.exe), so this installer
+  packages BOTH (binary0 + binary1) — unlike a single-binary template.
+
+  Differences vs main.wxs (intentional — do not converge):
+    - InstallScope="perUser" on the Package element. Sufficient on WiX 3.11+
+        to install without UAC on machines where the user has no admin rights
+        but still has write access to %LocalAppData%. We do NOT declare
+        ALLUSERS="" explicitly — WiX 3.11 candle rejects ALLUSERS Value="" with
+        CNDL0006 ("empty string"). Per WiX docs, InstallScope="perUser" is
+        equivalent to ALLUSERS unset.
+    - UpgradeCode is a DIFFERENT GUID from the Global edition. Same UpgradeCode
+        across editions would confuse Windows Installer and break upgrades in
+        both directions. A user can have both editions installed simultaneously
+        (Add/Remove Programs shows two entries); PATH order decides which
+        `nd300` wins.
+    - Install location: %LocalAppData%\Programs\nd300\bin\ instead of
+        %ProgramFiles%\nd300\bin\.
+    - PATH entry: user PATH (HKCU\Environment\Path) instead of system PATH.
+    - Product Name: "nd300 (Corporate Edition)" — distinct ARP entry.
+
+  LOCKSTEP: if the install path or registry-marker value changes here, update
+  src/actions/update.rs::classify_install_path() /
+  read_install_source_marker() to match — those choose which installer
+  `nd300 update` fetches.
+-->
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='nd300 (Corporate Edition)'
+        UpgradeCode='B2490B7E-3CBE-47AC-8090-79BB3EB555E0'
+        Manufacturer='Emmett S'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Cross-platform network diagnostic tool (Corporate Edition, per-user install)'
+            Manufacturer='Emmett S'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perUser'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='nd300 (Corporate Edition) Installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='LocalAppDataFolder'>
+                <Directory Id='ProgramsFolder' Name='Programs'>
+                    <Directory Id='APPLICATIONFOLDER' Name='nd300'>
+                        <!-- Install-source marker. `nd300 update` reads this from
+                             HKCU and picks the matching installer to download for
+                             in-place upgrades. Value must match the
+                             `msi-corporate` arm in
+                             src/actions/update.rs::read_install_source_marker(). -->
+                        <Component Id='InstallSourceMarker' Guid='8883F05C-A1EA-48D8-B73B-FB4E053B441A'>
+                            <RegistryValue
+                                Root='HKCU'
+                                Key='Software\ND300'
+                                Name='InstallSource'
+                                Type='string'
+                                Value='msi-corporate'
+                                KeyPath='yes'/>
+                        </Component>
+                        <Directory Id='Bin' Name='bin'>
+                            <Component Id='Path' Guid='135C0F0E-9C35-431D-ACFE-3C83CAAFFE15' KeyPath='yes'>
+                                <!-- User PATH (HKCU\Environment\Path), not system PATH. -->
+                                <Environment
+                                    Id='PATH'
+                                    Name='PATH'
+                                    Value='[Bin]'
+                                    Permanent='no'
+                                    Part='last'
+                                    Action='set'
+                                    System='no'/>
+                            </Component>
+                            <Component Id='binary0' Guid='*'>
+                                <File
+                                    Id='exe0'
+                                    Name='nd300.exe'
+                                    DiskId='1'
+                                    Source='$(var.CargoTargetBinDir)\nd300.exe'
+                                    KeyPath='yes'/>
+                            </Component>
+                            <Component Id='binary1' Guid='*'>
+                                <File
+                                    Id='exe1'
+                                    Name='speedqx.exe'
+                                    DiskId='1'
+                                    Source='$(var.CargoTargetBinDir)\speedqx.exe'
+                                    KeyPath='yes'/>
+                            </Component>
+                        </Directory>
+                    </Directory>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs the nd300 + speedqx binaries (Corporate Edition, per-user).'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='binary1'/>
+            <ComponentRef Id='InstallSourceMarker'/>
+
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Add the install location of [ProductName] to your user PATH so the binaries are callable from any terminal.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Property Id='ARPHELPLINK' Value='https://github.com/QubeTX/qube-network-diagnostics'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
+
+        </UI>
+
+    </Product>
+
+</Wix>

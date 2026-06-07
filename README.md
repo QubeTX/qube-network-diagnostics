@@ -12,7 +12,7 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **18 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
 - **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) with bounded N-provider inverse-variance aggregation, modified trimean (Ookla-style), and RFC 3550 jitter for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
-- **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and runs a probe-and-retry chain: cargo first when available, cargo-dist installer as universal fallback (curl → wget on macOS/Linux, PowerShell → pwsh on Windows). It cleans up shadowing non-Cargo ND300 installs when migrating to `cargo install nd300`, and surfaces per-strategy failures with specific reasons.
+- **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and runs a probe-and-retry chain: cargo first when available, cargo-dist installer as universal fallback (curl → wget on macOS/Linux, PowerShell → pwsh on Windows). On Windows it can also upgrade in place via the matching first-class installer (MSI/EXE × Global/Corporate), chosen from an install marker, with SHA-256 verification of the download (refuse-on-mismatch). It cleans up shadowing non-Cargo ND300 installs when migrating to `cargo install nd300`, verifies the new version actually landed, and surfaces per-strategy failures with specific reasons.
 - **SpeedQX** standalone speed test binary — all 4 providers with per-provider breakdown and real-time progress
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
@@ -34,9 +34,21 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/QubeTX/qube-network-dia
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.ps1 | iex"
 ```
 
-### MSI (Windows)
+### Windows installers (MSI + EXE, Global + Corporate)
 
-Download the `.msi` installer from the [latest release](https://github.com/QubeTX/qube-network-diagnostics/releases/latest).
+Four first-class Windows installers are attached to every [release](https://github.com/QubeTX/qube-network-diagnostics/releases/latest). All four install **both** `nd300.exe` and `speedqx.exe` and add the install dir to your `PATH`. Pick **one format per edition** (installing two formats of the same edition leaves duplicate Add/Remove Programs entries).
+
+| Edition | Scope | Admin (UAC)? | Installs to | Download |
+|---|---|---|---|---|
+| **Global** MSI | Per-machine | Yes | `C:\Program Files\nd300\bin\` | `nd300-x86_64-pc-windows-msvc.msi` |
+| **Corporate** MSI | Per-user | No | `%LocalAppData%\Programs\nd300\bin\` | `nd300-x86_64-pc-windows-msvc-corporate.msi` |
+| **Global** EXE | Per-machine | Yes | `C:\Program Files\nd300\bin\` | `nd300-x86_64-pc-windows-msvc-setup.exe` |
+| **Corporate** EXE | Per-user | No | `%LocalAppData%\Programs\nd300\bin\` | `nd300-x86_64-pc-windows-msvc-corporate-setup.exe` |
+
+- **Corporate** editions install per-user with **no admin prompt** — ideal for locked-down corporate machines where you can't elevate.
+- Each installer writes a small `HKCU\Software\ND300\InstallSource` marker so `nd300 update` knows which installer to re-download for an in-place upgrade (see [Self-Update](#self-update)).
+- Each installer has a `.sha256` sidecar; `nd300 update` verifies it before running the downloaded installer (refuse-on-mismatch).
+- The cargo-dist PowerShell installer above remains available and installs into Cargo's bin directory.
 
 ### Cargo
 
@@ -70,7 +82,8 @@ nd300
 nd300 -t
 
 # Change DNS configuration (interactive)
-nd300 -d
+nd300 dns          # subcommand form (recommended); on success continues to diagnostics
+nd300 -d           # legacy flag form (still supported); identical behavior
 
 # Diagnostic-driven fix loop (subcommand form, recommended)
 nd300 fix
@@ -184,6 +197,7 @@ speedqx --duration 10 --latency-probes 5
 
 | Subcommand | Equivalent flag | Description |
 |------------|-----------------|-------------|
+| `nd300 dns` | `nd300 -d` / `nd300 --dns` | Change DNS servers and verify connectivity (semi-exit-early: exits on failure, continues to diagnostics on success) |
 | `nd300 fix [-y]` | `nd300 -f` / `nd300 --fix` | Diagnostic-driven triage and recovery loop |
 | `nd300 update` | `nd300 --update` | Self-update to the latest release |
 | `nd300 clear-dns` | `nd300 -c` / `nd300 --clear-dns` | Flush the DNS cache and exit |
@@ -330,9 +344,9 @@ Every run produces a Markdown report at `~/Downloads/nd300-fix-report-YYYYMMDD-H
 
 In JSON mode (`nd300 fix --json`), the schema reports the same data as `outcome`, `iterations`, `applied_actions[]`, `remaining_failures[]`, `hard_block`, and `report_path`.
 
-## DNS Configuration (`--dns`)
+## DNS Configuration (`nd300 dns`)
 
-The DNS flag (`nd300 -d`) provides a standalone way to change your DNS configuration. Requires elevated privileges.
+`nd300 dns` (or the legacy flag `nd300 -d` / `--dns`) provides a standalone way to change your DNS configuration. Requires elevated privileges. The subcommand and flag are identical: both are semi-exit-early — they exit on failure, and on success fall through to running standard diagnostics so you can immediately confirm the change improved connectivity.
 
 **Providers:**
 - **Cloudflare** (recommended) — 1.1.1.1 (privacy-focused)
@@ -387,13 +401,39 @@ The updater runs a **probe-and-retry chain** so missing tools don't block the up
 2. Tries `cargo install nd300 --force` first when `cargo --version` succeeds on your system.
 3. If Cargo succeeds while the currently running ND300 copy lives outside Cargo's bin directory, removes the old installer-managed `nd300`/`speedqx` layout so the new Cargo install is not shadowed on `PATH`.
 4. If Cargo reports that an existing `nd300` or `speedqx` binary is blocking installation, runs ND300's uninstall cleanup for the current install and retries `cargo install nd300 --force`.
-5. If cargo isn't available (or still fails), falls through to the cargo-dist installer for your platform — `curl | sh` then `wget | sh` on macOS/Linux, `powershell.exe` then `pwsh.exe` on Windows. The installer URL uses GitHub's `releases/latest` redirect, so it always resolves to the newest release.
-6. Whichever strategy succeeds first wins; the chain stops there.
-7. If every strategy fails, both pretty and `--json` output show a per-attempt diagnostic block listing what was tried and why each failed, so you can fix the environment manually.
+5. After a successful `cargo install`, re-runs `nd300 --version` to confirm the new version actually landed. crates.io can briefly serve the old version right after a release (publish lag), or a different `nd300` may be earlier on your `PATH`; if the running binary didn't change, the updater falls through to the prebuilt installer (which always carries the latest version) instead of looping "update available" forever.
+6. If cargo isn't available (or still fails), falls through to the cargo-dist installer for your platform — `curl | sh` then `wget | sh` on macOS/Linux, `powershell.exe` then `pwsh.exe` on Windows. The installer URL uses GitHub's `releases/latest` redirect, so it always resolves to the newest release.
+7. Whichever strategy succeeds first wins; the chain stops there.
+8. If every strategy fails, both pretty and `--json` output show a per-attempt diagnostic block listing what was tried and why each failed, so you can fix the environment manually.
+
+### Windows installer-aware self-update
+
+If you installed via one of the four first-class Windows installers (MSI/EXE × Global/Corporate — see [Installation](#windows-installers-msi--exe-global--corporate)), `nd300 update` reads the `HKCU\Software\ND300\InstallSource` marker that installer wrote and downloads the **matching** installer for an in-place upgrade — rather than switching you to a different installer/format (which would leave duplicate Add/Remove Programs entries). If no marker is found, it falls back to detecting the install from the binary's path; cargo / PowerShell-installer users get the cargo-first chain above.
+
+Before running a downloaded MSI/EXE, the updater fetches the asset's `.sha256` sidecar and verifies the download against it (refuse-on-mismatch) — defending against a corrupted download or a network MITM (corporate TLS-interception proxies, hostile WiFi). After the installer exits, it re-runs `--version` to confirm the file replacement actually took effect (and surfaces the reboot-required case honestly if Windows scheduled a deferred replace).
+
+Versioning is prerelease-aware: a prerelease of an upcoming version is treated as newer than the previous stable patch, and a stable release is newer than its own prerelease. GitHub's unauthenticated rate-limit case (60 requests/hour per IP) is named explicitly so you know to just wait.
 
 Current releases publish the canonical `nd300-installer.sh` and `nd300-installer.ps1` assets plus legacy `nd-300-installer.*` aliases for older installed copies.
 
-In `--json` mode, the response includes `"strategy"` (the precise variant that ran or was attempted) and, on failure, an `"attempts"` array. The legacy `"method"` field still maps to `"cargo"` or `"installer"` for backward compatibility.
+### Update JSON output
+
+In `--json` mode, the response includes `"strategy"` (the precise variant that ran or was attempted) and, on failure, an `"attempts"` array. The legacy `"method"` field still maps to `"cargo"` or `"installer"` for backward compatibility. On **Windows**, every update payload also carries a top-level `"install_origin"` field — one of `msi-global`, `msi-corporate`, `exe-global`, `exe-corporate`, `cargo-or-installer`, or `unknown` (the field is omitted on macOS/Linux, where install origin doesn't vary).
+
+```json
+{
+  "action": "update",
+  "success": true,
+  "current_version": "3.0.11",
+  "latest_version": "3.1.0",
+  "update_available": true,
+  "method": "installer",
+  "strategy": "msi_corporate",
+  "install_origin": "msi-corporate"
+}
+```
+
+The precise `"strategy"` values are `cargo`, `installer_curl`, `installer_wget`, `installer_powershell`, `installer_pwsh`, `msi_global`, `msi_corporate`, `exe_global`, and `exe_corporate`.
 
 ## Speed Test Methodology
 

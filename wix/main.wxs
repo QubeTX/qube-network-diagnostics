@@ -109,6 +109,26 @@
                     </Component>
                     -->
 
+                    <!-- Install-source marker (v3.1.0+). `nd300 update` reads this
+                         from HKCU and picks the matching installer to download for
+                         in-place upgrades. HKCU even on a perMachine install: the
+                         user running this MSI is the user who'll later invoke
+                         `nd300 update`. The path-based fallback in
+                         src/actions/update.rs::detect_install_origin() catches the
+                         rare "admin pushed via Intune, end-user is different" case.
+                         Value must match the `msi-global` arm in
+                         src/actions/update.rs::read_install_source_marker().
+                         See wix-corporate/corporate.wxs for the perUser sibling. -->
+                    <Component Id='InstallSourceMarker' Guid='913CB3D9-B0E4-4821-963B-9127F93D7FE2'>
+                        <RegistryValue
+                            Root='HKCU'
+                            Key='Software\ND300'
+                            Name='InstallSource'
+                            Type='string'
+                            Value='msi-global'
+                            KeyPath='yes'/>
+                    </Component>
+
                     <Directory Id='Bin' Name='bin'>
                         <Component Id='Path' Guid='D131558E-5659-455C-A5C7-3E7943C3B005' KeyPath='yes'>
                             <Environment
@@ -159,6 +179,7 @@
 
             <ComponentRef Id='binary0'/>
             <ComponentRef Id='binary1'/>
+            <ComponentRef Id='InstallSourceMarker'/>
 
             <Feature
                 Id='Environment'

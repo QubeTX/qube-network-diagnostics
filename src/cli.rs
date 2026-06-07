@@ -16,7 +16,8 @@ use crate::speedtest::TestDuration;
     after_long_help = "EXAMPLES:\n\
         \x20 nd300              Run standard diagnostics\n\
         \x20 nd300 -t           Technician mode (deep diagnostics)\n\
-        \x20 nd300 -d           Change DNS configuration\n\
+        \x20 nd300 dns          Change DNS servers and verify connectivity\n\
+        \x20 nd300 -d           Same as 'nd300 dns' (legacy flag form)\n\
         \x20 nd300 fix          Diagnostic-driven triage and recovery loop\n\
         \x20 nd300 -f           Same as 'nd300 fix' (legacy flag form)\n\
         \x20 nd300 update       Check for updates and install\n\
@@ -106,9 +107,9 @@ pub struct Nd300Cli {
 }
 
 /// Action subcommands. These are equivalent to the long-running action flags
-/// (`-f`, `--update`, `--clear-dns`, `--uninstall`) — both forms are supported and
-/// mean the same thing. The subcommand form is the preferred way going forward;
-/// the flag form is kept so existing scripts continue to work.
+/// (`-d`, `-f`, `--update`, `--clear-dns`, `--uninstall`) — both forms are
+/// supported and mean the same thing. The subcommand form is the preferred way
+/// going forward; the flag form is kept so existing scripts continue to work.
 #[derive(Subcommand, Debug, Clone)]
 pub enum Nd300Command {
     /// Diagnostic-driven triage loop: tests → identifies failures → applies
@@ -116,6 +117,10 @@ pub enum Nd300Command {
     /// clock, and per-action attempt caps. Works for technical and non-technical
     /// users; high-risk actions always require Y/N confirmation.
     Fix(FixArgs),
+
+    /// Change DNS servers and verify connectivity. On success, falls through to
+    /// running standard diagnostics (identical to the legacy `-d`/`--dns` flag).
+    Dns,
 
     /// Check for updates and install the latest release.
     Update,

@@ -206,6 +206,29 @@ async fn main() {
         use_colors,
     };
 
+    // Outer wall-clock cap (M2). nd300 already bounds its diagnostic run; speedqx
+    // had none, so a CDN that wedged past every per-request timeout could leave
+    // the whole test hanging. The four providers run sequentially — CF/NDT7/LS
+    // each do `duration` per direction (×2), fast.com does `fastcom_duration` per
+    // direction — so the legitimate ceiling is ~`2*(3*duration) + 2*fastcom`.
+    // Generous discovery/latency headroom plus a floor keep a healthy run well
+    // inside the cap; only a genuinely stuck provider trips it. Computed here
+    // before `config` is moved into `speedtest::run` below.
+    let cap_dur_secs = match &config.duration {
+        TestDuration::Seconds(s) => *s,
+        TestDuration::Auto => 15,
+    };
+    let cap_fc_secs = match &config.fastcom_duration {
+        TestDuration::Seconds(s) => *s,
+        TestDuration::Auto => 15,
+    };
+    let outer_cap = std::time::Duration::from_secs(
+        // 3 providers × 2 directions × duration + fast.com × 2 directions, plus
+        // a 2× safety multiple for retries/per-request floors, plus 60s headroom.
+        (2 * (3 * cap_dur_secs) + 2 * cap_fc_secs) * 2 + 60,
+    )
+    .max(std::time::Duration::from_secs(120));
+
     let total_steps: u32 = 13; // CF(3) + NDT7(3) + LS(3) + FC(3) + Computing(1)
 
     // Print header with estimated time
@@ -314,16 +337,38 @@ async fn main() {
     });
 
     let state_clone = state.clone();
-    let result = nd_300::speedtest::run(
-        config,
-        move |phase, progress| {
-            if let Ok(mut s) = state_clone.lock() {
-                s.handle_phase(phase, progress);
-            }
-        },
-        Some(on_complete),
+    let result = match tokio::time::timeout(
+        outer_cap,
+        nd_300::speedtest::run(
+            config,
+            move |phase, progress| {
+                if let Ok(mut s) = state_clone.lock() {
+                    s.handle_phase(phase, progress);
+                }
+            },
+            Some(on_complete),
+        ),
     )
-    .await;
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            if json_mode {
+                println!(
+                    "{{\"error\":\"timeout\",\"timed_out\":true,\"timeout_secs\":{}}}",
+                    outer_cap.as_secs()
+                );
+            } else {
+                eprintln!();
+                eprintln!(
+                    "Speed test timed out after {}s — a provider appears to be stuck or the \
+                     network is severely degraded. Try again, or use --duration to shorten the test.",
+                    outer_cap.as_secs()
+                );
+            }
+            std::process::exit(2);
+        }
+    };
 
     if json_mode {
         match serde_json::to_string_pretty(&result) {
@@ -336,6 +381,18 @@ async fn main() {
     } else {
         println!();
         print!("{}", render_results(&result, use_ascii, use_colors));
+    }
+
+    // Honest exit code (L2): exit non-zero when no provider produced positive
+    // throughput in either direction. Mirrors diagnostics/speed.rs's
+    // `determine_speed_status` "measured" check — an all-errored / all-zero run
+    // is a failure, a slow-but-working link (positive throughput) is success.
+    let measured = result.providers.iter().any(|p| {
+        p.error.is_none()
+            && (p.download_mbps.unwrap_or(0.0) > 0.0 || p.upload_mbps.unwrap_or(0.0) > 0.0)
+    });
+    if !measured {
+        std::process::exit(2);
     }
 }
 

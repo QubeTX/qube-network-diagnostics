@@ -128,7 +128,12 @@ where
 
         let run_duration = remaining.min(Duration::from_secs(10));
         let dl_budget_f64 = dl_budget_secs as f64;
-        let dl_result = run_download(
+        // A mid-run iteration error (a WebSocket dropping partway through a
+        // multi-iteration test) should `break` and retain the samples already
+        // collected, not `?`-collapse the whole provider to an error. If the
+        // very first iteration fails (no samples yet), the post-loop guard below
+        // reports an honest error.
+        let dl_result = match run_download(
             &download_url,
             download_url_ws.as_deref(),
             run_duration,
@@ -140,7 +145,11 @@ where
                 progress(Phase::Ndt7Download, overall_frac.max(frac * 0.1));
             },
         )
-        .await?;
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => break,
+        };
 
         total_dl_bytes += dl_result.bytes;
         total_dl_duration += dl_result.duration_s;
@@ -174,7 +183,9 @@ where
 
         let run_duration = remaining.min(Duration::from_secs(10));
         let ul_budget_f64 = ul_budget_secs as f64;
-        let ul_result = run_upload(
+        // Mid-run error → break and keep earlier samples (same rationale as the
+        // download loop above).
+        let ul_result = match run_upload(
             &upload_url,
             upload_url_ws.as_deref(),
             run_duration,
@@ -184,7 +195,11 @@ where
                 progress(Phase::Ndt7Upload, overall_frac.max(frac * 0.1));
             },
         )
-        .await?;
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => break,
+        };
 
         total_ul_bytes += ul_result.bytes;
         total_ul_duration += ul_result.duration_s;
@@ -202,6 +217,14 @@ where
     }
 
     progress(Phase::Ndt7Upload, 1.0);
+
+    // If both directions collected nothing — e.g. the very first download
+    // iteration's WebSocket connect failed and we broke immediately — report an
+    // honest provider error rather than a silent zero. (A mid-run break that
+    // retained earlier samples falls through to normal aggregation below.)
+    if all_download_mbps.is_empty() && all_upload_mbps.is_empty() {
+        return Err("no successful transfers".to_string());
+    }
 
     // ── Aggregate across iterations using statistics pipeline ───────
     let download_mbps = if all_download_mbps.is_empty() {

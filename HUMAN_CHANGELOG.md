@@ -6,6 +6,27 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 7, 2026 — proper Windows installers, smarter updating, a new way to type the DNS command, and steadier speed tests
+
+**Added**
+- Windows now has four proper installers to choose from, and each one installs both the main tool and the standalone speed-test tool together. You can pick a normal "for everyone on this computer" install (which asks for administrator permission) or a "just for me" install that needs no admin rights at all — handy on locked-down work computers. Each comes in two flavors (a classic Windows Installer package and a regular setup program); pick whichever one flavor you prefer per install style. Every installer also ships with a fingerprint file so the tool can check a download wasn't tampered with before running it.
+- There's a new, shorter way to type the DNS-change command. Instead of the old flag, you can just type the command word directly. It behaves exactly the same: if changing your DNS fails it stops, and if it succeeds it goes on to run the normal checks so you can immediately see the result. The old way still works.
+
+**Improved**
+- Updating on Windows is now much smarter. The tool remembers which kind of installer you used and, when you update, fetches the matching one to upgrade in place — rather than accidentally switching you to a different style and leaving two entries in your "installed programs" list. Before running any downloaded installer, it verifies the download against its published fingerprint and refuses to run if they don't match (protecting you from a corrupted or tampered download, including on networks that intercept traffic). After updating through the Rust package manager, it now double-checks that the new version actually took effect — because occasionally the package registry briefly still serves the old version right after a release — and if not, it quietly switches to the prebuilt installer instead of getting stuck repeatedly saying "an update is available." It also understands pre-release versions properly now, and tells you plainly when the update check hit GitHub's hourly request limit so you know to just wait.
+
+**Fixed**
+- The standalone speed test can no longer hang. If a server stalls partway through, individual requests now give up promptly instead of blocking for up to two minutes, and the whole test has an overall time limit as a backstop. The main tool already had this safety net; the standalone test now does too.
+- The main tool's overall time limit now stretches to fit a longer speed test. If you deliberately ask for a long speed test, the tool no longer cuts it off early and wrongly reports your network as "severely degraded." Normal-length and skipped tests behave exactly as before.
+- When a speed-test provider connects but can't actually transfer any data, the results table now shows a clear error for that provider instead of a blank/"not available" line — and that provider is correctly left out of the final averaged result.
+- The standalone speed test now ends with a proper error signal when nothing could be measured at all, instead of pretending it succeeded. A genuinely slow-but-working connection is still treated as a success.
+- The most thorough speed-test provider now keeps the measurements it already gathered if its connection drops partway through, rather than throwing the whole provider's results away. If it never managed to measure anything, it still reports a clear error.
+
+**Heads up (only if you script against the tool's machine-readable output)**
+- On Windows, the update command's machine-readable output now includes a field naming which kind of install you have, and the list of possible "how it updated" values gained entries for the four Windows installers. Nothing existing was renamed or removed; the new field doesn't appear on Mac or Linux.
+
+---
+
 ## June 7, 2026 — honest results when the speed test can't run, plus quieter behind-the-scenes work
 
 **Fixed**

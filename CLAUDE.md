@@ -31,9 +31,9 @@ Tests cover the fix planner and confirmation rules, platform command constructio
 
 ```
 main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
-  → Subcommand dispatch (nd300 fix | update | clear-dns | uninstall) — preferred form
+  → Subcommand dispatch (nd300 dns | fix | update | clear-dns | uninstall) — preferred form
   → Falls through to legacy flag dispatch (--fix, --update, --clear-dns, --uninstall, -d/--dns)
-  → Conditional exit: --dns (exits on failure, falls through to diagnostics on success)
+  → Conditional exit: nd300 dns / --dns (exits on failure, falls through to diagnostics on success)
   → config.rs (Config builder: colors, unicode, mode, format)
   → diagnostics/mod.rs (concurrent runner via tokio::join!)
     → 7 core diagnostics (concurrent)
@@ -43,12 +43,12 @@ main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
   → Exit code: 0=OK, 1=Warn, 2=Fail
 ```
 
-`Nd300Cli` defines a `command: Option<Nd300Command>` field alongside the legacy boolean flags. If a subcommand is given, it takes precedence; otherwise the flag-form dispatch runs. Both forms produce identical behavior. Output flags (`--json`, `--ascii`, `--no-color`, `--verbose`), fix confirmation (`--yes`), and speed controls (`--fast`, `--speed-duration`) are marked `global = true` so they work in both positions.
+`Nd300Cli` defines a `command: Option<Nd300Command>` field alongside the legacy boolean flags. If a subcommand is given, it takes precedence; otherwise the flag-form dispatch runs. Both forms produce identical behavior. Output flags (`--json`, `--ascii`, `--no-color`, `--verbose`), fix confirmation (`--yes`), and speed controls (`--fast`, `--speed-duration`) are marked `global = true` so they work in both positions. `Nd300Command::Dns` is special: it is routed through the same *semi*-exit-early path as the `-d`/`--dns` flag (exit on failure, fall through to diagnostics on success) rather than the terminal subcommand block, so `nd300 dns` ≡ `nd300 --dns`. All other subcommands are terminal.
 
 ### Module Layout
 
 - **`src/cli.rs`** — Shared clap derive definitions (`Nd300Cli`, `SpeedQXCli`) used by both binaries and by `build.rs` for man page generation.
-- **`src/actions/`** — Exit-early operations (`--fix`, `--clear-dns`, `--uninstall`, `--dns`, `--update`). The fix flow (`actions/fix/`) implements evidence-driven network recovery with VPN detection, connectivity checks between actions, Wi-Fi reconnection, state preservation, and report generation (`report.rs` saves Markdown to `~/Downloads/`). The updater (`actions/update.rs`) prefers `cargo install nd300 --force`, cleans up shadowing non-Cargo installs when migrating users to Cargo, and falls back to cargo-dist installers.
+- **`src/actions/`** — Exit-early operations (`fix`, `clear-dns`, `uninstall`, `dns`, `update` — each available as a bare subcommand and a legacy flag). `dns` is *semi*-exit-early (exit on failure, fall through to diagnostics on success). The fix flow (`actions/fix/`) implements evidence-driven network recovery with VPN detection, connectivity checks between actions, Wi-Fi reconnection, state preservation, and report generation (`report.rs` saves Markdown to `~/Downloads/`). The updater (`actions/update.rs`) prefers `cargo install nd300 --force` (with post-install `--version` verify), cleans up shadowing non-Cargo installs when migrating users to Cargo, falls back to cargo-dist installers, and on Windows dispatches to the matching first-class installer (MSI/EXE × Global/Corporate) via a registry marker with SHA-256 sidecar verification. See "Windows Installer Matrix + Installer-Aware Self-Update" below.
 - **`src/diagnostics/`** — All diagnostic modules. Each is self-contained with platform-specific code via `#[cfg]` attributes. Each returns `(DiagnosticResult, Option<DetailStruct>)` — the detail struct carries rich data for rendering. `shared_cache.rs` pre-fetches subprocess outputs to deduplicate calls across tech-mode modules. `util.rs` provides the timeout wrappers (`run_with_timeout`, `lookup_host_timeout`) that bound every diagnostic subprocess and DNS-resolver call so a broken network can't hang the run.
 - **`src/speedtest/`** — Quad-provider speed test engine (Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com). Provider clients: `cloudflare.rs`, `ndt7.rs`, `librespeed.rs`, `fastcom.rs`. `statistics.rs` implements the accuracy pipeline (trimean, IQR filter, slow-start discard, inverse-variance merge, bootstrap CI). `display.rs` handles speedqx-specific progress rendering. Both binaries share this module.
 - **`src/render/`** — Output formatting. `table.rs` builds Unicode/ASCII box-drawing tables with ANSI-aware string functions (`visible_len`, `truncate_visible`). `color.rs` centralizes ANSI color output. `progress.rs` handles spinners.
@@ -343,17 +343,54 @@ const PS_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/do
 
 ### JSON Output
 
-Supports `--json` mode with structured output matching the uninstall pattern:
+Supports `--json` mode with structured output matching the uninstall pattern. On Windows, every update payload also carries a top-level `install_origin` field (one of `msi-global`/`msi-corporate`/`exe-global`/`exe-corporate`/`cargo-or-installer`/`unknown`; omitted on macOS/Linux):
 ```json
 {
   "action": "update",
   "success": true,
-  "current_version": "2.8.0",
-  "latest_version": "2.9.0",
+  "current_version": "3.0.11",
+  "latest_version": "3.1.0",
   "update_available": true,
-  "method": "installer"
+  "method": "installer",
+  "strategy": "msi_corporate",
+  "install_origin": "msi-corporate"
 }
 ```
+
+## Windows Installer Matrix + Installer-Aware Self-Update (v3.1.0+)
+
+ND-300 ships **four first-class Windows installers**, each packaging **both** `nd300.exe` and `speedqx.exe`:
+
+| Edition | Format | Source file | Scope | PATH | Install dir | Marker value |
+|---|---|---|---|---|---|---|
+| Global | MSI | `wix/main.wxs` (cargo-dist) | perMachine (admin) | system (HKLM) | `C:\Program Files\nd300\bin\` | `msi-global` |
+| Corporate | MSI | `wix-corporate/corporate.wxs` | perUser (no UAC) | user (HKCU) | `%LocalAppData%\Programs\nd300\bin\` | `msi-corporate` |
+| Global | EXE | `inno/global.iss` (Inno Setup) | perMachine (admin) | system (HKLM) | `C:\Program Files\nd300\bin\` | `exe-global` |
+| Corporate | EXE | `inno/corporate.iss` (Inno Setup) | perUser (no UAC) | user (HKCU) | `%LocalAppData%\Programs\nd300\bin\` | `exe-corporate` |
+
+The Global MSI is the cargo-dist base asset. The other **6 assets** (Corporate MSI + 2 EXEs + 3 `.sha256` sidecars) are built by `.github/workflows/windows-installers.yml`. **Two binaries:** every installer must keep BOTH `binary0`=nd300.exe and `binary1`=speedqx.exe (Inno: two `[Files]` lines). ND-300 has **no committed `LICENSE` file**, so the Inno scripts deliberately omit `LicenseFile=` (referencing a missing file would fail `iscc`).
+
+### Marker → update dispatch + the lockstep contract
+
+Each installer writes `HKCU\Software\ND300\InstallSource = <marker value>`. `src/actions/update.rs::read_install_source_marker()` reads it (authoritative); `classify_install_path()` is the path-based fallback (`\program files\nd300\` → MsiGlobal, `\appdata\local\programs\nd300\` → MsiCorporate, `\.cargo\bin\` → CargoOrInstaller). `build_strategy_list()` returns a **single** matching MSI/EXE strategy (no cross-fall-back between installer types — running a different product would create duplicate ARP entries). MSI/EXE strategies download the matching installer via async reqwest, **SHA-256-verify the `.sha256` sidecar** (`checksum_verdict`, refuse-on-mismatch), run it silently (`msiexec /i /passive /norestart`, handling 3010 reboot-required; EXE `/SILENT /SUPPRESSMSGBOXES /NORESTART`), then re-exec `--version`.
+
+**LOCKSTEP CONTRACT (do not break):** the install paths and marker values in `wix/main.wxs`, `wix-corporate/corporate.wxs`, `inno/global.iss`, `inno/corporate.iss` must stay in lockstep with `update.rs`'s `read_install_source_marker()` / `classify_install_path()`. If you change a path or marker in an installer, change the matching arm in `update.rs` (and the `install_origin` JSON id) in the same commit.
+
+The cargo path is unchanged except: `verify_cargo_post_install` re-execs `--version` **after** the shadow-cleanup success path (defeats the crates.io-lag "update available" loop), `rustup_update_stable_best_effort` runs first, and `is_newer` is prerelease-aware. JSON adds a Windows-only top-level `install_origin` field. New `strategy` json_ids: `msi_global`/`msi_corporate`/`exe_global`/`exe_corporate`. `sha2` + `winreg` are Windows-only deps; the 4 new `UpdateStrategy` variants carry `#[cfg_attr(not(windows), allow(dead_code))]` and the windows-only fns are `#[cfg(windows)]` (`checksum_verdict` is `#[cfg(any(windows, test))]` so its test runs everywhere).
+
+### `windows-installers.yml` — main-push adaptation (the key divergence from TR-300)
+
+TR-300's installer workflow fires on a tag push and filters `startsWith(head_branch,'v')`. ND-300's `Release` workflow fires on a **main push** and creates the tag itself. So `windows-installers.yml`:
+- Triggers on `workflow_run: workflows:["Release"] types:[completed]` filtered to `conclusion=='success' && head_branch=='main'`, plus `workflow_dispatch` (input `tag`, always runs).
+- **Resolves the tag** by checking out the triggering commit (`workflow_run.head_sha`) and reading `version` from `Cargo.toml` → `tag = "v$version"` (dispatch uses the provided tag).
+- **Pre-flight + idempotency:** probes the release for `dist-manifest.json` + `nd300-x86_64-pc-windows-msvc.msi` (torn-release guard); if all 6 corporate/EXE assets are already attached on a non-dispatch run, logs and exits 0 (so docs-only/no-op main pushes don't rebuild). `workflow_dispatch` always rebuilds (`--clobber`).
+- Keeps the WiX `candle`/`light -sice:ICE38 -sice:ICE64 -sice:ICE91` + Inno `iscc /DMyAppVersion=` mechanics. Final release carries the cargo-dist base assets + these 6.
+
+`Cargo.toml`: `allow-dirty = ["ci", "msi"]` (the `msi` is for the customized `wix/main.wxs` InstallSourceMarker), `/wix-corporate/**` + `/inno/**` in the `include` list, and the Windows-only `sha2`/`winreg` deps.
+
+### `nd300 dns` subcommand
+
+`Nd300Command::Dns` (`src/cli.rs`) is the bare-subcommand form of `-d`/`--dns`. In `src/main.rs` it is routed through the **same semi-exit-early path** as the flag (sets a `run_dns` intent rather than the terminal subcommand block), so `nd300 dns` ≡ `nd300 --dns` (exit on failure, fall through to diagnostics on success). All other subcommands stay terminal.
 
 ## Speed Test Accuracy Pipeline
 

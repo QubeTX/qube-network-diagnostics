@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-06-07
+
+TR-300 parity release: full Windows distribution + self-update matrix, a `dns`
+subcommand, and a batch of speed-test stability fixes.
+
+### Added
+- **Four first-class Windows installers** (MSI/EXE × Global/Corporate), each packaging **both** `nd300.exe` and `speedqx.exe`. A new `.github/workflows/windows-installers.yml` builds the Corporate MSI (`wix-corporate/corporate.wxs`, bare WiX 3 `candle`/`light` with `-sice:ICE38/64/91`), the Global EXE (`inno/global.iss`, perMachine/admin, system PATH), and the Corporate EXE (`inno/corporate.iss`, perUser/no-UAC, user PATH) via Inno Setup 6, plus a `<hex> *<name>` `.sha256` sidecar for each, and uploads all 6 add-on assets with `gh release upload --clobber`. The Global MSI continues to come from `wix/main.wxs` via cargo-dist. Corporate editions install to `%LocalAppData%\Programs\nd300\bin\` with no admin prompt; Global editions install to `C:\Program Files\nd300\bin\`. Pick one format per edition.
+  - **Main-push trigger (divergence from TR-300):** ND-300's `Release` workflow fires on a `main` push and creates the tag itself, so `windows-installers.yml` triggers on `workflow_run: workflows:["Release"] types:[completed]` filtered to `conclusion=='success' && head_branch=='main'` (plus `workflow_dispatch` with a `tag` input that always runs). The tag is resolved by reading `version` from `Cargo.toml` at the triggering commit → `v$version`. A pre-flight probes the release for `dist-manifest.json` + the Global MSI, and **idempotently exits 0** when all 6 corporate/EXE assets are already attached (so no-op/docs main pushes don't rebuild).
+- **`nd300 dns` subcommand** — bare-subcommand form of the existing `-d`/`--dns` flag (`src/cli.rs`). Routed through the same semi-exit-early path in `src/main.rs` (exit on failure, fall through to diagnostics on success), so `nd300 dns` ≡ `nd300 --dns`.
+
+### Changed
+- **Self-update parity with TR-300 (`src/actions/update.rs`).** ND-300's existing async-`reqwest` flow and richer cargo shadow-cleanup machinery (`ShadowCleanupDecision`, `classify_shadow_cleanup`, the uninstall integration + tests) are preserved; the following capabilities were added on top:
+  - **Windows install-origin dispatch.** A `HKCU\Software\ND300\InstallSource` marker (written by each installer: `msi-global`/`msi-corporate`/`exe-global`/`exe-corporate`) is read by `read_install_source_marker()` (authoritative), with a path-based `classify_install_path()` fallback (`\program files\nd300\` → MsiGlobal, `\appdata\local\programs\nd300\` → MsiCorporate, `\.cargo\bin\` → CargoOrInstaller). `build_strategy_list` returns a **single** matching MSI/EXE strategy (no cross-fall-back between installer types). Four new `UpdateStrategy` variants (`MsiGlobal`/`MsiCorporate`/`ExeGlobal`/`ExeCorporate`) with stable `json_id`s.
+  - **SHA-256-verified in-place installer upgrade.** `try_msi_install` / `try_exe_install` download the matching installer to `%TEMP%` via async reqwest, fetch the `.sha256` sidecar, `verify_checksum` (refuse-on-mismatch via the testable `checksum_verdict`), run `msiexec /i /passive /norestart` (handling exit 3010 reboot-required honestly) or the EXE `/SILENT /SUPPRESSMSGBOXES /NORESTART`, then re-exec `--version` to confirm the replacement landed.
+  - **Prerelease-aware versioning.** `strip_prerelease_metadata` + an upgraded `is_newer` correctly handle `-rc`/`+meta` suffixes.
+  - **`verify_cargo_post_install`** re-execs `--version` after `cargo install` (wired in **after** the shadow-cleanup success path); on a stale/crates.io-lag mismatch it falls through to the prebuilt installer instead of looping "update available."
+  - **`rustup_update_stable_best_effort`** before `cargo install`; explicit GitHub **rate-limit (403)** messaging via `http_status_message`.
+- **Self-update `--json` schema (Windows):** every update payload now carries a top-level `"install_origin"` field (`msi-global`/`msi-corporate`/`exe-global`/`exe-corporate`/`cargo-or-installer`/`unknown`). The field is Windows-only (omitted on macOS/Linux). New `"strategy"` values `msi_global`/`msi_corporate`/`exe_global`/`exe_corporate` join the existing set; `"method"` still maps to `cargo`/`installer`.
+- **`Cargo.toml`:** version `3.0.11` → `3.1.0`; `allow-dirty = ["ci", "msi"]`; new `[target.'cfg(windows)'.dependencies]` `sha2 = "0.10"` + `winreg = "0.52"`; `/wix-corporate/**` and `/inno/**` added to the crate `include` list.
+
+### Fixed
+- **M1 — speedqx is now bounded by per-request timeouts and an outer wall-clock cap.** Each per-request builder in the Cloudflare, LibreSpeed, and fast.com download loops (and the fast.com upload loop) now sets `.timeout(remaining_budget(deadline))` (floored at 1s), so a stalled CDN socket can't block a single `resp.bytes().await` for the full 120s client timeout and overrun the deadline-based loop. `src/bin/speedqx.rs` now wraps the whole `speedtest::run` in a `tokio::time::timeout` outer cap (scaled to the configured durations, ≥120s) and exits 2 with a clear message on timeout (nd300 already had a wall-clock cap; speedqx had none).
+- **M2 — `main.rs`'s overall `RUN_ALL_CAP` now scales with `--speed-duration`.** The fixed 90s cap is replaced by `max(90s, 4 * speed_duration + 30s)` (2 providers × 2 directions, plus headroom), so a deliberately long speed test (`--speed-duration 60`) isn't truncated and falsely reported as a "severely degraded network." `--fast` keeps the 90s floor.
+- **L1 — honest per-provider failure.** Cloudflare, LibreSpeed, and fast.com now set `error = Some("no successful transfers")` when discovery/latency succeeded but **zero** transfer samples were collected, so the speedqx table shows an explicit error row instead of a silent N/A (and aggregation, which filters on `error.is_none()`, correctly excludes the provider).
+- **L2 — speedqx honest exit code.** `speedqx` now exits non-zero when no provider produced positive throughput in either direction, mirroring `diagnostics/speed.rs::determine_speed_status`'s "measured" check. A slow-but-working link (positive throughput) still exits 0.
+- **L4 — NDT7 keeps earlier samples on a mid-run error.** A mid-run iteration error in the NDT7 download/upload deadline loops now `break`s (retaining samples already collected) instead of `?`-collapsing the whole provider to an error. A first-iteration failure that collected nothing still reports an honest `"no successful transfers"` provider error.
+
+### Known limitations
+- L3 (the cosmetic `Risk::Low` label on `RestartNetworkServices`) and L5 (fast.com token-scraping brittleness) are intentionally **not** addressed in this release — documented as known/low.
+
 ## [3.0.11] - 2026-06-07
 
 ### Fixed
