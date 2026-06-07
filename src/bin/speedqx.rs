@@ -206,7 +206,7 @@ async fn main() {
         use_colors,
     };
 
-    // Outer wall-clock cap (M1). nd300 already bounds its diagnostic run; speedqx
+    // Outer wall-clock cap (M2). nd300 already bounds its diagnostic run; speedqx
     // had none, so a CDN that wedged past every per-request timeout could leave
     // the whole test hanging. The four providers run sequentially — CF/NDT7/LS
     // each do `duration` per direction (×2), fast.com does `fastcom_duration` per

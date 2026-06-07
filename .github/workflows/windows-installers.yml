@@ -17,7 +17,8 @@
 # TR-300's release.yml fires on a TAG push, so its installer workflow filters on
 # `startsWith(head_branch, 'v')`. ND-300's release.yml fires on a MAIN push and
 # creates the tag itself (via `gh release create`). So:
-#   - the auto path filters on `workflow_run.head_branch == 'main'`, and
+#   - the auto path fires for a `main` push (head_branch == 'main') OR a tag push
+#     (head_branch starts with 'v'), covering both release models, and
 #   - the tag is resolved by reading `version` from Cargo.toml at the triggering
 #     commit (workflow_run.head_sha) → `tag = "v$version"`.
 # This file also packages BOTH nd300.exe AND speedqx.exe (ND-300 ships two
@@ -55,13 +56,19 @@ jobs:
     runs-on: windows-2022
     # Filter:
     # - workflow_dispatch path: always run (user provided the tag explicitly).
-    # - workflow_run path: only run when the Release workflow SUCCEEDED AND was a
-    #   main-branch push (ND-300's Release fires on `main` and creates the tag
-    #   itself — there is no tag-triggered run to key off of like TR-300).
+    # - workflow_run path: only when the Release workflow SUCCEEDED, for EITHER
+    #   release model — a `main`-branch push (ND-300's standard deploy; release.yml
+    #   creates the tag itself, so head_branch == 'main') OR a tag push (the
+    #   documented manual release trigger, where a workflow_run's head_branch IS
+    #   the tag name and starts with 'v'). Either way the tag is resolved from
+    #   Cargo.toml at the triggering commit below. Without the `startsWith(...,'v')`
+    #   arm a tag-push release would silently ship without these 6 Windows assets,
+    #   which would then 404 marker-based `nd300 update` for that version.
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+       (github.event.workflow_run.head_branch == 'main' ||
+        startsWith(github.event.workflow_run.head_branch, 'v')))
 
     steps:
       - name: Enable Windows long paths
