@@ -61,10 +61,10 @@ async fn test_port(host: &str, port: u16, service: &str) -> PortResult {
     let addr = format!("{}:{}", host, port);
     let start = std::time::Instant::now();
 
-    // Resolve hostname first if needed
-    let addrs = match tokio::net::lookup_host(&addr).await {
-        Ok(addrs) => addrs.collect::<Vec<_>>(),
-        Err(_) => {
+    // Resolve hostname first if needed (bounded so a dead resolver can't hang).
+    let addrs = match super::util::lookup_host_timeout(addr, super::util::RESOLVE).await {
+        Some(addrs) => addrs,
+        None => {
             return PortResult {
                 port,
                 service: service.to_string(),

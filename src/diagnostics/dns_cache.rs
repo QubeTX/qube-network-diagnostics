@@ -28,11 +28,9 @@ pub async fn collect() -> Option<Vec<DnsCacheEntry>> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<Vec<DnsCacheEntry>> {
-    let output = tokio::process::Command::new("ipconfig")
-        .args(["/displaydns"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("ipconfig");
+    cmd.args(["/displaydns"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut entries = Vec::new();
@@ -70,7 +68,12 @@ async fn collect_windows() -> Option<Vec<DnsCacheEntry>> {
             || line.contains("CNAME Record")
             || line.contains("AAAA Record")
         {
-            let data = line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string();
+            let data = line
+                .split_once(':')
+                .map(|x| x.1)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if !current_name.is_empty() {
                 entries.push(DnsCacheEntry {
                     name: current_name.clone(),
@@ -95,11 +98,9 @@ async fn collect_windows() -> Option<Vec<DnsCacheEntry>> {
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<Vec<DnsCacheEntry>> {
     // Try resolvectl
-    if let Ok(output) = tokio::process::Command::new("resolvectl")
-        .args(["statistics"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("resolvectl");
+    cmd.args(["statistics"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::SLOW).await {
         let text = String::from_utf8_lossy(&output.stdout);
         if !text.is_empty() {
             // resolvectl doesn't dump individual entries easily

@@ -56,7 +56,7 @@ fn parse_windows_listeners(
 
     for line in lines {
         let line = line.trim();
-        if !line.contains("LISTENING") && !(line.starts_with("UDP") && line.contains("*:*")) {
+        if !(line.contains("LISTENING") || line.starts_with("UDP") && line.contains("*:*")) {
             // Also match lines that start with whitespace before UDP
             if !(line.trim_start().starts_with("UDP") && line.contains("*:*")) {
                 continue;
@@ -91,11 +91,9 @@ fn parse_windows_listeners(
 async fn collect_windows() -> Option<Vec<ListeningPort>> {
     use sysinfo::System;
 
-    let output = tokio::process::Command::new("netstat")
-        .args(["-ano"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-ano"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -137,11 +135,9 @@ fn parse_macos_listeners(lines: &[String]) -> Vec<ListeningPort> {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<Vec<ListeningPort>> {
-    let output = tokio::process::Command::new("netstat")
-        .args(["-anp", "tcp"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-anp", "tcp"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -150,11 +146,9 @@ async fn collect_macos() -> Option<Vec<ListeningPort>> {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<Vec<ListeningPort>> {
-    let output = tokio::process::Command::new("ss")
-        .args(["-tulnp"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("ss");
+    cmd.args(["-tulnp"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut ports = Vec::new();

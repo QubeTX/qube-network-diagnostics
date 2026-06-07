@@ -11,11 +11,9 @@ pub async fn collect() -> Option<Vec<MtuInfo>> {
 
     #[cfg(windows)]
     {
-        if let Ok(output) = tokio::process::Command::new("netsh")
-            .args(["interface", "ipv4", "show", "subinterfaces"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("netsh");
+        cmd.args(["interface", "ipv4", "show", "subinterfaces"]);
+        if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
             for line in text.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -35,11 +33,9 @@ pub async fn collect() -> Option<Vec<MtuInfo>> {
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(output) = tokio::process::Command::new("ip")
-            .args(["link", "show"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("ip");
+        cmd.args(["link", "show"]);
+        if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
             for line in text.lines() {
                 if line.contains("mtu") {
@@ -67,7 +63,8 @@ pub async fn collect() -> Option<Vec<MtuInfo>> {
 
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = tokio::process::Command::new("ifconfig").output().await {
+        let cmd = tokio::process::Command::new("ifconfig");
+        if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
             let mut current_iface = String::new();
 

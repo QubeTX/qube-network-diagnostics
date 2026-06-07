@@ -21,12 +21,14 @@ const TARGETS: &[(&str, &str)] = &[
 ];
 
 pub async fn check() -> (DiagnosticResult, Vec<LatencyResult>) {
-    let mut results = Vec::new();
-
-    for (host, label) in TARGETS {
-        let result = ping_multiple(host, label, 4).await;
-        results.push(result);
-    }
+    // Ping all targets concurrently. `join_all` preserves input order, so the
+    // reachable/avg computations below are identical to the sequential version.
+    let results: Vec<LatencyResult> = futures_util::future::join_all(
+        TARGETS
+            .iter()
+            .map(|(host, label)| ping_multiple(host, label, 4)),
+    )
+    .await;
 
     let reachable = results.iter().filter(|r| r.reachable).count();
     let total = results.len();
@@ -62,13 +64,12 @@ pub async fn check() -> (DiagnosticResult, Vec<LatencyResult>) {
 }
 
 async fn ping_multiple(host: &str, label: &str, count: u32) -> LatencyResult {
-    let output = tokio::process::Command::new("ping")
-        .args(ping_args(host, count))
-        .output()
-        .await;
+    let mut cmd = tokio::process::Command::new("ping");
+    cmd.args(ping_args(host, count));
+    let output = super::util::run_with_timeout(cmd, super::util::SLOW).await;
 
     match output {
-        Ok(out) if out.status.success() => {
+        Some(out) if out.status.success() => {
             let text = String::from_utf8_lossy(&out.stdout);
             parse_ping_output(&text, host, label)
         }

@@ -143,7 +143,8 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
 
     #[cfg(windows)]
     {
-        if let Ok(output) = tokio::process::Command::new("ipconfig").output().await {
+        let cmd = tokio::process::Command::new("ipconfig");
+        if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
             let mut current_iface = String::new();
 
@@ -199,11 +200,9 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
 
     #[cfg(unix)]
     {
-        if let Ok(output) = tokio::process::Command::new("ip")
-            .args(["-6", "addr", "show"])
-            .output()
-            .await
-        {
+        let mut cmd = tokio::process::Command::new("ip");
+        cmd.args(["-6", "addr", "show"]);
+        if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
             let mut current_iface = String::new();
 
@@ -228,7 +227,8 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
 
         // Fallback for macOS if `ip` not available
         if addrs.is_empty() {
-            if let Ok(output) = tokio::process::Command::new("ifconfig").output().await {
+            let cmd = tokio::process::Command::new("ifconfig");
+            if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let mut current_iface = String::new();
 

@@ -54,11 +54,9 @@ pub async fn collect() -> Option<ProtocolStatistics> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<ProtocolStatistics> {
-    let output = tokio::process::Command::new("netstat")
-        .args(["-s"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-s"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut tcp = TcpStats {
@@ -157,11 +155,9 @@ async fn collect_windows() -> Option<ProtocolStatistics> {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<ProtocolStatistics> {
-    let output = tokio::process::Command::new("netstat")
-        .args(["-s"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-s"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
 

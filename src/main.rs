@@ -75,7 +75,46 @@ async fn main() {
         }
     }
 
-    let results = diagnostics::run_all(&config).await;
+    // Safety net: diagnostics shell out and resolve hostnames, which on a
+    // badly-broken network could still take longer than is useful even though
+    // each individual call is now bounded. Race the whole run against an
+    // overall wall-clock cap and a Ctrl-C handler so the tool always returns
+    // promptly with a clear message instead of appearing to hang. On a healthy
+    // network the diagnostics finish first and this is invisible.
+    const RUN_ALL_CAP: std::time::Duration = std::time::Duration::from_secs(90);
+    let is_json = matches!(config.format, OutputFormat::Json);
+
+    let results = tokio::select! {
+        biased;
+
+        _ = tokio::signal::ctrl_c() => {
+            if is_json {
+                println!("{{\"error\":\"interrupted\",\"interrupted\":true}}");
+            } else {
+                eprintln!("Interrupted.");
+            }
+            std::process::exit(130);
+        }
+
+        outcome = tokio::time::timeout(RUN_ALL_CAP, diagnostics::run_all(&config)) => {
+            match outcome {
+                Ok(results) => results,
+                Err(_) => {
+                    if is_json {
+                        println!("{{\"error\":\"timeout\",\"timed_out\":true}}");
+                    } else {
+                        eprintln!(
+                            "Diagnostics timed out after {}s — your network appears to be \
+                             severely degraded or unreachable. Check your connection and \
+                             try again.",
+                            RUN_ALL_CAP.as_secs()
+                        );
+                    }
+                    std::process::exit(2);
+                }
+            }
+        }
+    };
 
     let output = match config.format {
         OutputFormat::Table => {

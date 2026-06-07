@@ -54,31 +54,27 @@ pub async fn collect() -> Option<ProxyConfig> {
 #[cfg(windows)]
 async fn check_windows_proxy(config: &mut ProxyConfig) {
     // Check Windows registry via reg query
-    if let Ok(output) = tokio::process::Command::new("reg")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            "/v",
-            "ProxyEnable",
-        ])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("reg");
+    cmd.args([
+        "query",
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        "/v",
+        "ProxyEnable",
+    ]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         if text.contains("0x1") {
             config.proxy_enabled = true;
 
             // Get proxy server
-            if let Ok(output) = tokio::process::Command::new("reg")
-                .args([
-                    "query",
-                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-                    "/v",
-                    "ProxyServer",
-                ])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("reg");
+            cmd.args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                "/v",
+                "ProxyServer",
+            ]);
+            if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
                 let text = String::from_utf8_lossy(&output.stdout);
                 for line in text.lines() {
                     if line.contains("ProxyServer") {
@@ -92,16 +88,14 @@ async fn check_windows_proxy(config: &mut ProxyConfig) {
             }
 
             // Get PAC URL
-            if let Ok(output) = tokio::process::Command::new("reg")
-                .args([
-                    "query",
-                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-                    "/v",
-                    "AutoConfigURL",
-                ])
-                .output()
-                .await
-            {
+            let mut cmd = tokio::process::Command::new("reg");
+            cmd.args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                "/v",
+                "AutoConfigURL",
+            ]);
+            if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
                 let text = String::from_utf8_lossy(&output.stdout);
                 for line in text.lines() {
                     if line.contains("AutoConfigURL") {
@@ -115,11 +109,9 @@ async fn check_windows_proxy(config: &mut ProxyConfig) {
 
 #[cfg(target_os = "macos")]
 async fn check_macos_proxy(config: &mut ProxyConfig) {
-    if let Ok(output) = tokio::process::Command::new("scutil")
-        .args(["--proxy"])
-        .output()
-        .await
-    {
+    let mut cmd = tokio::process::Command::new("scutil");
+    cmd.args(["--proxy"]);
+    if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
 
         for line in text.lines() {

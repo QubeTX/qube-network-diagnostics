@@ -6,6 +6,20 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 7, 2026 — no more hanging on a broken network; faster results
+
+**Fixed**
+- The tool no longer hangs when your network or DNS is broken. Before, if your internet was down or your DNS server was unreachable, the tool could sit there for a long time waiting on the operating system before giving up. Now every check it runs has a built-in time limit, so a dead connection produces a clear "unreachable" result quickly instead of an apparent freeze. On a healthy network nothing changes — you get the same results as before. This also helps the auto-repair command, which runs the same checks while it works.
+- Added an overall safety net: if the whole set of checks somehow takes too long, the tool now stops itself after about a minute and a half and tells you your network looks severely degraded, rather than appearing stuck. You can also press Ctrl-C at any time to cancel cleanly.
+
+**Improved**
+- The latency checks (the ping tests to a few well-known servers) now run all at once instead of one after another, so results come back faster — noticeably so on a flaky or dead connection, where the old one-at-a-time approach was slowest.
+
+**Behind the scenes**
+- Cleaned up some code-quality warnings flagged by newer build tooling so the project's automated checks pass cleanly again. No change to how the tool behaves.
+
+---
+
 ## May 11, 2026 — docs republish
 
 **Behind the scenes**
