@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-06-08
+
+### Fixed
+- **Windows EXE installer build (`inno/global.iss`).** The v3.2.0 consolidation work referenced a non-existent Inno Setup constant `{userprofile}` in the Global EXE's `[Run]` parameters, which failed the `iscc` step in `windows-installers.yml` — so the v3.2.0 GitHub release published without the Corporate MSI and the two Inno EXE add-ons (22 of 28 assets). Inno has no reliable *pre-elevation* user-profile constant (`{userprofile}` doesn't exist; `{%USERPROFILE}` / `runasoriginaluser` resolve to the admin account under separate-credential elevation), so the `--user-profile` argument is **dropped** from the Global EXE's `migrate-cleanup` invocation. `migrate-cleanup` falls back to the process environment (`CARGO_HOME`, then `%USERPROFILE%` / `%LocalAppData%`) — correct in the common case (an admin elevating their own session) and fail-safe otherwise (no copy under the admin profile → harmless no-op). The perMachine **MSI** still resolves the invoking user via its `Impersonate='yes'` custom action. Behavior is otherwise unchanged; v3.2.1 publishes the complete 28-asset Windows installer set.
+
 ## [3.2.0] - 2026-06-07
 
 Cross-method install cleanup: consolidate to a single nd300/speedqx install

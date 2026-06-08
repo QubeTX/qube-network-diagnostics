@@ -6,6 +6,13 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 8, 2026 — fix so all the Windows setup programs build and ship
+
+**Fixed**
+- Yesterday's "one copy at a time" cleanup feature shipped, but a small mistake in one of the Windows setup programs stopped two of the four Windows installers from being built and attached to the release. This release fixes that, so all four Windows installers are available again. The fix also simplifies how the "for everyone on this computer" setup program finds an old leftover copy to remove — it now uses the same safe, automatic approach as the other installers, and removing the other edition still skips gracefully if it would need administrator rights. Nothing about how you use the tool changes.
+
+---
+
 ## June 7, 2026 — one copy of the tool, not several (automatic cleanup of leftover installs on Windows)
 
 **Added**
