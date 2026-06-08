@@ -109,17 +109,20 @@ Root: HKCU; Subkey: "Software\ND300"; Flags: uninsdeletekeyifempty
 ; cargo/rustup, never the .cargo\bin PATH entry, never the running install, and
 ; always exits 0 (cleanup is advisory — it must never fail the install).
 ;
-; perMachine Global EXE runs ELEVATED. Inno's `runasoriginaluser` is unreliable
-; under right-click -> Run as administrator, so instead of relying on the child
-; process's environment we pass the invoking user's profile explicitly via
-; --user-profile "{userprofile}". migrate-cleanup uses that to find the user's
-; .cargo\bin (cargo copy) and %LocalAppData% (Corporate edition). The Global
-; edition's own Program Files dir is machine-wide and resolved without it.
+; perMachine Global EXE runs ELEVATED. Inno has no reliable constant for the
+; pre-elevation (invoking) user's profile: there is no {userprofile} constant,
+; and {%USERPROFILE} / runasoriginaluser resolve to the admin account when a
+; standard user supplies separate admin credentials. So we do NOT pass
+; --user-profile here — migrate-cleanup falls back to the process environment
+; (CARGO_HOME, then %USERPROFILE% / %LocalAppData%), which is correct in the
+; common case (an admin elevating their own session) and FAILS SAFE otherwise
+; (it finds no copy under the admin profile and reports a harmless no-op). The
+; perMachine MSI resolves the right user via an Impersonate='yes' custom action.
 ;
 ; runhidden + waituntilterminated keeps the wizard clean and ordered; nowait is
 ; deliberately NOT used so cleanup finishes before Setup reports done.
-Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --cargo-copy --user-profile ""{userprofile}"""; Flags: runhidden waituntilterminated; Tasks: cleancargo; StatusMsg: "Removing older Cargo-installed copy..."
-Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --other-edition --user-profile ""{userprofile}"""; Flags: runhidden waituntilterminated; Tasks: cleanotheredition; StatusMsg: "Removing the other edition..."
+Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --cargo-copy"; Flags: runhidden waituntilterminated; Tasks: cleancargo; StatusMsg: "Removing older Cargo-installed copy..."
+Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --other-edition"; Flags: runhidden waituntilterminated; Tasks: cleanotheredition; StatusMsg: "Removing the other edition..."
 
 [Code]
 {
