@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use super::{fail_icon, is_interactive, prompt_yes_no, success_icon};
 
 /// Binaries that are part of this package (installed together by cargo-dist).
-const OUR_BINARIES: &[&str] = &["nd300", "speedqx"];
+/// This is the deletion allowlist: `migrate-cleanup` (src/actions/migrate.rs) only
+/// ever deletes files whose stem is in this list, so it can never touch
+/// `cargo.exe`, `rustup.exe`, or any other binary that shares a directory.
+pub(crate) const OUR_BINARIES: &[&str] = &["nd300", "speedqx"];
 
 /// Tracks what we cleaned up for reporting.
 pub(crate) struct CleanupReport {
@@ -390,7 +393,7 @@ fn get_receipt_dir() -> Option<PathBuf> {
 /// If other binaries are present (e.g. cargo, rustup), we must NOT remove the
 /// directory from PATH — that would break the user's Rust toolchain.
 #[cfg(windows)]
-fn is_sole_package_in_dir(dir: &Path) -> bool {
+pub(crate) fn is_sole_package_in_dir(dir: &Path) -> bool {
     let our_names: Vec<String> = OUR_BINARIES.iter().map(|n| format!("{}.exe", n)).collect();
 
     match std::fs::read_dir(dir) {

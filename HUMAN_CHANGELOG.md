@@ -6,6 +6,18 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 7, 2026 — one copy of the tool, not several (automatic cleanup of leftover installs on Windows)
+
+**Added**
+- On Windows it used to be easy to end up with more than one copy of the tool on your computer at once — for example, an older copy installed through the Rust package manager sitting alongside a newer copy from a regular installer, with the old one quietly winning. You could also end up with both the "for everyone on this computer" edition and the "just for me" edition installed side by side. From now on the goal is simple: **one version, one edition, at a time.**
+- The Windows installers now offer two tidy-up options, both turned on by default: remove an older leftover copy that was installed through the Rust package manager, and remove the other edition if it's also installed. You can untick either one during a normal install if you'd rather not. The cleanup is careful by design — it only ever removes the tool's own two programs, never your Rust toolchain (or anything else that lives in the same folder), never your Downloads folder, and never the copy you're currently running. If removing the other edition would need administrator rights you don't have, it simply skips that part and tells you, rather than failing.
+- This same tidy-up now also happens automatically when the tool updates itself silently in the background — so a routine update quietly consolidates you down to a single, current install without you having to do anything. And because the cleanup can never cause an install or update to fail (it's strictly a helpful extra), there's no risk to your update if a leftover copy can't be removed.
+
+**Behind the scenes**
+- The cleanup reuses the tool's existing, already-tested "remove an install" machinery rather than introducing brand-new deletion code, which keeps the safety guarantees intact. macOS and Linux didn't need any of this — on those systems an update simply overwrites the single existing copy — so the change is Windows-only.
+
+---
+
 ## June 7, 2026 — proper Windows installers, smarter updating, a new way to type the DNS command, and steadier speed tests
 
 **Added**

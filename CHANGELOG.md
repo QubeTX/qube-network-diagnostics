@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-06-07
+
+Cross-method install cleanup: consolidate to a single nd300/speedqx install
+(one version, one edition) — interactively from the installers AND on a silent
+self-update. Windows-only behavior; macOS/Linux already overwrite the single
+`~/.cargo/bin` copy and are unaffected.
+
+### Added
+- **Hidden `nd300 migrate-cleanup` subcommand** (`src/actions/migrate.rs`, `#[command(hide = true)]` in `src/cli.rs`). Detects and removes duplicate installs by **reusing the existing tested deletion primitives** — it does *not* re-implement deletion:
+  - From `src/actions/uninstall.rs`: `uninstall_path`, `CleanupReport`, `is_sole_package_in_dir`, and the `OUR_BINARIES` allowlist (now `pub(crate)`).
+  - From `src/actions/update.rs`: `cargo_bin_dir`, `same_path`, `classify_install_path`, `current_install_shadows_cargo_install`, `current_exe_real_path`, `classify_shadow_cleanup`, `ShadowCleanupDecision`, `InstallOrigin` (now `pub(crate)`).
+  - **Flags:** `--cargo-copy`, `--other-edition`, `--quiet`, `--dry-run`, `--json`, `--user-profile <path>`, `--cargo-home <path>`. With **no** target flag, defaults to `--cargo-copy` only.
+  - **Targets:** the shadowing older `cargo install` copy in `~\.cargo\bin`, and the *other* Windows edition (Global perMachine `C:\Program Files\nd300\bin` ↔ Corporate perUser `%LocalAppData%\Programs\nd300\bin`). `--cargo-home`/`--user-profile` take precedence over `%USERPROFILE%`/process env so a perMachine installer can resolve the *invoking* user's `.cargo`.
+  - **Hard safety guarantees (unit-tested):** only ever deletes `nd300.exe`/`speedqx.exe` (allowlist); never `cargo.exe`/`rustup.exe`/non-allowlisted files; never removes the `.cargo\bin` PATH entry (delegated to `uninstall_path`, which only edits PATH when `is_sole_package_in_dir` is true — and `.cargo\bin` always also holds cargo/rustup); never touches `~/Downloads`; never deletes the running install (`same_path` guard); never escalates privileges (a target needing admin we lack is reported `needs admin: <path>` and **continues** — exit 0); refuses shell-unsafe paths (via `uninstall_path`'s existing `build_delayed_delete_command` refusal).
+  - **Exit 0 even on partial/empty/needs-admin** — cleanup is advisory and must never fail an installer. Only a true internal error (couldn't determine the running install's own location) is nonzero.
+  - **Reporting:** human (removed / scheduled-on-exit / skipped:`<reason>` / needs-admin / failed, per target) and `--json` (stable `status` values `removed`/`scheduled`/`would_remove`/`skipped`/`needs_admin`/`failed`).
+- **Installer consolidation UX + invocation on all four Windows installers.** Both options default ON, so a SILENT install consolidates too:
+  - **Inno** (`inno/global.iss`, `inno/corporate.iss`): two default-checked `[Tasks]` (`cleancargo`, `cleanotheredition`) + a `[Run]` postinstall calling `{app}\bin\nd300.exe migrate-cleanup --quiet <flag>` with `Flags: runhidden waituntilterminated`, conditioned on each task. Added `AppMutex=ND300_Running` + `CloseApplications=yes`. Under `/SILENT` (the self-updater's EXE path) default-checked tasks fire automatically — both cleanups run with **no** `/MERGETASKS` suppression. The perMachine **Global** EXE passes the invoking user's profile via `--user-profile "{userprofile}"` (Inno `runasoriginaluser` is unreliable under right-click-Run-as-admin); the perUser **Corporate** EXE runs as the user (no `--user-profile`).
+  - **WiX** (`wix/main.wxs` Global perMachine, `wix-corporate/corporate.wxs` Corporate perUser): `CLEANCARGO`/`CLEANOTHEREDITION` properties (default `1`, `Secure='yes'`) + a `ConsolidateDlg` WixUI dialog (two pre-checked checkboxes inserted between WelcomeDlg and CustomizeDlg) + two **deferred, `Impersonate='yes'`, `Return='ignore'`** custom actions scheduled `Before='InstallFinalize'`, conditioned `NOT Installed AND CLEAN…="1"` (install/upgrade only, not uninstall/repair). The CAs use `FileKey='exe0'` + `ExeCommand` (NOT `WixUtilExtension`'s `WixQuietExec`) because `cargo wix` / the bare `candle`+`light` build only link `WixUIExtension` — a `WixQuietExec` CA would fail the CI link step. `Impersonate='yes'` makes the perMachine MSI run cleanup as the invoking user, so the user's `.cargo`/`%LocalAppData%` resolve without needing `--user-profile`.
+
+### Changed
+- **Silent self-update now consolidates.** No code change was required in `src/actions/update.rs`: `try_msi_install` already runs `msiexec /i … /passive /norestart` (the default-`1` `CLEANCARGO`/`CLEANOTHEREDITION` properties stand), and `try_exe_install` already runs the EXE `/SILENT …` with no `/MERGETASKS` suppression (the default-checked tasks fire). Verified both paths leave the cleanups enabled.
+- **`Cargo.toml`:** version `3.1.0` → `3.2.0`.
+- Several `uninstall.rs` / `update.rs` items widened from private to `pub(crate)` so `migrate.rs` can reuse them (no behavior change to update/uninstall).
+
+### Notes
+- macOS/Linux compilation, and the WiX/Inno installer builds, are validated only in CI / on a Windows runner — the cross-platform Rust targets and `candle`/`light`/`iscc` are not run locally. All v3.1.0 update/uninstall behavior and tests are preserved.
+
 ## [3.1.0] - 2026-06-07
 
 TR-300 parity release: full Windows distribution + self-update matrix, a `dns`
