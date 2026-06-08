@@ -1,6 +1,7 @@
 pub mod clear_dns;
 pub mod dns;
 pub mod fix;
+pub mod migrate;
 pub mod uninstall;
 pub mod update;
 

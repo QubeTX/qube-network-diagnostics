@@ -151,7 +151,7 @@ impl UpdateStrategy {
 /// cargo install / PowerShell installer path that doesn't write a marker.
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InstallOrigin {
+pub(crate) enum InstallOrigin {
     /// `C:\Program Files\nd300\bin\nd300.exe`, installed from wix/main.wxs.
     MsiGlobal,
     /// `%LocalAppData%\Programs\nd300\bin\nd300.exe`, from wix-corporate/corporate.wxs.
@@ -717,8 +717,10 @@ fn try_cargo_install(latest: &str) -> Result<(), StrategyError> {
 
 /// The three outcomes of a shadow-cleanup attempt, as a function of the cleanup
 /// report. Pure so it can be unit-tested without touching the filesystem.
+/// Shared with `migrate-cleanup` (src/actions/migrate.rs) so both the updater and
+/// the installer-driven consolidation map a `CleanupReport` the same way.
 #[derive(Debug, PartialEq, Eq)]
-enum ShadowCleanupDecision {
+pub(crate) enum ShadowCleanupDecision {
     /// The old shadowing binary is gone now — clean success.
     Removed,
     /// Windows: the old binary is scheduled for deletion when this process
@@ -733,7 +735,9 @@ enum ShadowCleanupDecision {
 /// Map a cleanup report to a shadow-cleanup decision. `binary_removed` wins;
 /// otherwise a Windows scheduled-on-exit removal is an honest warning; otherwise
 /// it's a hard failure.
-fn classify_shadow_cleanup(report: &super::uninstall::CleanupReport) -> ShadowCleanupDecision {
+pub(crate) fn classify_shadow_cleanup(
+    report: &super::uninstall::CleanupReport,
+) -> ShadowCleanupDecision {
     if report.binary_removed {
         ShadowCleanupDecision::Removed
     } else if report.binary_removal_scheduled {
@@ -829,12 +833,12 @@ fn cleanup_notes(report: &super::uninstall::CleanupReport) -> String {
     }
 }
 
-fn current_exe_real_path() -> Option<PathBuf> {
+pub(crate) fn current_exe_real_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     Some(exe.canonicalize().unwrap_or(exe))
 }
 
-fn cargo_bin_dir() -> Option<PathBuf> {
+pub(crate) fn cargo_bin_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("CARGO_HOME") {
         return Some(PathBuf::from(home).join("bin"));
     }
@@ -850,7 +854,10 @@ fn cargo_bin_dir() -> Option<PathBuf> {
     }
 }
 
-fn current_install_shadows_cargo_install(current_exe: &Path, cargo_bin_dir: &Path) -> bool {
+pub(crate) fn current_install_shadows_cargo_install(
+    current_exe: &Path,
+    cargo_bin_dir: &Path,
+) -> bool {
     if current_exe_looks_like_local_build(current_exe) {
         return false;
     }
@@ -875,7 +882,7 @@ fn current_exe_looks_like_local_build(current_exe: &Path) -> bool {
             == Some("target")
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
+pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
     let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
     let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
 
@@ -1441,7 +1448,7 @@ fn detect_install_origin() -> InstallOrigin {
 /// (Program Files\nd300), wix-corporate/corporate.wxs + inno/corporate.iss
 /// (LocalAppData\Programs\nd300), and the cargo bin (`.cargo\bin`).
 #[cfg(windows)]
-fn classify_install_path(exe_path: &str) -> InstallOrigin {
+pub(crate) fn classify_install_path(exe_path: &str) -> InstallOrigin {
     let lower = exe_path.to_lowercase();
     if lower.contains("\\program files\\nd300\\") {
         InstallOrigin::MsiGlobal

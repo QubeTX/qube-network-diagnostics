@@ -131,6 +131,15 @@ pub enum Nd300Command {
 
     /// Uninstall nd300 from this system.
     Uninstall,
+
+    /// Cross-method install cleanup (HIDDEN). Invoked by the Windows installers
+    /// (and the silent self-update path) to consolidate to a single install:
+    /// remove a shadowing older `cargo install` copy and/or the other Windows
+    /// edition. Safe to run anywhere — it never deletes the running install,
+    /// cargo/rustup, the `.cargo\bin` PATH entry, or anything outside the
+    /// nd300/speedqx allowlist, and it always exits 0 (cleanup is advisory).
+    #[command(name = "migrate-cleanup", hide = true)]
+    MigrateCleanup(MigrateArgs),
 }
 
 /// Per-subcommand arguments for `fix`. Currently a placeholder — the `--yes`
@@ -140,6 +149,45 @@ pub enum Nd300Command {
 /// without affecting the legacy `-f` flag form.
 #[derive(Args, Debug, Clone, Default)]
 pub struct FixArgs {}
+
+/// Arguments for the hidden `migrate-cleanup` subcommand. With NO target flag,
+/// the command defaults to `--cargo-copy` only (the safest, never-needs-admin
+/// consolidation). All flags are tool-agnostic so this contract can be mirrored
+/// to TR-300 unchanged.
+#[derive(Args, Debug, Clone, Default)]
+pub struct MigrateArgs {
+    /// Remove a shadowing older `cargo install` / cargo-dist copy in `.cargo\bin`.
+    #[arg(long = "cargo-copy")]
+    pub cargo_copy: bool,
+
+    /// Remove the OTHER Windows edition (Global perMachine <-> Corporate perUser).
+    #[arg(long = "other-edition")]
+    pub other_edition: bool,
+
+    /// Suppress human output (installer invokes this so the wizard stays clean).
+    /// Ignored when `--json` is set.
+    #[arg(long = "quiet")]
+    pub quiet: bool,
+
+    /// Detect and report what WOULD be removed without deleting anything.
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+
+    /// Emit a machine-readable JSON report instead of human text.
+    #[arg(long = "json")]
+    pub json: bool,
+
+    /// The invoking user's profile dir (e.g. `C:\Users\alice`). Used to resolve
+    /// that user's `.cargo\bin` and `%LocalAppData%` when this process runs as a
+    /// different user (a perMachine installer launched elevated / as SYSTEM).
+    #[arg(long = "user-profile", value_name = "PATH")]
+    pub user_profile: Option<String>,
+
+    /// The invoking user's CARGO_HOME (e.g. `C:\Users\alice\.cargo`). Takes
+    /// precedence over `--user-profile` for locating the cargo-bin directory.
+    #[arg(long = "cargo-home", value_name = "PATH")]
+    pub cargo_home: Option<String>,
+}
 
 /// SpeedQX Internet Speed Test - QubeTX Developer Tools
 ///

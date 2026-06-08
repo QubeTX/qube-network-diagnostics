@@ -85,6 +85,26 @@
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='nd300 Installation'/>
 
+        <!-- ── Cross-method consolidation (v3.2.0+) ──────────────────────────
+             Operator policy: exactly one version/edition installed at a time.
+             CLEANCARGO removes a shadowing older `cargo install` copy in
+             ~\.cargo\bin; CLEANOTHEREDITION removes the other Windows edition
+             (here, Corporate perUser). BOTH default to 1 so a SILENT install
+             (`msiexec /passive`, used by the self-updater) ALSO consolidates and
+             the interactive checkboxes are pre-checked. The self-update
+             invocation in src/actions/update.rs::try_msi_install does NOT pass
+             these properties, so the defaults (1) stand on a silent update.
+
+             The deletion LOGIC lives in the binary (`nd300 migrate-cleanup`),
+             run as the two deferred, IMPERSONATED, best-effort CAs below. It only
+             ever removes nd300.exe/speedqx.exe, never cargo/rustup, never the
+             .cargo\bin PATH entry, never the running install, and always exits 0,
+             and the CAs use Return='ignore' so cleanup can NEVER abort the
+             install. Secured=public ("UPPERCASE") so the values survive the
+             InstallExecuteSequence (and can be set from the silent command line). -->
+        <Property Id='CLEANCARGO' Value='1' Secure='yes'/>
+        <Property Id='CLEANOTHEREDITION' Value='1' Secure='yes'/>
+
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='APPLICATIONFOLDER' Name='nd300'>
@@ -193,7 +213,55 @@
 
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
-        
+        <!-- ── Cross-method consolidation custom actions (v3.2.0+) ────────────
+             Two deferred, IMPERSONATED, best-effort custom actions that run the
+             freshly-installed nd300.exe (referenced by FileKey='exe0', so WiX
+             resolves the installed path automatically) with `migrate-cleanup`.
+
+             Why FileKey/ExeCommand instead of WixUtilExtension's WixQuietExec:
+             cargo-dist drives the Global MSI build via `cargo wix`, which only
+             auto-links WixUIExtension (needed for WixUI_FeatureTree). It does NOT
+             link WixUtilExtension, so a WixQuietExec-based CA would fail the CI
+             link step (unresolved WixCA). A type-18 FileKey CA needs no
+             extension, runs the installed exe directly, and is the same behavior.
+
+             Impersonate='yes' is load-bearing: on this perMachine MSI the install
+             runs elevated (often as a different/SYSTEM context), but the cleanup
+             must resolve the INVOKING USER's ~\.cargo and %LocalAppData%.
+             Impersonation runs the CA as the logged-on user, so the user's
+             USERPROFILE / LOCALAPPDATA / CARGO_HOME environment is in effect and
+             migrate-cleanup finds the right copies WITHOUT needing --user-profile.
+
+             Return='ignore' => cleanup can NEVER fail the install (advisory).
+             Condition `NOT Installed` => runs only on a fresh install or major
+             upgrade's install pass, NOT on uninstall (Installed=true, REMOVE=ALL)
+             or repair (Installed=true). The CLEANCARGO / CLEANOTHEREDITION
+             property gate (default 1) is the consent switch — checked in the UI,
+             defaulted-on for silent /passive self-updates. -->
+        <CustomAction Id='CleanCargoCopy'
+            FileKey='exe0'
+            ExeCommand='migrate-cleanup --quiet --cargo-copy'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='ignore'/>
+        <CustomAction Id='CleanOtherEdition'
+            FileKey='exe0'
+            ExeCommand='migrate-cleanup --quiet --other-edition'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='ignore'/>
+
+        <InstallExecuteSequence>
+            <!-- After InstallFiles (so exe0 is on disk), before InstallFinalize. -->
+            <Custom Action='CleanCargoCopy' Before='InstallFinalize'>
+                <![CDATA[NOT Installed AND CLEANCARGO="1"]]>
+            </Custom>
+            <Custom Action='CleanOtherEdition' After='CleanCargoCopy'>
+                <![CDATA[NOT Installed AND CLEANOTHEREDITION="1"]]>
+            </Custom>
+        </InstallExecuteSequence>
+
+
         <!--
           Uncomment the following `Icon` and `Property` tags to change the product icon.
 
@@ -207,19 +275,59 @@
         
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>
-            
-            <!--
-              Enabling the EULA dialog in the installer is a three step process:
 
-                1. Comment out or remove the two `Publish` tags that follow the
-                   `WixVariable` tag.
-                2. Uncomment the `<WixVariable Id='WixUILicenseRtf' Value='Path\to\Eula.rft'>` tag further down
-                3. Replace the `Value` attribute of the `WixVariable` tag with
-                   the path to a RTF file that will be used as the EULA and
-                   displayed in the license agreement dialog.
-            -->
-            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>
-            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
+            <!-- ── Cross-method consolidation dialog (v3.2.0+) ────────────────
+                 Inserted between WelcomeDlg and CustomizeDlg. Two checkboxes
+                 bound to CLEANCARGO / CLEANOTHEREDITION (both default 1, so both
+                 render PRE-CHECKED). Unchecking sets the property to 0, which the
+                 InstallExecuteSequence condition above reads to skip that CA.
+                 A silent install never shows this dialog, so the defaults (1)
+                 drive silent consolidation. -->
+            <Dialog Id='ConsolidateDlg' Width='370' Height='270' Title='[ProductName] Setup'>
+                <Control Id='Title' Type='Text' X='15' Y='6' Width='340' Height='15'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>{\WixUI_Font_Title}Consolidate installs</Text>
+                </Control>
+                <Control Id='Description' Type='Text' X='25' Y='23' Width='330' Height='30'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>nd300 keeps a single version on your PATH. Choose what to clean up so only one copy/edition remains.</Text>
+                </Control>
+                <Control Id='BannerLine' Type='Line' X='0' Y='44' Width='370' Height='0'/>
+
+                <Control Id='CleanCargoCheck' Type='CheckBox' X='25' Y='65' Width='320' Height='18'
+                    Property='CLEANCARGO' CheckBoxValue='1'
+                    Text='Remove an older Cargo-installed copy of nd300 (recommended)'/>
+                <Control Id='CleanCargoHint' Type='Text' X='40' Y='84' Width='305' Height='20'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>Deletes a shadowing nd300/speedqx in your .cargo\bin. Cargo and rustup are never touched.</Text>
+                </Control>
+
+                <Control Id='CleanOtherCheck' Type='CheckBox' X='25' Y='115' Width='320' Height='18'
+                    Property='CLEANOTHEREDITION' CheckBoxValue='1'
+                    Text='Remove the other edition if present (recommended)'/>
+                <Control Id='CleanOtherHint' Type='Text' X='40' Y='134' Width='305' Height='20'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>Removes the Corporate (per-user) edition so only one edition remains. Skipped automatically if it needs rights you do not have.</Text>
+                </Control>
+
+                <Control Id='BottomLine' Type='Line' X='0' Y='234' Width='370' Height='0'/>
+                <Control Id='Back' Type='PushButton' X='180' Y='243' Width='56' Height='17'
+                    Text='!(loc.WixUIBack)'>
+                    <Publish Event='NewDialog' Value='WelcomeDlg'>1</Publish>
+                </Control>
+                <Control Id='Next' Type='PushButton' X='236' Y='243' Width='56' Height='17'
+                    Default='yes' Text='!(loc.WixUINext)'>
+                    <Publish Event='NewDialog' Value='CustomizeDlg'>1</Publish>
+                </Control>
+                <Control Id='Cancel' Type='PushButton' X='304' Y='243' Width='56' Height='17'
+                    Cancel='yes' Text='!(loc.WixUICancel)'>
+                    <Publish Event='SpawnDialog' Value='CancelDlg'>1</Publish>
+                </Control>
+            </Dialog>
+
+            <!-- Navigation: Welcome -> Consolidate -> Customize -> ... -->
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='ConsolidateDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='ConsolidateDlg' Order='99'>1</Publish>
 
         </UI>
 

@@ -68,6 +68,17 @@ UninstallDisplayName={#MyAppFullName}
 ; ND-300 has no committed LICENSE file (see inno/global.iss). LicenseFile omitted
 ; deliberately — referencing a missing file would fail the iscc build.
 SetupLogging=yes
+; Cross-method consolidation (v3.2.0+) — see inno/global.iss for rationale.
+AppMutex=ND300_Running
+CloseApplications=yes
+
+[Tasks]
+; Both default-checked (one install at a time). Under /SILENT (the silent
+; self-update path), default-checked tasks fire automatically — both cleanups run
+; with no /MERGETASKS suppression needed. The user can untick either in the
+; interactive wizard.
+Name: "cleancargo"; Description: "Remove an older Cargo-installed copy of nd300 (recommended — keeps one version on PATH)"; GroupDescription: "Consolidate installs:"
+Name: "cleanotheredition"; Description: "Remove the other edition (Global per-machine) if present (recommended — one edition at a time)"; GroupDescription: "Consolidate installs:"
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -83,6 +94,20 @@ Source: "..\target\release\{#MySecondExeName}"; DestDir: "{app}\bin"; Flags: ign
 ; src/actions/update.rs::read_install_source_marker().
 Root: HKCU; Subkey: "Software\ND300"; ValueType: string; ValueName: "InstallSource"; ValueData: "exe-corporate"; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\ND300"; Flags: uninsdeletekeyifempty
+
+[Run]
+; Post-install consolidation. Deletion LOGIC lives in the binary
+; (`nd300 migrate-cleanup`) — it only ever removes nd300.exe/speedqx.exe, never
+; cargo/rustup, never the .cargo\bin PATH entry, never the running install, and
+; always exits 0 (advisory — never fails the install).
+;
+; perUser Corporate EXE runs AS THE USER (PrivilegesRequired=lowest, no UAC), so
+; the child process's environment already points at the right .cargo and
+; %LocalAppData% — no --user-profile needed. The "other edition" here is the
+; Global perMachine copy in Program Files; a perUser process can't delete it, so
+; migrate-cleanup reports "needs admin: <path>" and exits 0 (graceful skip).
+Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --cargo-copy"; Flags: runhidden waituntilterminated; Tasks: cleancargo; StatusMsg: "Removing older Cargo-installed copy..."
+Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --other-edition"; Flags: runhidden waituntilterminated; Tasks: cleanotheredition; StatusMsg: "Removing the other edition..."
 
 [Code]
 {

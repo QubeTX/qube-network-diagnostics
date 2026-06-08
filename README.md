@@ -50,6 +50,25 @@ Four first-class Windows installers are attached to every [release](https://gith
 - Each installer has a `.sha256` sidecar; `nd300 update` verifies it before running the downloaded installer (refuse-on-mismatch).
 - The cargo-dist PowerShell installer above remains available and installs into Cargo's bin directory.
 
+**One install at a time — automatic consolidation.** Each installer offers two
+clean-up checkboxes, **both checked by default**:
+
+- **Remove an older Cargo-installed copy** — deletes a shadowing `nd300`/`speedqx`
+  in your `~\.cargo\bin` (a prior `cargo install` copy usually wins on `PATH`
+  otherwise). Your Rust toolchain is never touched — `cargo.exe`, `rustup.exe`,
+  and the `.cargo\bin` `PATH` entry are left exactly as they were.
+- **Also remove the other edition** — deletes the other Windows edition
+  (Global ↔ Corporate) so only one edition remains.
+
+The clean-up only ever removes `nd300.exe`/`speedqx.exe`, never the copy you're
+running, and never anything in your Downloads folder. If removing the other
+edition needs admin rights the installer doesn't have (e.g. a per-user install
+trying to remove a per-machine one), it simply skips that step and reports it —
+it never blocks or fails the install. **This consolidation also runs on a silent
+self-update**, so a routine `nd300 update` quietly leaves you with a single,
+current install. (Under the hood this is the hidden `nd300 migrate-cleanup`
+command, invoked by the installers; you never need to run it by hand.)
+
 ### Cargo
 
 ```sh
@@ -411,6 +430,8 @@ The updater runs a **probe-and-retry chain** so missing tools don't block the up
 If you installed via one of the four first-class Windows installers (MSI/EXE × Global/Corporate — see [Installation](#windows-installers-msi--exe-global--corporate)), `nd300 update` reads the `HKCU\Software\ND300\InstallSource` marker that installer wrote and downloads the **matching** installer for an in-place upgrade — rather than switching you to a different installer/format (which would leave duplicate Add/Remove Programs entries). If no marker is found, it falls back to detecting the install from the binary's path; cargo / PowerShell-installer users get the cargo-first chain above.
 
 Before running a downloaded MSI/EXE, the updater fetches the asset's `.sha256` sidecar and verifies the download against it (refuse-on-mismatch) — defending against a corrupted download or a network MITM (corporate TLS-interception proxies, hostile WiFi). After the installer exits, it re-runs `--version` to confirm the file replacement actually took effect (and surfaces the reboot-required case honestly if Windows scheduled a deferred replace).
+
+**Consolidation runs on a silent self-update too.** The Windows installers re-run by `nd300 update` carry the same two clean-up options (remove an older Cargo copy, remove the other edition) — both **default on**, and the silent self-update path (`msiexec /passive`, Inno `/SILENT`) keeps them on, so a routine update leaves you with exactly one current install/edition. Anything that would need admin rights the update doesn't have is skipped and reported, never failing the update.
 
 Versioning is prerelease-aware: a prerelease of an upcoming version is treated as newer than the previous stable patch, and a stable release is newer than its own prerelease. GitHub's unauthenticated rate-limit case (60 requests/hour per IP) is named explicitly so you know to just wait.
 

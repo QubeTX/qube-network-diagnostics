@@ -78,6 +78,17 @@
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='nd300 (Corporate Edition) Installation'/>
 
+        <!-- ── Cross-method consolidation (v3.2.0+) — see wix/main.wxs ─────────
+             CLEANCARGO removes a shadowing older `cargo install` copy; on this
+             perUser MSI CLEANOTHEREDITION targets the Global perMachine copy in
+             Program Files. Both default to 1 (silent /passive self-update
+             consolidates; interactive checkboxes pre-checked). A perUser process
+             can't delete the perMachine copy, so migrate-cleanup reports
+             "needs admin" and exits 0 — the CA's Return='ignore' means the
+             install proceeds regardless. -->
+        <Property Id='CLEANCARGO' Value='1' Secure='yes'/>
+        <Property Id='CLEANOTHEREDITION' Value='1' Secure='yes'/>
+
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='LocalAppDataFolder'>
                 <Directory Id='ProgramsFolder' Name='Programs'>
@@ -158,11 +169,84 @@
 
         <Property Id='ARPHELPLINK' Value='https://github.com/QubeTX/qube-network-diagnostics'/>
 
+        <!-- ── Cross-method consolidation custom actions (v3.2.0+) ────────────
+             Deferred, impersonated, best-effort. FileKey='exe0' (the installed
+             nd300.exe) + ExeCommand, so no WixUtilExtension is needed (the
+             Corporate MSI is linked with only -ext WixUIExtension — see
+             .github/workflows/windows-installers.yml). Return='ignore' => cleanup
+             never fails the install. `NOT Installed` => install/upgrade only, not
+             uninstall/repair. CLEANCARGO/CLEANOTHEREDITION (default 1) gate it. -->
+        <CustomAction Id='CleanCargoCopy'
+            FileKey='exe0'
+            ExeCommand='migrate-cleanup --quiet --cargo-copy'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='ignore'/>
+        <CustomAction Id='CleanOtherEdition'
+            FileKey='exe0'
+            ExeCommand='migrate-cleanup --quiet --other-edition'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='ignore'/>
+
+        <InstallExecuteSequence>
+            <Custom Action='CleanCargoCopy' Before='InstallFinalize'>
+                <![CDATA[NOT Installed AND CLEANCARGO="1"]]>
+            </Custom>
+            <Custom Action='CleanOtherEdition' After='CleanCargoCopy'>
+                <![CDATA[NOT Installed AND CLEANOTHEREDITION="1"]]>
+            </Custom>
+        </InstallExecuteSequence>
+
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>
 
-            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>
-            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
+            <!-- Consolidation dialog (v3.2.0+) — see wix/main.wxs for the layout
+                 rationale. Inserted between WelcomeDlg and CustomizeDlg. -->
+            <Dialog Id='ConsolidateDlg' Width='370' Height='270' Title='[ProductName] Setup'>
+                <Control Id='Title' Type='Text' X='15' Y='6' Width='340' Height='15'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>{\WixUI_Font_Title}Consolidate installs</Text>
+                </Control>
+                <Control Id='Description' Type='Text' X='25' Y='23' Width='330' Height='30'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>nd300 keeps a single version on your PATH. Choose what to clean up so only one copy/edition remains.</Text>
+                </Control>
+                <Control Id='BannerLine' Type='Line' X='0' Y='44' Width='370' Height='0'/>
+
+                <Control Id='CleanCargoCheck' Type='CheckBox' X='25' Y='65' Width='320' Height='18'
+                    Property='CLEANCARGO' CheckBoxValue='1'
+                    Text='Remove an older Cargo-installed copy of nd300 (recommended)'/>
+                <Control Id='CleanCargoHint' Type='Text' X='40' Y='84' Width='305' Height='20'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>Deletes a shadowing nd300/speedqx in your .cargo\bin. Cargo and rustup are never touched.</Text>
+                </Control>
+
+                <Control Id='CleanOtherCheck' Type='CheckBox' X='25' Y='115' Width='320' Height='18'
+                    Property='CLEANOTHEREDITION' CheckBoxValue='1'
+                    Text='Remove the other edition if present (recommended)'/>
+                <Control Id='CleanOtherHint' Type='Text' X='40' Y='134' Width='305' Height='20'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>Removes the Global (per-machine) edition so only one edition remains. Skipped automatically if it needs admin rights you do not have.</Text>
+                </Control>
+
+                <Control Id='BottomLine' Type='Line' X='0' Y='234' Width='370' Height='0'/>
+                <Control Id='Back' Type='PushButton' X='180' Y='243' Width='56' Height='17'
+                    Text='!(loc.WixUIBack)'>
+                    <Publish Event='NewDialog' Value='WelcomeDlg'>1</Publish>
+                </Control>
+                <Control Id='Next' Type='PushButton' X='236' Y='243' Width='56' Height='17'
+                    Default='yes' Text='!(loc.WixUINext)'>
+                    <Publish Event='NewDialog' Value='CustomizeDlg'>1</Publish>
+                </Control>
+                <Control Id='Cancel' Type='PushButton' X='304' Y='243' Width='56' Height='17'
+                    Cancel='yes' Text='!(loc.WixUICancel)'>
+                    <Publish Event='SpawnDialog' Value='CancelDlg'>1</Publish>
+                </Control>
+            </Dialog>
+
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='ConsolidateDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='ConsolidateDlg' Order='99'>1</Publish>
 
         </UI>
 

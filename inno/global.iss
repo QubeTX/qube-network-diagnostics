@@ -69,6 +69,23 @@ UninstallDisplayName={#MyAppName}
 ; declared in Cargo.toml; cargo-wix also sets license=false). So we deliberately
 ; omit LicenseFile here — referencing a missing file would fail the iscc build.
 SetupLogging=yes
+; Cross-method consolidation (v3.2.0+): close any running nd300/speedqx before we
+; replace files so the in-place upgrade isn't blocked, and so the post-install
+; `migrate-cleanup` can actually delete a shadowing copy that is in use. AppMutex
+; lets Setup detect a running instance; CloseApplications=yes asks Windows'
+; Restart Manager to close them. (nd300/speedqx are short-lived CLI tools, so this
+; is almost always a no-op.)
+AppMutex=ND300_Running
+CloseApplications=yes
+
+[Tasks]
+; Consolidation tasks — BOTH default-checked (Operator policy: one install at a
+; time). Under /SILENT, default-checked tasks fire automatically, so the silent
+; self-update path (`nd300 update` -> EXE installer /SILENT) runs both cleanups
+; with NO /MERGETASKS suppression needed. The user can untick either in the
+; interactive wizard.
+Name: "cleancargo"; Description: "Remove an older Cargo-installed copy of nd300 (recommended — keeps one version on PATH)"; GroupDescription: "Consolidate installs:"
+Name: "cleanotheredition"; Description: "Remove the other edition (Corporate per-user) if present (recommended — one edition at a time)"; GroupDescription: "Consolidate installs:"
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -85,6 +102,24 @@ Source: "..\target\release\{#MySecondExeName}"; DestDir: "{app}\bin"; Flags: ign
 ; match the `exe-global` arm in src/actions/update.rs::read_install_source_marker().
 Root: HKCU; Subkey: "Software\ND300"; ValueType: string; ValueName: "InstallSource"; ValueData: "exe-global"; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\ND300"; Flags: uninsdeletekeyifempty
+
+[Run]
+; Post-install consolidation. The deletion LOGIC lives in the binary
+; (`nd300 migrate-cleanup`), which only ever removes nd300.exe/speedqx.exe, never
+; cargo/rustup, never the .cargo\bin PATH entry, never the running install, and
+; always exits 0 (cleanup is advisory — it must never fail the install).
+;
+; perMachine Global EXE runs ELEVATED. Inno's `runasoriginaluser` is unreliable
+; under right-click -> Run as administrator, so instead of relying on the child
+; process's environment we pass the invoking user's profile explicitly via
+; --user-profile "{userprofile}". migrate-cleanup uses that to find the user's
+; .cargo\bin (cargo copy) and %LocalAppData% (Corporate edition). The Global
+; edition's own Program Files dir is machine-wide and resolved without it.
+;
+; runhidden + waituntilterminated keeps the wizard clean and ordered; nowait is
+; deliberately NOT used so cleanup finishes before Setup reports done.
+Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --cargo-copy --user-profile ""{userprofile}"""; Flags: runhidden waituntilterminated; Tasks: cleancargo; StatusMsg: "Removing older Cargo-installed copy..."
+Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --other-edition --user-profile ""{userprofile}"""; Flags: runhidden waituntilterminated; Tasks: cleanotheredition; StatusMsg: "Removing the other edition..."
 
 [Code]
 {
