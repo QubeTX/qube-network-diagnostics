@@ -84,13 +84,15 @@ update code reads it back and classifies by path as a fallback.
    set to `*` where it must be stable. Permanent-component GUIDs (e.g. the PATH
    `Component` GUIDs) must stay fixed.
 
-6. **Cross-method cleanup references.** The cross-method / "migrate-cleanup"
-   install logic lives in `src/actions/uninstall.rs` (`CleanupReport`,
-   `uninstall_path`, `binary_removed` vs `binary_removal_scheduled`) and
-   `src/actions/update.rs` — there is **no** `src/actions/migrate.rs` in this
-   repo (if a task brief references that path, treat it as the uninstall/update
-   cleanup code instead). Verify any cleanup that targets a specific install
-   layout uses the same paths/markers as the matrix above.
+6. **Cross-method cleanup (`migrate-cleanup`).** The `nd300 migrate-cleanup`
+   logic lives in **`src/actions/migrate.rs`**, which carries its OWN copies of
+   the edition install paths (`%ProgramFiles%\nd300\bin`,
+   `%LocalAppData%\Programs\nd300\bin` in `edition_bin_dirs`) and reuses
+   `update.rs`'s `classify_install_path` / `detect_install_origin` +
+   `uninstall.rs`'s `uninstall_path` / `OUR_BINARIES`. **Include
+   `src/actions/migrate.rs` in the lockstep check** — its edition paths and the
+   `OUR_BINARIES` allowlist must match the installers + `update.rs` in the matrix
+   above (a drift here silently breaks `nd300 migrate-cleanup`).
 
 ## Process
 

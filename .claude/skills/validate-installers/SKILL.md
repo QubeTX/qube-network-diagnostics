@@ -25,10 +25,11 @@ ND-300 ships four first-class Windows installers, each packaging **both**
 | Corporate | EXE | `inno/corporate.iss` | n/a (Inno) |
 
 The Global MSI is the cargo-dist base asset; the other three (plus `.sha256`
-sidecars) are built by `windows-installers.yml`, which fires on a **main push**
-after the `Release` workflow finishes — i.e. **after** the tag exists. So an
-installer-build bug is not caught by the normal `cargo build` / `cargo publish`
-gate; it only blows up post-tag, when the release is already half-shipped.
+sidecars) are built by `windows-installers.yml`, which fires (via `workflow_run`)
+**after the tag-triggered `Release` workflow finishes** — i.e. **after** the tag
+exists. So an installer-build bug is not caught by the normal `cargo build` /
+`cargo publish` gate; it only blows up post-tag, when the release is already
+half-shipped — which is exactly why this skill validates them locally first.
 
 History this prevents:
 - **v3.2.0** broke because a `--` (double hyphen) appeared inside an XML comment

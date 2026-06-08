@@ -87,9 +87,9 @@ Verifies the LOCKSTEP contract: install paths + `HKCU\Software\ND300\InstallSour
 markers in the four installers staying consistent with
 `src/actions/update.rs` (`read_install_source_marker` / `classify_install_path` /
 `detect_install_origin`), both binaries packaged in every installer, and GUIDs
-distinct/permanent. (Note: the cross-method cleanup logic the brief calls
-`migrate.rs` actually lives in `src/actions/uninstall.rs` + `update.rs` — there is
-no `migrate.rs` in this repo.)
+distinct/permanent — **including `src/actions/migrate.rs`** (the `nd300 migrate-cleanup`
+cross-method cleanup), which has its own edition paths + the `OUR_BINARIES`
+allowlist and reuses `update.rs` / `uninstall.rs`.
 
 ## MCP (`.mcp.json` at repo root)
 
