@@ -1,0 +1,25 @@
+# cargo-audit configuration — https://github.com/rustsec/rustsec/tree/main/cargo-audit
+#
+# Two advisories are intentionally ignored below. Both are non-vulnerability
+# warnings (unmaintained / unsound-in-a-pattern-we-do-not-use) on transitive
+# crates that ND300 cannot cleanly drop with a version bump. Every actual
+# *vulnerability* is fixed in Cargo.lock — this list must never contain a
+# vulnerability advisory; revisit each entry when its upstream ships a fix.
+
+[advisories]
+ignore = [
+    # paste (unmaintained) — pulled transitively by `default-net 0.22`
+    # (its netlink-packet-* stack) for default-gateway detection on Linux.
+    # `paste` is a build-time proc-macro with no runtime risk; removing it
+    # requires migrating off the now-renamed/abandoned `default-net` crate to
+    # its successor `netdev`, which is a cross-platform gateway-detection
+    # change out of scope for a security/dependency patch. Tracked separately.
+    "RUSTSEC-2024-0436",
+
+    # rand (unsound) — the unsoundness only manifests with a *custom global
+    # logger* that calls `rand::rng()`, which ND300 never does. The flagged
+    # rand 0.9.x is itself a lockfile-only "ghost": it is pulled exclusively by
+    # reqwest's optional `http3`/quinn stack, which ND300 does NOT enable, so it
+    # is never compiled into either binary. No patched release clears it yet.
+    "RUSTSEC-2026-0097",
+]

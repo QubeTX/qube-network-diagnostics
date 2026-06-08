@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-06-08
+
+Dependency security pass — clears every RUSTSEC **vulnerability** flagged by the
+CI `cargo-audit` job. No changes to the `nd300`/`speedqx` binaries' behavior.
+
+### Security
+- **`rustls-webpki` 0.103.9 → 0.103.13** (lockfile-only) clears four advisories in
+  the real TLS path (`rustls`/`reqwest`/`tokio-tungstenite`): RUSTSEC-2026-0049
+  (CRLs not treated as authoritative by Distribution Point), RUSTSEC-2026-0098
+  (URI-name constraints incorrectly accepted), RUSTSEC-2026-0099 (wildcard-name
+  constraints accepted), RUSTSEC-2026-0104 (reachable panic in CRL parsing).
+- **`quinn-proto` 0.11.13 → 0.11.14** (lockfile-only) clears RUSTSEC-2026-0037
+  (DoS in Quinn endpoints). `quinn` is reqwest's **optional `http3` stack, which
+  ND-300 never enables or compiles** — the entry exists only because cargo-audit
+  scans `Cargo.lock`, not the build graph — but it is bumped so the advisory clears.
+
+### Changed
+- **`indicatif` 0.17 → 0.18** — replaces the unmaintained `number_prefix`
+  (RUSTSEC-2025-0119) with the maintained `unit-prefix`, clearing that warning.
+  Pulls `console` 0.16; progress-bar output is visually identical (the used API —
+  `ProgressBar`/`ProgressStyle` spinners and bars — is unchanged). Also refreshes
+  the lockfile `rand` 0.9.2 → 0.9.4.
+
+### Added
+- **`.cargo/audit.toml`** documenting the two remaining **non-vulnerability**
+  advisories that cannot be cleanly dropped, each with rationale (the CI audit job
+  is now clean — 0 vulnerabilities, the two below ignored by ID):
+  - **RUSTSEC-2024-0436** (`paste`, unmaintained) — a build-time proc-macro pulled
+    transitively by `default-net 0.22`'s netlink stack (Linux default-gateway
+    detection). No runtime risk; removable only by migrating off the now-renamed/
+    abandoned `default-net` to its successor `netdev`, a cross-platform
+    gateway-detection change out of scope here (tracked separately).
+  - **RUSTSEC-2026-0097** (`rand`, unsound) — only manifests with a custom global
+    logger calling `rand::rng()`, which ND-300 never does; the flagged `rand` is the
+    never-compiled ghost behind reqwest's disabled `http3`/quinn, and no patched
+    release clears it yet.
+
 ## [3.3.0] - 2026-06-08
 
 Build + deploy cycle made consistent with the sibling TR-300 tool, plus a LICENSE

@@ -6,6 +6,17 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 8, 2026 — security tune-up of the underlying libraries
+
+**Security**
+- Updated several of the tool's underlying networking and encryption libraries to close known security advisories that our automated security scan had been flagging. These were in low-level building blocks, not in anything you interact with directly — updating them keeps the tool current and clears the warnings. Nothing about how you use the tool changes, and the results look exactly the same.
+
+**Behind the scenes**
+- Refreshed the progress-bar library to a current, maintained version (the old one relied on a small piece that is no longer maintained). The spinners and progress bars look and behave exactly as before.
+- Two remaining low-level warnings can't be cleared yet: in both cases the fix lives in outside libraries we don't control, and in code paths the tool never actually runs. We've written down exactly why each one is safe to leave for now, so the security scan stays clean and honest, and we'll clear them when the upstream fixes arrive.
+
+---
+
 ## June 8, 2026 — same release process across the tools, and a license file
 
 **Changed (mostly behind the scenes)**
