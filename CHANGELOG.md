@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-06-08
+
+Build + deploy cycle made consistent with the sibling TR-300 tool, plus a LICENSE
+file. No changes to the `nd300`/`speedqx` binaries themselves.
+
+### Added
+- **`LICENSE` file** (PolyForm Noncommercial 1.0.0) at the repo root — matches the
+  `Cargo.toml` `license` field and the sibling TR-300 repo (ND-300 previously
+  declared the SPDX license but shipped no file). Added to the crate `include` list
+  and shown in the Inno EXE installer wizards (`LicenseFile=..\LICENSE` in
+  `inno/global.iss` + `inno/corporate.iss`, replacing the prior omission).
+- **`.github/workflows/crates-publish.yml`** — publishes the `nd300` crate via
+  `workflow_run` after `CI` succeeds on a `main` push (idempotent; skips an
+  already-published version). Mirrors TR-300.
+
+### Changed
+- **Deploy model → tag-push, consistent with TR-300.** `release.yml` is now the
+  stock cargo-dist **tag-triggered** workflow (+ the `nd-300-installer` legacy
+  aliases); it no longer fires on a `main` push and no longer publishes the crate
+  (that moved to `crates-publish.yml`, avoiding a double-publish). `windows-installers.yml`
+  reverts to the tag-based filter (`startsWith(head_branch,'v')`, tag resolved from
+  `head_branch`). **A release is now: bump version → merge to `main` (crate
+  publishes) → push a `vX.Y.Z` tag (binaries/installers/GitHub Release).**
+- Docs (`CLAUDE.md`, `AGENTS.md`): rewritten Release Process as the canonical
+  tag-push deploy guide (incl. bumping `Cargo.toml` + the homepage version
+  fallbacks), updated patch-bump loop, and the `windows-installers.yml` note.
+
 ## [3.2.1] - 2026-06-08
 
 ### Fixed

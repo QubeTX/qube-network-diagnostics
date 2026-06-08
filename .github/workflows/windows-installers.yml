@@ -13,14 +13,10 @@
 # legacy installer-alias step (permitted by `allow-dirty = ["ci", "msi"]` in
 # Cargo.toml's [workspace.metadata.dist]).
 #
-# ── ND-300 main-push divergence from TR-300 ──────────────────────────────────
-# TR-300's release.yml fires on a TAG push, so its installer workflow filters on
-# `startsWith(head_branch, 'v')`. ND-300's release.yml fires on a MAIN push and
-# creates the tag itself (via `gh release create`). So:
-#   - the auto path fires for a `main` push (head_branch == 'main') OR a tag push
-#     (head_branch starts with 'v'), covering both release models, and
-#   - the tag is resolved by reading `version` from Cargo.toml at the triggering
-#     commit (workflow_run.head_sha) → `tag = "v$version"`.
+# ── Tag-triggered (consistent with TR-300) ───────────────────────────────────
+# ND-300's release.yml fires on a `vX.Y.Z` TAG push, so a tag-triggered Release
+# run has head_branch == the tag name. The auto path filters on
+# `startsWith(head_branch, 'v')` and resolves the tag directly from head_branch.
 # This file also packages BOTH nd300.exe AND speedqx.exe (ND-300 ships two
 # binaries; TR-300 ships one).
 #
@@ -56,29 +52,23 @@ jobs:
     runs-on: windows-2022
     # Filter:
     # - workflow_dispatch path: always run (user provided the tag explicitly).
-    # - workflow_run path: only when the Release workflow SUCCEEDED, for EITHER
-    #   release model — a `main`-branch push (ND-300's standard deploy; release.yml
-    #   creates the tag itself, so head_branch == 'main') OR a tag push (the
-    #   documented manual release trigger, where a workflow_run's head_branch IS
-    #   the tag name and starts with 'v'). Either way the tag is resolved from
-    #   Cargo.toml at the triggering commit below. Without the `startsWith(...,'v')`
-    #   arm a tag-push release would silently ship without these 6 Windows assets,
-    #   which would then 404 marker-based `nd300 update` for that version.
+    # - workflow_run path: only when the tag-triggered Release workflow SUCCEEDED.
+    #   ND-300 releases on a `vX.Y.Z` tag push (consistent with TR-300), so a
+    #   tag-triggered Release run has head_branch == the tag name, which starts
+    #   with 'v'. (Matches TR-300's windows-installers.yml.)
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       (github.event.workflow_run.head_branch == 'main' ||
-        startsWith(github.event.workflow_run.head_branch, 'v')))
+       startsWith(github.event.workflow_run.head_branch, 'v'))
 
     steps:
       - name: Enable Windows long paths
         shell: pwsh
         run: git config --global core.longpaths true
 
-      # Check out the exact commit/tag we're building installers for FIRST, so we
-      # can read Cargo.toml's version to resolve the tag (the auto path is a main
-      # push — the tag is whatever release.yml created from that commit's
-      # version). The dispatch path checks out the provided tag.
+      # Check out the exact tagged commit we're building installers for. The auto
+      # path is a tag-triggered Release run (head_branch IS the tag, head_sha is
+      # the tagged commit); the dispatch path checks out the provided tag.
       - name: Checkout source at trigger commit
         uses: actions/checkout@v6
         with:
@@ -91,20 +81,14 @@ jobs:
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $tag = "${{ inputs.tag }}"
-            if (-not $tag.StartsWith("v")) {
-              throw "Expected dispatch tag to start with 'v', got '$tag'"
-            }
-            $version = $tag -replace '^v', ''
           } else {
-            # Auto path: read the version from Cargo.toml at the triggering commit
-            # (already checked out above), then synthesize the tag release.yml
-            # created — `v$version`.
-            $line = (Get-Content Cargo.toml | Where-Object { $_ -match '^version\s*=' } | Select-Object -First 1)
-            if (-not $line) { throw "Could not find a version line in Cargo.toml" }
-            $version = ($line -replace '^version\s*=\s*"', '') -replace '".*$', ''
-            if (-not $version) { throw "Parsed an empty version from Cargo.toml" }
-            $tag = "v$version"
+            # Tag-triggered Release run: head_branch IS the tag name (vX.Y.Z).
+            $tag = "${{ github.event.workflow_run.head_branch }}"
           }
+          if (-not $tag.StartsWith("v")) {
+            throw "Expected tag to start with 'v', got '$tag'"
+          }
+          $version = $tag -replace '^v', ''
           Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$tag"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
           Write-Host "Tag:     $tag"

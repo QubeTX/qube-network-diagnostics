@@ -1,6 +1,6 @@
 [package]
 name = "nd300"
-version = "3.2.1"
+version = "3.3.0"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -13,6 +13,7 @@ include = [
     "Cargo.toml",
     "Cargo.lock",
     "README.md",
+    "LICENSE",
     "CHANGELOG.md",
     "build.rs",
     "man/**",

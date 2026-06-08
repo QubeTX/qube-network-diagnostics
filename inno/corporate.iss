@@ -65,8 +65,8 @@ ChangesEnvironment=yes
 ; ARP display name. Matches the Corporate MSI's Product Name so the two installer
 ; formats show consistent labels.
 UninstallDisplayName={#MyAppFullName}
-; ND-300 has no committed LICENSE file (see inno/global.iss). LicenseFile omitted
-; deliberately — referencing a missing file would fail the iscc build.
+; Show the PolyForm Noncommercial 1.0.0 LICENSE in the wizard (see inno/global.iss).
+LicenseFile=..\LICENSE
 SetupLogging=yes
 ; Cross-method consolidation (v3.2.0+) — see inno/global.iss for rationale.
 AppMutex=ND300_Running

@@ -65,9 +65,9 @@ ChangesEnvironment=yes
 ; ARP display name. Matches the MSI Global's Product Name so users see the same
 ; label regardless of which installer they used.
 UninstallDisplayName={#MyAppName}
-; ND-300 has no committed LICENSE file (SPDX PolyForm-Noncommercial-1.0.0 is
-; declared in Cargo.toml; cargo-wix also sets license=false). So we deliberately
-; omit LicenseFile here — referencing a missing file would fail the iscc build.
+; Show the PolyForm Noncommercial 1.0.0 LICENSE in the installer wizard
+; (consistent with TR-300; the LICENSE file is committed at the repo root).
+LicenseFile=..\LICENSE
 SetupLogging=yes
 ; Cross-method consolidation (v3.2.0+): close any running nd300/speedqx before we
 ; replace files so the in-place upgrade isn't blocked, and so the post-install

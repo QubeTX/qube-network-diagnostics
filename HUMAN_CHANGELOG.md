@@ -6,6 +6,17 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 8, 2026 — same release process across the tools, and a license file
+
+**Changed (mostly behind the scenes)**
+- ND-300 and its sibling tool TR-300 now build and ship releases the exact same way, so there's one consistent process across the products. The tool itself is unchanged.
+- Added the project's license file to the repository, and the Windows setup programs now show the license during installation — matching the sibling tool.
+
+**Behind the scenes**
+- Releases are now cut by tagging a version (same as the sibling tool), and the cross-platform checks run on Mac, Linux, and Windows for every change so problems are caught earlier.
+
+---
+
 ## June 8, 2026 — fix so all the Windows setup programs build and ship
 
 **Fixed**
