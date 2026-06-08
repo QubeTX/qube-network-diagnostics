@@ -930,12 +930,16 @@ impl MacosProxySnapshot {
 /// Snapshot of a macOS network service's settings, captured before the deep
 /// reset removes the service so they can be restored after recreation.
 ///
-/// `pub(crate)` so it can be carried in [`super::session::RestoreOp`] for the
-/// interrupt-safe drain. Fields stay private — only this module constructs,
+/// `pub` (matching the public `super::session::RestoreOp` that carries it, like
+/// the sibling `pub` `DisabledVpn`) so it doesn't trip the `private_interfaces`
+/// lint as a more-private type behind a public enum field — this only surfaces on
+/// macOS (the variant is `#[cfg(target_os = "macos")]`) and only under
+/// `-D warnings` (so it slipped past the macOS release build until the
+/// cross-platform `ci.yml`). Fields stay private — only this module constructs,
 /// captures, and restores it.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MacosNetworkSnapshot {
+pub struct MacosNetworkSnapshot {
     service_name: String,
     dns_servers: Vec<String>,
     service_order: Vec<String>,
