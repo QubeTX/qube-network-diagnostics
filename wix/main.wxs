@@ -230,7 +230,8 @@
              must resolve the INVOKING USER's ~\.cargo and %LocalAppData%.
              Impersonation runs the CA as the logged-on user, so the user's
              USERPROFILE / LOCALAPPDATA / CARGO_HOME environment is in effect and
-             migrate-cleanup finds the right copies WITHOUT needing --user-profile.
+             migrate-cleanup finds the right copies without needing the
+             user-profile override (the perMachine EXE installer still passes it).
 
              Return='ignore' => cleanup can NEVER fail the install (advisory).
              Condition `NOT Installed` => runs only on a fresh install or major
