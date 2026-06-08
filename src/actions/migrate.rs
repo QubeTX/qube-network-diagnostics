@@ -669,38 +669,49 @@ mod tests {
     // ── Allowlist refusal: ONLY nd300.exe / speedqx.exe are deletable ────────
     #[test]
     fn allowlist_accepts_only_our_binaries() {
-        assert!(is_allowlisted(Path::new(
-            r"C:\Users\me\.cargo\bin\nd300.exe"
-        )));
-        assert!(is_allowlisted(Path::new(
-            r"C:\Program Files\nd300\bin\speedqx.exe"
-        )));
-        // Unix-style names (no .exe) are also recognized so the allowlist is
-        // cross-platform.
+        // Cross-platform assertions: bare filenames and forward-slash paths parse
+        // the same on Windows and Unix (Path treats `/` as a separator on both).
+        assert!(is_allowlisted(Path::new("nd300.exe")));
+        assert!(is_allowlisted(Path::new("speedqx.exe")));
         assert!(is_allowlisted(Path::new("/home/me/.cargo/bin/nd300")));
         assert!(is_allowlisted(Path::new("/home/me/.cargo/bin/speedqx")));
+        // Backslash paths only parse as paths on Windows; on Unix the whole
+        // string is the file name, so gate these to the Windows build.
+        #[cfg(windows)]
+        {
+            assert!(is_allowlisted(Path::new(
+                r"C:\Users\me\.cargo\bin\nd300.exe"
+            )));
+            assert!(is_allowlisted(Path::new(
+                r"C:\Program Files\nd300\bin\speedqx.exe"
+            )));
+        }
     }
 
     #[test]
     fn allowlist_refuses_cargo_rustup_and_everything_else() {
         // The load-bearing refusal: we must NEVER classify cargo/rustup as
         // deletable, even though they live in the same directory we clean.
-        assert!(!is_allowlisted(Path::new(
-            r"C:\Users\me\.cargo\bin\cargo.exe"
-        )));
-        assert!(!is_allowlisted(Path::new(
-            r"C:\Users\me\.cargo\bin\rustup.exe"
-        )));
-        assert!(!is_allowlisted(Path::new(
-            r"C:\Users\me\.cargo\bin\rustc.exe"
-        )));
-        assert!(!is_allowlisted(Path::new(r"C:\Windows\System32\cmd.exe")));
-        assert!(!is_allowlisted(Path::new(
-            r"C:\Users\me\Downloads\nd300-setup.exe"
-        )));
+        // Bare filenames make this meaningful on every platform.
+        assert!(!is_allowlisted(Path::new("cargo.exe")));
+        assert!(!is_allowlisted(Path::new("rustup.exe")));
+        assert!(!is_allowlisted(Path::new("rustc.exe")));
+        assert!(!is_allowlisted(Path::new("cmd.exe")));
+        assert!(!is_allowlisted(Path::new("/home/me/.cargo/bin/cargo")));
         // A file merely CONTAINING our name is not allowlisted (exact match only).
-        assert!(!is_allowlisted(Path::new(r"C:\x\nd300-old.exe")));
-        assert!(!is_allowlisted(Path::new(r"C:\x\speedqx_backup.exe")));
+        assert!(!is_allowlisted(Path::new("nd300-old.exe")));
+        assert!(!is_allowlisted(Path::new("speedqx_backup.exe")));
+        #[cfg(windows)]
+        {
+            assert!(!is_allowlisted(Path::new(
+                r"C:\Users\me\.cargo\bin\cargo.exe"
+            )));
+            assert!(!is_allowlisted(Path::new(r"C:\Windows\System32\cmd.exe")));
+            assert!(!is_allowlisted(Path::new(
+                r"C:\Users\me\Downloads\nd300-setup.exe"
+            )));
+            assert!(!is_allowlisted(Path::new(r"C:\x\nd300-old.exe")));
+        }
     }
 
     // ── permission-error classification ──────────────────────────────────────
