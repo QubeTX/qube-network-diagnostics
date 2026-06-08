@@ -1,0 +1,127 @@
+name: CI
+
+# Cross-platform quality gate for every PR and main-branch push.
+#
+# Complements the cargo-dist release.yml (which builds + ships binaries on a
+# main-branch deploy): this runs fmt / clippy / test / release-build on
+# macOS + Linux + Windows at PR time, so cross-platform compile issues —
+# cfg-gated code that only fails on one OS, dead-code/unused warnings that are
+# platform-specific, test assertions that only hold on one platform — are caught
+# BEFORE merge instead of at release. (release.yml's source-check only runs on
+# Linux, so those issues used to surface only after tagging.) Mirrors TR-300's
+# ci.yml, adapted for ND-300's two binaries (nd300 + speedqx).
+#
+# Jobs:
+#   fmt        — cargo fmt --check (Linux; rustfmt is platform-agnostic)
+#   clippy     — cargo clippy --all-targets --all-features -D warnings (Linux)
+#   test       — cargo test (Linux glibc + macOS ARM + Windows)
+#   build      — cargo build --release + run both binaries' --version, per OS
+#   audit      — cargo-audit (advisory; continue-on-error so it never blocks)
+#   dist-plan  — verify the cargo-dist plan parses (catches dist config errors)
+#
+# RUSTFLAGS=-D warnings is set globally so the per-OS build/test jobs fail on any
+# warning (e.g. dead code that is live on Windows but dead on Linux/macOS) — not
+# just clippy on Linux.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: "Linux x86_64 glibc"
+          - os: macos-latest
+            name: "macOS ARM (Apple Silicon)"
+          - os: windows-latest
+            name: "Windows x86_64"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --all-features
+
+  build:
+    name: Release Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: "Linux x86_64 glibc"
+          - os: macos-latest
+            name: "macOS ARM (Apple Silicon)"
+          - os: windows-latest
+            name: "Windows x86_64"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release
+      - name: Smoke test (both binaries run)
+        shell: bash
+        run: |
+          EXT=""
+          [ "${{ runner.os }}" = "Windows" ] && EXT=".exe"
+          "./target/release/nd300${EXT}" --version
+          "./target/release/speedqx${EXT}" --version
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - run: cargo audit
+
+  dist-plan:
+    name: cargo-dist plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-dist v0.31.0
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh
+      - name: Verify dist plan parses
+        run: ~/.cargo/bin/dist plan
