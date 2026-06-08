@@ -83,23 +83,27 @@ aarch64-apple-darwin, x86_64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unk
 
 ## Release Process
 
-Releases are automated via `cargo-dist` v0.31.0 and crates.io publishing. Push a commit to `main` with a new `Cargo.toml` version to trigger `.github/workflows/release.yml`: it runs source checks, builds all 6 cargo-dist targets, creates the GitHub release / updater assets, uploads legacy installer aliases, and publishes the `nd300` crate to crates.io. Version tags still work as a manual release trigger, but the standard deploy path is now main-branch push. The WiX manifest (`wix/main.wxs`) must include components for both `nd300.exe` and `speedqx.exe`.
+Releases use **cargo-dist v0.31.0, tag-triggered**, plus a CI-gated crates.io publish — the **same build+deploy cycle as TR-300** (kept consistent on purpose). Four workflows:
+- **`ci.yml`** — quality gate: fmt + clippy + test + release-build on **macOS + Linux + Windows** (`RUSTFLAGS=-D warnings`), plus `cargo-dist plan` + cargo-audit. Runs on every PR and `main` push.
+- **`crates-publish.yml`** — publishes the `nd300` crate, fired via `workflow_run` after `CI` succeeds on a `main` push. Idempotent (skips a version already on crates.io). This is the ONLY place the crate is published.
+- **`release.yml`** — cargo-dist; **fires on a `vX.Y.Z` tag push** (not on main). Builds the 6 targets + Global MSI + shell/PS installers, creates the GitHub Release, adds the `nd-300-installer` legacy aliases. Does NOT publish the crate.
+- **`windows-installers.yml`** — fires via `workflow_run` after a tag-triggered Release; builds the Corporate MSI + the two Inno EXEs + `.sha256` sidecars → **28 total assets**.
 
-### Standard release workflow (run when shipping)
+**So a deploy is two pushes: merge to `main` (→ crate) then push a `vX.Y.Z` tag (→ binaries/installers/release).** The WiX manifest (`wix/main.wxs`) must include components for both `nd300.exe` and `speedqx.exe`; every installer ships both binaries.
 
-Triggers in user prompts: "release", "ship it", "tag the release", "push it out", "make this live", "go for it" (after change discussion).
+### Standard release workflow (run when shipping) — tag-push, consistent with TR-300
 
-1. **Bump version** in `Cargo.toml` (`[package] version`). Patch for fixes, minor for backward-compatible features, major for breaking changes (e.g. `--fix` semantics changed in v3.0.0). Every deploy to `main` must use a never-published version.
-2. **Update `CHANGELOG.md`** with a new top entry in Keep-a-Changelog format. Date = today (use the host's current date, not training-data date). **Also update `HUMAN_CHANGELOG.md`** in the same commit — every CHANGELOG entry needs a plain-English counterpart there. See the "Changelog rule" section below for translation rules.
-3. **Update `README.md`** if the release adds user-visible flags / commands / behavior.
-4. **Update `AGENTS.md` and `CLAUDE.md`** if the architecture or workflow changed.
-5. **Run local verification** before pushing: `cargo fmt --check`, `cargo test --lib`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo publish --dry-run --locked --allow-dirty`, and `cargo package --list --locked --allow-dirty`. After committing, the same publish/package commands can be rerun without `--allow-dirty`.
-6. If changing installer or release behavior, **run `cargo build --release`** locally on the active platform to catch obvious packaging/build failures. Note: this only catches errors on the active platform — see "macOS / Linux-only failures" below.
-7. **Stage specific files** (`git add CHANGELOG.md Cargo.toml Cargo.lock src/... README.md` etc). Never `git add -A` / `git add .` — risks pulling in `nul`, `.env`, build artifacts, or temp files.
-8. **Commit** with a descriptive `feat:` / `fix:` / `docs:` message and a `Co-Authored-By: Codex Opus 4.7 (1M context) <noreply@anthropic.com>` trailer.
-9. **Push to main** with `git push origin main`. Do not create the release tag locally for the normal path; the workflow creates `vX.Y.Z` when it creates the GitHub release.
-10. **Watch CI via Monitor — never foreground `gh run watch`.** A foreground watch burns 5+ minutes of context blocking on the run. Instead, pick up the run id (`gh run list --workflow=release.yml --limit 1`) and arm the `Monitor` tool with a poll loop that emits **one notification per job state-change** plus a terminal `RUN_DONE` line. You keep working (or hand back to the user) while CI runs; events arrive as chat notifications.
-11. **Verify publish outputs** after CI succeeds: `git ls-remote --tags origin | grep vX.Y.Z`, `gh release view vX.Y.Z`, `cargo owner --list nd300`, and `cargo install nd300 --force`.
+Triggers in user prompts: "release", "ship it", "deploy", "tag the release", "push it out", "make this live", "cut a release", "go for it" (after change discussion).
+
+1. **Bump the version in `Cargo.toml`** (`[package] version`) — patch for fixes, minor for backward-compatible features, major for breaking changes. Always a never-published version (forward only). This ONE number drives both the crate (crates-publish.yml on the `main` merge) AND the GitHub/installer release (the `vX.Y.Z` tag) — bump it once.
+2. **Update `CHANGELOG.md` + `HUMAN_CHANGELOG.md`** in lockstep (every technical entry needs a plain-English counterpart — see "Changelog rule"). Date = the host's current date.
+3. **Update `README.md`** (user-visible flags/commands/behavior) and **`CLAUDE.md` / `AGENTS.md`** (architecture/workflow changes).
+4. **Bump the homepage version fallbacks** in the `qube-machine-report-homepage` repo — the `useGitHubVersion('QubeTX/qube-network-diagnostics', '<new>')` calls in `ND300Install.jsx`, `ND300Hero.jsx`, `ND300Footer.jsx`, and `InstallGuideContent.jsx` (the live GitHub fetch overrides on a healthy network; this keeps the offline fallback current). Ship as its own PR → merge to `main` → Vercel auto-deploys.
+5. **Local verification:** `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo publish --dry-run --locked --allow-dirty`, `cargo package --list --locked --allow-dirty`, `cargo build --release`. If installers changed, validate them locally (see "Installer build pitfalls"). After committing, rerun publish/package without `--allow-dirty`.
+6. **Stage specific files** (never `git add -A` — risks `nul`, `.env`, artifacts). **Commit** (`feat:`/`fix:`/`docs:`) with trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`. Open a PR (git-workflow); the PR runs `ci.yml` across macOS + Linux + Windows.
+7. **Merge the PR to `main`.** `ci.yml` runs on the main push → `crates-publish.yml` then publishes the `nd300` crate (idempotent — a docs-only / unchanged-version merge safely skips).
+8. **Push the release tag:** `git fetch origin main && git tag vX.Y.Z origin/main && git push origin vX.Y.Z`. This fires `release.yml` (6 targets + Global MSI + shell/PS installers + GitHub Release) → which chains `windows-installers.yml` (Corporate MSI + 2 Inno EXEs + sidecars). **Never reuse a tag** — cargo-dist treats tags as immutable; always go forward.
+9. **Watch + verify:** watch `release.yml` then `windows-installers.yml` (poll-loop below). Confirm: crate published (`crates-publish` green / `cargo owner --list nd300`), `gh release view vX.Y.Z` shows **28 assets**, `cargo install nd300 --force` works.
 
     Pattern (parameterize `RUN_ID`, `timeout_ms` ~1500000 for 25 min headroom, `persistent: false`):
 
@@ -132,7 +136,7 @@ Triggers in user prompts: "release", "ship it", "tag the release", "push it out"
 
 ### Patch-bump loop (when CI fails)
 
-A green local build does NOT prove a green CI build. The release CI builds on macOS aarch64, macOS x86_64, Linux gnu / musl, Linux aarch64, and Windows MSVC. A `#[cfg(target_os = "macos")]` block can compile fine on Windows because the cfg gates it out — and break only when CI runs the macOS target. **Always assume cross-platform CI is the source of truth.**
+A green local build does NOT prove a green CI build. **`ci.yml` now compiles + tests on macOS + Linux + Windows at PR time** (`-D warnings`), catching most cfg/dead-code/per-OS issues before merge — but the WiX/Inno **installer builds** only run in the tag-triggered `release.yml` + `windows-installers.yml`, and the full 6-target matrix (Linux musl, Linux/macOS aarch64) only builds at release. A `#[cfg(target_os = "macos")]` block can still slip through if a code path isn't exercised. **Assume cross-platform CI is the source of truth, and validate installers locally (see "Installer build pitfalls") before tagging.**
 
 When the release CI fails:
 
@@ -145,7 +149,7 @@ When the release CI fails:
 3. **Fix the underlying issue**. Do not paper over with `#[allow]` unless the warning is genuinely platform-shape only.
 4. **Bump the PATCH version** (e.g. `v3.0.0` → `v3.0.1`). Do not retag the same version — cargo-dist treats a tag as immutable, and re-tagging confuses GitHub Releases / installers / cached artifacts. Always go forward.
 5. **Add a CHANGELOG entry** for the patch (and a matching `HUMAN_CHANGELOG.md` entry under "Behind the scenes" — a one-liner that the previous release had a build problem is fine). One-line description of what was broken and that it's a build-only fix is fine — users don't need internal CI minutiae.
-6. **Re-run steps 7–11** of the standard workflow. Verify locally first; commit; push to main; verify tag/release/crate after CI.
+6. **Re-run the ship steps** (6–9 of the standard workflow): verify locally, commit, merge to `main` (→ crate), then push the **new** tag `vX.Y.Z` (→ release + installers). Verify the crate + the 28 assets after.
 7. **Loop** if the patch run also fails. Bump again (`v3.0.2`, `v3.0.3`, ...) — never reuse a tag.
 
 ### Don't-do list (release safety)
@@ -383,13 +387,13 @@ Each installer writes `HKCU\Software\ND300\InstallSource = <marker value>`. `src
 
 The cargo path is unchanged except: `verify_cargo_post_install` re-execs `--version` **after** the shadow-cleanup success path (defeats the crates.io-lag "update available" loop), `rustup_update_stable_best_effort` runs first, and `is_newer` is prerelease-aware. JSON adds a Windows-only top-level `install_origin` field. New `strategy` json_ids: `msi_global`/`msi_corporate`/`exe_global`/`exe_corporate`. `sha2` + `winreg` are Windows-only deps; the 4 new `UpdateStrategy` variants carry `#[cfg_attr(not(windows), allow(dead_code))]` and the windows-only fns are `#[cfg(windows)]` (`checksum_verdict` is `#[cfg(any(windows, test))]` so its test runs everywhere).
 
-### `windows-installers.yml` — main-push adaptation (the key divergence from TR-300)
+### `windows-installers.yml` — tag-triggered (consistent with TR-300)
 
-TR-300's installer workflow fires on a tag push and filters `startsWith(head_branch,'v')`. ND-300's `Release` workflow fires on a **main push** and creates the tag itself. So `windows-installers.yml`:
-- Triggers on `workflow_run: workflows:["Release"] types:[completed]` filtered to `conclusion=='success' && head_branch=='main'`, plus `workflow_dispatch` (input `tag`, always runs).
-- **Resolves the tag** by checking out the triggering commit (`workflow_run.head_sha`) and reading `version` from `Cargo.toml` → `tag = "v$version"` (dispatch uses the provided tag).
-- **Pre-flight + idempotency:** probes the release for `dist-manifest.json` + `nd300-x86_64-pc-windows-msvc.msi` (torn-release guard); if all 6 corporate/EXE assets are already attached on a non-dispatch run, logs and exits 0 (so docs-only/no-op main pushes don't rebuild). `workflow_dispatch` always rebuilds (`--clobber`).
-- Keeps the WiX `candle`/`light -sice:ICE38 -sice:ICE64 -sice:ICE91` + Inno `iscc /DMyAppVersion=` mechanics. Final release carries the cargo-dist base assets + these 6.
+ND-300's `Release` workflow fires on a `vX.Y.Z` **tag push**, so a tag-triggered Release run has `head_branch == the tag name`. `windows-installers.yml`:
+- Triggers on `workflow_run: workflows:["Release"] types:[completed]` filtered to `conclusion=='success' && startsWith(head_branch,'v')`, plus `workflow_dispatch` (input `tag`, always runs).
+- **Resolves the tag** directly from `head_branch` (the tag); checks out `head_sha` (the tagged commit). Dispatch uses the provided tag.
+- **Pre-flight + idempotency:** probes the release for `dist-manifest.json` + `nd300-x86_64-pc-windows-msvc.msi` (torn-release guard); if all 6 corporate/EXE assets are already attached on a non-dispatch run, logs and exits 0. `workflow_dispatch` always rebuilds (`--clobber`).
+- Keeps the WiX `candle`/`light -sice:ICE38 -sice:ICE64 -sice:ICE91` + Inno `iscc /DMyAppVersion=` mechanics. Final release carries the cargo-dist base assets + these 6 (28 total).
 
 `Cargo.toml`: `allow-dirty = ["ci", "msi"]` (the `msi` is for the customized `wix/main.wxs` InstallSourceMarker), `/wix-corporate/**` + `/inno/**` in the `include` list, and the Windows-only `sha2`/`winreg` deps.
 

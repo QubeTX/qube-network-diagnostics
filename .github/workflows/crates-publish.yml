@@ -1,0 +1,108 @@
+name: Crates.io Publish
+
+# Publishes the nd300 crate to crates.io, decoupled from the cargo-dist
+# release.yml (which is tag-triggered and builds binaries/installers).
+# Mirrors TR-300's crates-publish.yml for a consistent build+deploy cycle.
+#
+# Fires after the CI workflow completes on a `main` push (not on PRs, not on
+# tags). CI-gated: only publishes if CI passed, the version isn't already on
+# crates.io, and the registry token is configured. Idempotent — a no-op when the
+# version is already published, so a docs-only main push is safe.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+concurrency:
+  group: crates-publish-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish nd300
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read package version
+        id: package
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "nd300") | .version')"
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "::error::Could not read nd300 package version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Package version: $version"
+
+      - name: Check crates.io version
+        id: crates
+        run: |
+          status="$(curl -sS -o "$RUNNER_TEMP/crate-version.json" -w '%{http_code}' \
+            -H "User-Agent: QubeTX/qube-network-diagnostics crates-publish (https://github.com/QubeTX/qube-network-diagnostics)" \
+            "https://crates.io/api/v1/crates/nd300/${{ steps.package.outputs.version }}")"
+          case "$status" in
+            200)
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "nd300 ${{ steps.package.outputs.version }} is already published; skipping."
+              ;;
+            404)
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              echo "nd300 ${{ steps.package.outputs.version }} is not on crates.io yet; publishing after checks."
+              ;;
+            *)
+              echo "::error::Unexpected crates.io API status: $status"
+              cat "$RUNNER_TEMP/crate-version.json"
+              exit 1
+              ;;
+          esac
+
+      - name: Check crates.io token
+        if: steps.crates.outputs.publish == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is not configured; cannot publish nd300 ${{ steps.package.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Format
+        if: steps.crates.outputs.publish == 'true'
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        if: steps.crates.outputs.publish == 'true'
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Test
+        if: steps.crates.outputs.publish == 'true'
+        run: cargo test --locked --all-features
+
+      - name: Package
+        if: steps.crates.outputs.publish == 'true'
+        run: |
+          cargo package --locked --list
+          cargo publish --dry-run --locked
+
+      - name: Publish
+        if: steps.crates.outputs.publish == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked

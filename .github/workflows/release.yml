@@ -12,6 +12,14 @@
 #
 # Note that the GitHub Release will be created with a generated
 # title/body based on your changelogs.
+#
+# ── Deploy model (consistent with TR-300) ────────────────────────────────────
+# Tag-triggered. To cut a release: bump Cargo.toml version, merge to main
+# (CI runs → crates-publish.yml publishes the crate), then push a `vX.Y.Z` tag
+# (this workflow builds the 6 cargo-dist targets + Global MSI + shell/PS
+# installers and creates the GitHub Release; windows-installers.yml then chains
+# off it to add the Corporate MSI + the two Inno EXEs + sidecars). The crate is
+# published by crates-publish.yml (NOT here) to avoid double-publishing.
 
 name: Release
 permissions:
@@ -41,123 +49,18 @@ permissions:
 on:
   pull_request:
   push:
-    branches:
-      - main
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  source-check:
-    runs-on: "ubuntu-22.04"
-    outputs:
-      package_name: ${{ steps.meta.outputs.package_name }}
-      version: ${{ steps.meta.outputs.version }}
-      tag: ${{ steps.meta.outputs.tag }}
-      tag_flag: ${{ steps.meta.outputs.tag_flag }}
-      publishing: ${{ steps.meta.outputs.publishing }}
-      should_deploy: ${{ steps.meta.outputs.should_deploy }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - id: meta
-        name: Resolve release metadata
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-
-          package_name=$(sed -n 's/^name = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
-          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
-
-          publishing=false
-          should_deploy=false
-          tag=""
-          tag_flag=""
-
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            :
-          elif [ "$REF_TYPE" = "tag" ]; then
-            publishing=true
-            should_deploy=true
-            tag="$REF_NAME"
-            tag_flag="--tag=$tag"
-          else
-            tag="v$version"
-            tag_flag="--tag=$tag"
-
-            crate_status=$(curl -sS --retry 5 --retry-delay 3 --retry-all-errors \
-              -H "User-Agent: nd300-release-ci (+https://github.com/QubeTX/qube-network-diagnostics)" \
-              -o /tmp/crate-version.json -w "%{http_code}" "https://crates.io/api/v1/crates/${package_name}/${version}")
-            case "$crate_status" in
-              200) crate_exists=true ;;
-              404) crate_exists=false ;;
-              *)
-                echo "::error::Unexpected crates.io status ${crate_status} while checking ${package_name} ${version}"
-                cat /tmp/crate-version.json
-                exit 1
-                ;;
-            esac
-
-            release_exists=false
-            if gh release view "$tag" >/dev/null 2>&1; then
-              release_exists=true
-            fi
-
-            tag_exists=false
-            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-              tag_exists=true
-            fi
-
-            if [ "$crate_exists" = true ] && [ "$release_exists" = true ]; then
-              echo "Crate ${package_name} ${version} and GitHub release ${tag} already exist; this main push will verify but skip deploy."
-            elif [ "$crate_exists" = true ] || [ "$release_exists" = true ] || [ "$tag_exists" = true ]; then
-              echo "::error::Partial release state for ${tag}: crate_exists=${crate_exists}, release_exists=${release_exists}, tag_exists=${tag_exists}. Bump the patch version or repair the partial release manually."
-              exit 1
-            else
-              publishing=true
-              should_deploy=true
-            fi
-          fi
-
-          {
-            echo "package_name=$package_name"
-            echo "version=$version"
-            echo "tag=$tag"
-            echo "tag_flag=$tag_flag"
-            echo "publishing=$publishing"
-            echo "should_deploy=$should_deploy"
-          } >> "$GITHUB_OUTPUT"
-      - name: Check formatting
-        run: cargo fmt --check
-      - name: Run tests
-        run: cargo test --locked
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Verify crates.io package
-        run: cargo publish --dry-run --locked
-
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
-    needs:
-      - source-check
-    if: ${{ github.event_name == 'pull_request' || needs.source-check.outputs.should_deploy == 'true' }}
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
-      tag: ${{ needs.source-check.outputs.tag }}
-      tag-flag: ${{ needs.source-check.outputs.tag_flag }}
-      publishing: ${{ needs.source-check.outputs.publishing }}
+      tag: ${{ !github.event.pull_request && github.ref_name || '' }}
+      tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
+      publishing: ${{ !github.event.pull_request }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -181,13 +84,8 @@ jobs:
       # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
-        shell: bash
         run: |
-          if [ "${{ needs.source-check.outputs.publishing }}" = "true" ]; then
-            dist host --steps=create "${{ needs.source-check.outputs.tag_flag }}" --output-format=json > plan-dist-manifest.json
-          else
-            dist plan --output-format=json > plan-dist-manifest.json
-          fi
+          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -379,7 +277,9 @@ jobs:
       - name: Add legacy installer aliases
         shell: bash
         run: |
-          set -euo pipefail
+          # The homepage wrapper (install-nd300.sh / install-nd300.ps1) and older
+          # installs reference nd-300-installer.{sh,ps1}; keep these aliases of the
+          # canonical cargo-dist nd300-installer.{sh,ps1} so they keep resolving.
           if [ -f artifacts/nd300-installer.sh ]; then
             cp artifacts/nd300-installer.sh artifacts/nd-300-installer.sh
           fi
@@ -397,51 +297,6 @@ jobs:
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
-
-  publish-crate:
-    needs:
-      - source-check
-      - plan
-      - build-local-artifacts
-      - build-global-artifacts
-      - host
-    if: ${{ always() && needs.source-check.outputs.should_deploy == 'true' && needs.host.result == 'success' }}
-    runs-on: "ubuntu-22.04"
-    env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - name: Publish crate to crates.io
-        shell: bash
-        env:
-          PACKAGE_NAME: ${{ needs.source-check.outputs.package_name }}
-          PACKAGE_VERSION: ${{ needs.source-check.outputs.version }}
-        run: |
-          set -euo pipefail
-          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
-            echo "::error::CARGO_REGISTRY_TOKEN is not configured."
-            exit 1
-          fi
-
-          status=$(curl -sS --retry 5 --retry-delay 3 --retry-all-errors \
-            -H "User-Agent: nd300-release-ci (+https://github.com/QubeTX/qube-network-diagnostics)" \
-            -o /tmp/crate-version.json -w "%{http_code}" "https://crates.io/api/v1/crates/${PACKAGE_NAME}/${PACKAGE_VERSION}")
-          case "$status" in
-            200)
-              echo "${PACKAGE_NAME} ${PACKAGE_VERSION} is already published on crates.io; skipping."
-              ;;
-            404)
-              cargo publish --locked
-              ;;
-            *)
-              echo "::error::Unexpected crates.io status ${status} while checking ${PACKAGE_NAME} ${PACKAGE_VERSION}"
-              cat /tmp/crate-version.json
-              exit 1
-              ;;
-          esac
 
   announce:
     needs:
