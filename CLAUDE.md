@@ -23,6 +23,8 @@ cargo run --bin nd300 -- update       # Self-update to latest release (also `--u
 cargo test --lib actions::fix::triage  # Triage planner unit tests
 ```
 
+Security advisories: `cargo audit` (install once via `cargo install cargo-audit --locked`) auto-reads the project's `.cargo/audit.toml` ignore-list — when an advisory can't be cleared by a dep bump, add it there with a rationale instead of re-triaging. On a Windows host, use `cargo tree --target all -i <crate>` to see platform-gated transitive deps (e.g. the Linux netlink stack that pulls `paste`); plain `cargo tree` only shows host-target deps.
+
 Tests cover the fix planner and confirmation rules, platform command construction, latency argument selection, and speed-test aggregation. CI release builds remain the source of truth for all 6 platform targets.
 
 ## Architecture
@@ -137,6 +139,8 @@ Triggers in user prompts: "release", "ship it", "deploy", "tag the release", "pu
 ### Patch-bump loop (when CI fails)
 
 A green local build does NOT prove a green CI build. **`ci.yml` now compiles + tests on macOS + Linux + Windows at PR time** (`-D warnings`), catching most cfg/dead-code/per-OS issues before merge — but the WiX/Inno **installer builds** only run in the tag-triggered `release.yml` + `windows-installers.yml`, and the full 6-target matrix (Linux musl, Linux/macOS aarch64) only builds at release. A `#[cfg(target_os = "macos")]` block can still slip through if a code path isn't exercised. **Assume cross-platform CI is the source of truth, and validate installers locally (see "Installer build pitfalls") before tagging.**
+
+**First tell a transient infra failure apart from a real one.** If a job failed only because a download 504'd (the cargo-dist installer asset, a `curl`/registry blip) — not a compile/test error — wait for the asset to return 200, then `gh run rerun <run-id> --failed`; do NOT bump the version. A re-run that goes green flips the run to success and re-fires `crates-publish`. Use the patch-bump steps below only for genuine code/build failures.
 
 When the release CI fails:
 
@@ -413,6 +417,8 @@ Shared `#[test]`s must use bare filenames / forward-slash paths; gate `C:\…` p
 ### CI gates (`ci.yml` + `release.yml`)
 
 `.github/workflows/ci.yml` runs fmt + clippy + test + release-build on **macOS + Linux + Windows** (with `RUSTFLAGS=-D warnings`) on every PR and main push, plus a `cargo-dist plan` check + cargo-audit — so cross-platform compile/test issues are caught at PR time, not at release. The cargo-dist `release.yml` remains the source of truth for the full 6-target matrix + the actual installer builds (which `ci.yml` does not exercise).
+
+**cargo-dist is installed from the prebuilt binary tarball, not `installer.sh`.** `ci.yml`'s `dist-plan` and `release.yml`'s `plan` job fetch `cargo-dist-x86_64-unknown-linux-gnu.tar.xz` (`curl --retry`) and extract `dist` directly (it needs `chmod +x`), because GitHub's release CDN has repeatedly 504'd the small `cargo-dist-installer.sh` asset while the `.tar.xz` stayed up — and `dist-plan` is not `continue-on-error`, so that flake blocks the crates.io publish (it held up v3.3.1 for hours; fixed in v3.3.2). Don't revert these to `curl installer.sh | sh` (a `dist generate` would; re-apply the tarball install if so). Per-target `build-local-artifacts` jobs still use cargo-dist's platform-detecting installer (each runner needs a different host tarball).
 
 ### `nd300 dns` subcommand
 

@@ -23,6 +23,8 @@ cargo run --bin nd300 -- update       # Self-update to latest release (also `--u
 cargo test --lib actions::fix::triage  # Triage planner unit tests
 ```
 
+Security advisories: `cargo audit` (install once via `cargo install cargo-audit --locked`) auto-reads the project's `.cargo/audit.toml` ignore-list — when an advisory can't be cleared by a dep bump, add it there with a rationale instead of re-triaging. On a Windows host, use `cargo tree --target all -i <crate>` to see platform-gated transitive deps (e.g. the Linux netlink stack that pulls `paste`); plain `cargo tree` only shows host-target deps.
+
 Tests cover the fix planner and confirmation rules, platform command construction, latency argument selection, speed-test aggregation, and updater Cargo-install migration behavior. CI release builds remain the source of truth for all 6 platform targets.
 
 ## Architecture
@@ -131,6 +133,8 @@ Triggers in user prompts: "release", "ship it", "deploy", "tag the release", "pu
 ### Patch-bump loop (when CI fails)
 
 A green local build does NOT prove a green CI build. **`ci.yml` now compiles + tests on macOS + Linux + Windows at PR time** (`-D warnings`), catching most cfg/dead-code/per-OS issues before merge — but the WiX/Inno **installer builds** only run in the tag-triggered `release.yml` + `windows-installers.yml`, and the full 6-target matrix (Linux musl, Linux/macOS aarch64) only builds at release. A `#[cfg(target_os = "macos")]` block can still slip through if a code path isn't exercised. **Assume cross-platform CI is the source of truth, and validate installers locally (see "Installer build pitfalls") before tagging.**
+
+**First tell a transient infra failure apart from a real one.** If a job failed only because a download 504'd (the cargo-dist installer asset, a `curl`/registry blip) — not a compile/test error — wait for the asset to return 200, then `gh run rerun <run-id> --failed`; do NOT bump the version. A re-run that goes green flips the run to success and re-fires `crates-publish`. Use the patch-bump steps below only for genuine code/build failures.
 
 When the release CI fails:
 
@@ -335,6 +339,8 @@ ND-300's `Release` workflow fires on a `vX.Y.Z` **tag push**, so a tag-triggered
 ### Installer build pitfalls + CI gate
 
 cargo-dist hides WiX `candle`'s real error (just "exit 104") and Inno only builds on the CI Windows runner — so validate all four installers **locally** before shipping: WiX 3.11 `candle`+`light` (`-ext WixUIExtension`; corporate adds `-sice:ICE38/64/91`) and Inno Setup 6 `iscc`, after `cargo build --release`. Pitfalls that bit v3.2.x: a WiX XML comment may NOT contain `--` (CNDL0104 — keep `--flags` out of `<!-- … -->`; they're fine in `ExeCommand=` *values*); Inno has no `{userprofile}` constant; the cleanup CA uses `FileKey`/`ExeCommand`, not `WixQuietExec` (only `WixUIExtension` is linked). Cross-platform tests use bare filenames — a `C:\…`-path test passes on Windows but fails on Linux (`\` isn't a separator, so `file_name()` returns the whole string); Windows-only helpers need `#[cfg(windows)]` or they trip `-D warnings` dead-code on macOS/Linux. `.github/workflows/ci.yml` now runs fmt/clippy/test/build on **macOS + Linux + Windows** (`RUSTFLAGS=-D warnings`) at PR time so these surface pre-merge; `release.yml` is the source of truth for the full 6-target matrix + the installer builds.
+
+**cargo-dist is installed from the prebuilt binary tarball, not `installer.sh`.** `ci.yml`'s `dist-plan` and `release.yml`'s `plan` job fetch `cargo-dist-x86_64-unknown-linux-gnu.tar.xz` (`curl --retry`) and extract `dist` directly (it needs `chmod +x`), because GitHub's release CDN has repeatedly 504'd the small `cargo-dist-installer.sh` asset while the `.tar.xz` stayed up — and `dist-plan` is not `continue-on-error`, so that flake blocks the crates.io publish (it held up v3.3.1 for hours; fixed in v3.3.2). Don't revert these to `curl installer.sh | sh` (a `dist generate` would; re-apply the tarball install if so). Per-target `build-local-artifacts` jobs still use cargo-dist's platform-detecting installer (each runner needs a different host tarball).
 
 ### `nd300 dns` subcommand
 
