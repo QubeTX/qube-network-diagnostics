@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.2] - 2026-06-08
+
+Build/release-infra hardening only — no changes to the `nd300`/`speedqx` binaries.
+
+### Fixed
+- **cargo-dist install is no longer blocked by GitHub's flaky installer-script CDN.**
+  `ci.yml`'s `dist-plan` job and `release.yml`'s `plan` job now fetch the prebuilt
+  `dist` binary tarball (`cargo-dist-x86_64-unknown-linux-gnu.tar.xz`, with
+  `curl --retry`) and extract `dist` directly, instead of piping
+  `cargo-dist-installer.sh | sh`. GitHub's release CDN had repeatedly returned
+  **504 on that small script asset** while the `.tar.xz` stayed available — and
+  because `dist-plan` is not `continue-on-error`, it failed the whole CI run and
+  blocked the crates.io publish (it held up the 3.3.1 release for hours). The
+  per-target `build-local-artifacts` jobs still use cargo-dist's platform-detecting
+  installer for their own runners (each needs a different host tarball).
+
 ## [3.3.1] - 2026-06-08
 
 Dependency security pass — clears every RUSTSEC **vulnerability** flagged by the

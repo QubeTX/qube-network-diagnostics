@@ -120,8 +120,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install cargo-dist v0.31.0
+        shell: bash
+        # Fetch the prebuilt `dist` binary tarball directly instead of piping the
+        # cargo-dist-installer.sh script asset. GitHub's release CDN has repeatedly
+        # (and sometimes for hours) returned 504 on that small script while the
+        # .tar.xz stayed 200 — a flake that failed this job and, because dist-plan
+        # is not continue-on-error, blocked the crates.io publish. --retry covers
+        # transient blips on the tarball itself.
         run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh
+          mkdir -p "$HOME/.cargo/bin"
+          curl --proto '=https' --tlsv1.2 -fL --retry 6 --retry-all-errors --retry-delay 5 \
+            https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-x86_64-unknown-linux-gnu.tar.xz \
+            | tar -xJ -C "$HOME/.cargo/bin" --strip-components=1 cargo-dist-x86_64-unknown-linux-gnu/dist
+          chmod +x "$HOME/.cargo/bin/dist"
+          "$HOME/.cargo/bin/dist" --version
       - name: Verify dist plan parses
         run: ~/.cargo/bin/dist plan

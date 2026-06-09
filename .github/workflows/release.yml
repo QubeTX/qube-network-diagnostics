@@ -69,10 +69,22 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: Install dist
-        # we specify bash to get pipefail; it guards against the `curl` command
-        # failing. otherwise `sh` won't catch that `curl` returned non-0
+        # Fetch the prebuilt dist binary tarball directly rather than piping the
+        # cargo-dist-installer.sh script asset — GitHub's release CDN has
+        # intermittently (sometimes for hours) 504'd that small script while the
+        # .tar.xz stayed 200, blocking releases. This `plan` job runs on ubuntu, so
+        # the linux-gnu tool tarball is correct; the extracted ~/.cargo/bin/dist is
+        # what the "Cache dist" step uploads for the global/host jobs to reuse.
+        # --retry covers transient blips. (Per-target build-local-artifacts jobs
+        # still use cargo-dist's platform-detecting installer for their own runners.)
         shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh"
+        run: |
+          mkdir -p "$HOME/.cargo/bin"
+          curl --proto '=https' --tlsv1.2 -fL --retry 6 --retry-all-errors --retry-delay 5 \
+            https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-x86_64-unknown-linux-gnu.tar.xz \
+            | tar -xJ -C "$HOME/.cargo/bin" --strip-components=1 cargo-dist-x86_64-unknown-linux-gnu/dist
+          chmod +x "$HOME/.cargo/bin/dist"
+          "$HOME/.cargo/bin/dist" --version
       - name: Cache dist
         uses: actions/upload-artifact@v6
         with:

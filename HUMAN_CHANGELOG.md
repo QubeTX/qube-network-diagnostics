@@ -6,6 +6,13 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 8, 2026 — release pipeline made resilient to a GitHub outage
+
+**Behind the scenes**
+- While shipping the previous update, a GitHub content-delivery hiccup kept failing one small step of our automated build setup, which held up publishing for a few hours. We changed the way that build tool gets installed so the same kind of GitHub hiccup won't stall a release again. Nothing about the tool you run changes — this is purely about our release plumbing.
+
+---
+
 ## June 8, 2026 — security tune-up of the underlying libraries
 
 **Security**
