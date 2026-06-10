@@ -1,6 +1,6 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH nd300 1  "nd300 3.3.2"
+.TH nd300 1  "nd300 3.4.0"
 .SH NAME
 nd300 \- ND\-300 Network Diagnostic \- QubeTX Developer Tools
 .SH SYNOPSIS
@@ -42,8 +42,8 @@ Show additional debug/trace information
 \fB\-\-fast\fR
 Skip the speed test (faster execution)
 .TP
-\fB\-\-speed\-duration\fR \fI<SPEED_DURATION>\fR [default: 10]
-Speed test duration in seconds
+\fB\-\-speed\-duration\fR \fI<SPEED_DURATION>\fR [default: 15]
+Speed test duration in seconds (per direction, per provider)
 .SH ACTIONS
 .TP
 \fB\-d\fR, \fB\-\-dns\fR
@@ -98,6 +98,6 @@ EXAMPLES:
 
 Run \*(Aqnd300 \-\-help\*(Aq for full details, or \*(Aqnd300 \-h\*(Aq for a summary.
 .SH VERSION
-v3.3.2
+v3.4.0
 .SH AUTHORS
 Emmett S <hey@emmetts.dev>
