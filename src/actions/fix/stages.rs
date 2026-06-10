@@ -5,6 +5,11 @@ use crate::render::progress::create_spinner;
 use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
 #[cfg(any(windows, target_os = "linux"))]
 use super::wifi;
+// The macOS/Linux stage-3 paths look up the default interface; Windows takes
+// it from the caller, so the import is platform-gated to stay -D warnings
+// clean on all three OSes.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use super::adapters;
 use crate::actions::is_interactive;
 #[cfg(target_os = "linux")]
 use crate::actions::prompt_string;
