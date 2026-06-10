@@ -37,15 +37,15 @@ main.rs → Nd300Cli (clap parser, defined in src/cli.rs)
   → Falls through to legacy flag dispatch (--fix, --update, --clear-dns, --uninstall, -d/--dns)
   → Conditional exit: nd300 dns / --dns (exits on failure, falls through to diagnostics on success)
   → config.rs (Config builder: colors, unicode, mode, format)
-  → diagnostics/mod.rs (concurrent runner via tokio::join!)
-    → 7 core diagnostics (concurrent) + speed test (sequential) = 8 core total
-    → Speed test (sequential — bandwidth-saturating; the 8th core diagnostic)
-    → tech mode (-t): 17 deep diagnostics (concurrent) + bufferbloat (sequential) = 18 total, uses SharedCache
+  → diagnostics/mod.rs (concurrent runner; run_all(config, cap) enforces the wall-clock cap internally)
+    → 7 core diagnostics (spawned as JoinHandles, raced against the cap) + speed test (sequential) = 8 core total
+    → On cap expiry: completed checks are real, unfinished ones become fabricated `timed_out` Fail rows — partial results always render
+    → tech mode (-t): T1 = 21 deep (concurrent, boxed futures) → T2 = route_path ∥ packet_loss ∥ path_mtu (long, latency-sensitive) → T2b = nat + arp_health (derived, free) → T3 = bufferbloat (sequential, saturating) = 25 total, uses SharedCache
   → render/ (user_mode | tech_mode | json — selected by format + mode)
   → Exit code: 0=OK, 1=Warn, 2=Fail
 ```
 
-Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **18 deep**). The flow box splits each total into its concurrent group plus the one sequential outlier (speed test for core, bufferbloat for tech) — same modules, just grouped by how they run. Keep these reconciled when adding a module.
+Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **25 deep**). The flow box splits each total into its concurrent groups plus the sequential outliers (speed test for core; bufferbloat for tech) — same modules, just grouped by how they run. Keep these reconciled when adding a module. Tech-mode module futures are **boxed** inside the `tokio::join!` — a flat 21-way join of inlined async state machines overflowed the Windows main-thread stack.
 
 `Nd300Cli` defines a `command: Option<Nd300Command>` field alongside the legacy boolean flags. If a subcommand is given, it takes precedence; otherwise the flag-form dispatch runs. Both forms produce identical behavior. Output flags (`--json`, `--ascii`, `--no-color`, `--verbose`), fix confirmation (`--yes`), and speed controls (`--fast`, `--speed-duration`) are marked `global = true` so they work in both positions. `Nd300Command::Dns` is special: it is routed through the same *semi*-exit-early path as the `-d`/`--dns` flag (exit on failure, fall through to diagnostics on success) rather than the terminal subcommand block, so `nd300 dns` ≡ `nd300 --dns`. All other subcommands are terminal.
 
@@ -54,8 +54,8 @@ Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **18 
 - **`src/cli.rs`** — Shared clap derive definitions (`Nd300Cli`, `SpeedQXCli`) used by both binaries and by `build.rs` for man page generation.
 - **`src/actions/`** — Exit-early operations (`fix`, `clear-dns`, `uninstall`, `dns`, `update` — each available as a bare subcommand and a legacy flag; plus the hidden `migrate-cleanup`). `dns` is *semi*-exit-early (exit on failure, fall through to diagnostics on success). The fix flow (`actions/fix/`) implements evidence-driven network recovery with VPN detection, connectivity checks between actions, Wi-Fi reconnection, state preservation, and report generation (`report.rs` saves Markdown to `~/Downloads/`). The updater (`actions/update.rs`) prefers `cargo install nd300 --force` (with post-install `--version` verify), cleans up shadowing non-Cargo installs when migrating users to Cargo, falls back to cargo-dist installers, and on Windows dispatches to the matching first-class installer (MSI/EXE × Global/Corporate) via a registry marker with SHA-256 sidecar verification. See "Windows Installer Matrix + Installer-Aware Self-Update" below.
 - **`src/actions/migrate.rs`** — Cross-method install cleanup, exposed as the **hidden** `nd300 migrate-cleanup` subcommand (`#[command(hide = true)]`). Invoked by the four Windows installers (and the silent self-update path) to consolidate to a single install: it removes a shadowing older `cargo install` copy in `~\.cargo\bin` and/or the *other* Windows edition (Global perMachine ↔ Corporate perUser). It **reuses** the tested deletion primitives — `uninstall_path` / `is_sole_package_in_dir` / `OUR_BINARIES` from `uninstall.rs`, and `cargo_bin_dir` / `same_path` / `classify_install_path` / `current_install_shadows_cargo_install` / `current_exe_real_path` / `classify_shadow_cleanup` / `ShadowCleanupDecision` / `InstallOrigin` from `update.rs` (all widened to `pub(crate)`) — and does NOT re-implement deletion. Flags: `--cargo-copy`, `--other-edition`, `--quiet`, `--dry-run`, `--json`, `--user-profile <path>`, `--cargo-home <path>`; no target flag = `--cargo-copy` only. Hard guarantees (unit-tested): only deletes `nd300.exe`/`speedqx.exe`; never cargo/rustup/the `.cargo\bin` PATH entry/`~/Downloads`/the running install; never escalates (needs-admin → report + continue); refuses shell-unsafe paths. **Always exits 0** except on a true internal error — cleanup is advisory and must never fail an installer. Adding a new fix primitive does not affect this; adding a new install path DOES (see the LOCKSTEP contract below).
-- **`src/diagnostics/`** — All diagnostic modules. Each is self-contained with platform-specific code via `#[cfg]` attributes. Each returns `(DiagnosticResult, Option<DetailStruct>)` — the detail struct carries rich data for rendering. `shared_cache.rs` pre-fetches subprocess outputs to deduplicate calls across tech-mode modules. `util.rs` provides the timeout wrappers (`run_with_timeout`, `lookup_host_timeout`) that bound every diagnostic subprocess and DNS-resolver call so a broken network can't hang the run.
-- **`src/speedtest/`** — Quad-provider speed test engine (Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com). Provider clients: `cloudflare.rs`, `ndt7.rs`, `librespeed.rs`, `fastcom.rs`. `statistics.rs` implements the accuracy pipeline (trimean, IQR filter, slow-start discard, inverse-variance merge, bootstrap CI). `display.rs` handles speedqx-specific progress rendering. Both binaries share this module.
+- **`src/diagnostics/`** — All diagnostic modules. Core modules export `pub async fn check() -> (DiagnosticResult, Option<DetailStruct>)`; deep (tech-mode) modules export `pub async fn collect() -> Option<DetailType>` (Skip = `None`, section omitted). Platform-specific code via `#[cfg]` attributes; platform parsers are pure fns gated `#[cfg(any(target_os = "...", test))]` so they unit-test on all three CI OSes. `ping.rs` is the single home for ping invocation/parsing (`ping_args`/`run_ping`/`parse_ping`/`PingStats`) — used by gateway, latency, bufferbloat, packet_loss, and the path-MTU probe. `shared_cache.rs` pre-fetches subprocess outputs to deduplicate calls across tech-mode modules. `util.rs` provides the timeout wrappers (`run_with_timeout`, `lookup_host_timeout`), the `retry_probe`/`ping_budget`/`harvest_or` helpers, and the timeout classes.
+- **`src/speedtest/`** — Six-provider speed test engine (Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com + M-Lab MSAK + Apple networkQuality; the last two are speedqx-only, skippable via `--skip-msak`/`--skip-apple`; nd300's Diagnostic mode stays CF+NDT7). Provider clients: `cloudflare.rs`, `ndt7.rs`, `librespeed.rs`, `fastcom.rs`, `msak.rs`, `applenq.rs`. Ookla was evaluated and excluded for EULA reasons (rationale in `applenq.rs`). `statistics.rs` implements the accuracy pipeline (sanitize, trimean, IQR filter, slow-start discard, bootstrap CI); `mod.rs::aggregate` applies the minimum-sample floor (K=4) + unknown-variance-gets-max rule before the capped inverse-variance merge and surfaces `confidence_intervals` + `merge_exclusions`. `adaptive.rs` sizes per-request transfers to ~2s at measured throughput. `display.rs` handles speedqx-specific progress rendering. Both binaries share this module.
 - **`src/render/`** — Output formatting. `table.rs` builds Unicode/ASCII box-drawing tables with ANSI-aware string functions (`visible_len`, `truncate_visible`). `color.rs` centralizes ANSI color output. `progress.rs` handles spinners.
 - **`src/config.rs`** — Config builder with fluent API. The Config object threads through the entire render pipeline.
 - **`src/error.rs`** — Unified `AppError` enum via `thiserror`.
@@ -65,11 +65,13 @@ Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **18 
 
 **Platform abstraction:** Compile-time `#[cfg(target_os)]` branching per module — no runtime OS checks. Windows uses `winapi` (GetIfEntry2, TCP/UDP tables), `ipconfig` crate, and WMI (tech-mode only). Unix uses `nix` and `libc`.
 
-**Diagnostic module contract:** Every diagnostic module exports `pub async fn check() -> (DiagnosticResult, Option<DetailType>)`. DiagnosticResult carries status + summary; the optional detail struct carries rich data for rendering.
+**Diagnostic module contract:** Core modules export `pub async fn check() -> (DiagnosticResult, Option<DetailType>)`; deep modules export `pub async fn collect() -> Option<DetailType>` (or `collect_with_cache(&SharedCache)`), where `None` = Skip (section omitted) and verdicts live inside the detail struct (`assessment` + `level: "ok"|"warn"|"fail"` fields by convention). Core verdict logic is extracted into pure `*_verdict()` functions so thresholds are unit-testable without a network.
 
-**Subprocess timeouts:** All subprocess calls in the fix flow use explicit timeouts (`TIMEOUT_QUICK` 15s, `TIMEOUT_MEDIUM` 30s, `TIMEOUT_SLOW` 60s) defined in `actions/fix/cmd.rs`. All *diagnostic* subprocess and DNS-resolver calls are bounded by `diagnostics/util.rs` (`RESOLVE` 5s for `lookup_host`, `SLOW` 10s for network-touching probes like `ping`/`nslookup`/`dig`/`resolvectl`, `QUICK` 5s for local state queries). On timeout the wrapper returns `None`, which is identical to the pre-existing spawn-failure/`.ok()` == `None` path, so callers fall into their existing unreachable/empty branch — zero behavior change on a healthy network. `main.rs` additionally races `diagnostics::run_all` against a 90s wall-clock cap and `tokio::signal::ctrl_c` so the tool always returns promptly.
+**Verdict stability (v3.4.0+):** core checks require *consistent* failure before reporting Fail — gateway runs a 3-ping burst plus a conditional second burst (Fail = 0/6); DNS probes 3 independent domains with one retry each and judges on count-resolved + median time; ports test 2 endpoints per port with 2 attempts each (open if either connects, unresolved excluded from the denominator); latency's average-based Warns require ≥2 reachable targets. Timeouts still map to failed attempts (never remapped to Warn — that would mask outages); de-flaking comes from the consistency requirements. Probe results are deliberately NOT shared across core modules (shared samples would correlate verdicts).
 
-**SharedCache (tech mode):** `diagnostics/shared_cache.rs` pre-fetches netstat, ipconfig, sysinfo::Networks, and default gateway data once, shared across 10+ tech-mode diagnostic modules. Built via `SharedCache::build_for_tech_mode()` before the tech diagnostic `tokio::join!`.
+**Subprocess timeouts:** All subprocess calls in the fix flow use explicit timeouts (`TIMEOUT_QUICK` 15s, `TIMEOUT_MEDIUM` 30s, `TIMEOUT_SLOW` 60s) defined in `actions/fix/cmd.rs`. All *diagnostic* subprocess and DNS-resolver calls are bounded by `diagnostics/util.rs` (`RESOLVE` 5s for `lookup_host`, `QUICK` 5s for local state queries, `SLOW` 10s for network-touching probes like `nslookup`/`dig`/`resolvectl`, `TRACE` 60s for single long probes like `tracert`/`traceroute`; ping bursts use `ping_budget(count)` = 2s×count+4s so multi-probe bursts aren't truncated). On timeout the wrapper returns `None`, identical to the spawn-failure path. `run_all(config, cap)` enforces the wall-clock cap **internally** (cap from `diagnostics::run_all_cap`: max(90s, 4×speed_duration+30s), +150s in tech mode): on expiry, finished checks are harvested and unfinished ones become fabricated `DiagnosticResult::timed_out_fail` rows (per-row `timed_out: true` + top-level `timed_out` flag) — partial results always render, exit code stays 2, and `triage::actionable_failures` skips fabricated rows so the fix loop never repairs based on slowness. `main.rs` keeps only the `ctrl_c` race.
+
+**SharedCache (tech mode):** `diagnostics/shared_cache.rs` pre-fetches netstat, ipconfig, sysinfo::Networks, and default gateway data once, shared across 10+ tech-mode diagnostic modules. Built via `SharedCache::build_for_tech_mode()` before the tech diagnostic `tokio::join!`. `run_technician_diagnostics(config, public_ip)` also receives the core public-IP details so the NAT analysis doesn't re-fetch.
 
 **DiagnosticStatus enum:** `Ok`, `Warn`, `Fail`, `Skip` — only the 8 core diagnostics (the 7 concurrent + speed test) contribute to exit code aggregation; tech-mode deep diagnostics do not.
 
@@ -236,27 +238,34 @@ What to keep / add:
 `nd300 fix` (and the legacy `nd300 -f` flag) is no longer a fixed Stage 1 → Stage 2 → Stage 3 sequence. It runs an iterative **triage loop** in `src/actions/fix/loop_runner.rs`:
 
 ```
-1. Run baseline diagnostics (diagnostics::run_all)
+1. Run baseline diagnostics (the loop's probes force skip_speed — no action targets
+   Speed, pinned by triage's no_action_targets_speed invariant test)
 2. If everything passes → exit 0 ("nothing to fix")
-3. Detect hard-block patterns (no link / ISP outage / enterprise VPN) → exit with guidance
-4. Compute actionable failures, group by root cause, build_plan() returns ordered Vec<Action>
-5. For each action in plan:
+3. EVIDENCE GATE (v3.4.0+): a failing baseline is re-confirmed with a second
+   diagnostic pass. Iteration 1 plans against confirmed_failures (the
+   intersection); failures seen in only one pass are recorded as intermittent
+   (no repairs, no effectiveness credit). A transient blip → Fixed, zero actions.
+4. Detect hard-block patterns (no link / ISP outage / enterprise VPN) → exit with guidance
+5. Compute actionable failures, group by root cause, build_plan() returns ordered Vec<Action>
+6. For each action in plan:
      - Medium-risk actions: require confirmation unless explicitly auto-confirmed with --yes
      - High-risk actions: render structured RiskExplanation prompt; require explicit 'y'
      - Apply, capture ActionOutcome, sleep stabilization window
      - If fatal_environment_change → break out of plan, re-probe immediately
-6. Re-run diagnostics. If now passing → done. Else continue to next iteration.
-7. Bounded by: ≤6 iterations, ≤4-min wall clock, per-action max_attempts
+7. Re-run diagnostics. If now passing → done. Else continue to next iteration.
+8. Bounded by: ≤6 iterations, ≤4-min wall clock, per-action max_attempts
 ```
+
+Effectiveness attribution credits a cleared failure only to the **most recent successful action that iteration whose declared `targets` contain it**; intermittent keys earn no credit. The loop body lives in `run_with_probe(probe: &mut impl DiagProbe, ...)` — the `DiagProbe` seam lets tests script diagnostic results through the real loop with zero subprocess IO (`ScriptedProbe` in `loop_runner.rs` tests).
 
 ### Module layout under `src/actions/fix/`
 
 - **`action.rs`** — `Action`, `ActionId`, `Cost`, `Risk`, `Reversibility`, `RiskExplanation` types. The registry (`all_actions()`) returns every `Action` available on the current platform. `Action::apply(&self, config, restore: &RestoreRegistry)` dispatches to a free function per `ActionId` via match. Destructive `apply_*` fns (`apply_disable_consumer_vpns`, `apply_bounce_interface`, `apply_deep_stack_reset`) register their inverse op on the `RestoreRegistry` *before* mutating state; non-destructive ones ignore it. `Risk::High(RiskExplanation)` is a sealed enum variant: a high-risk Action *cannot* be constructed without a complete plain-language explanation.
 - **`triage.rs`** — Pure planning. `actionable_failures()`, `group_by_root_cause()` (walks the hardcoded dependency DAG), `hard_block_detected()`, `build_plan()`. No IO. Unit-tested via `cargo test --lib actions::fix::triage`.
-- **`session.rs`** — `Session` (per-run state: attempts, effectiveness, snapshots, action_log) + `Reporter` (plain-language output for stdout) + `FinalOutcome` (now includes `Interrupted(Vec<DiagnosticKey>)` → exit 130) + the **`RestoreRegistry`** / `RestoreOp` / `restore_op` interrupt-safe restore machinery (see "Interrupt-safe restore" below). `WALL_CLOCK_CAP = 240s`.
+- **`session.rs`** — `Session` (per-run state: attempts, effectiveness, snapshots, action_log, plus `baseline_confirmation` + `intermittent` from the evidence gate — kept OUT of `snapshots` so JSON `iterations` math and the report's final-snapshot semantics hold) + `Reporter` (plain-language output for stdout) + `FinalOutcome` (now includes `Interrupted(Vec<DiagnosticKey>)` → exit 130) + the **`RestoreRegistry`** / `RestoreOp` / `restore_op` interrupt-safe restore machinery (see "Interrupt-safe restore" below). `WALL_CLOCK_CAP = 240s`.
 - **`loop_runner.rs`** — `run_and_finalize(config) -> i32`: pre-flight elevation check, constructs the caller-owned `Session` + `RestoreRegistry`, races `run(config, &mut session, &restore)` against `tokio::signal::ctrl_c` inside a `tokio::select!` with the loop wrapped in `catch_unwind`, then **always drains the registry** (bounded by a 90s outer cap), persists the Markdown report, returns the exit code. On Ctrl-C → outcome `Interrupted`, exit 130; on caught panic → drain, then `std::process::exit(101)`. Handles JSON output via `print_json_outcome`.
 - **`report.rs`** — Iteration-oriented Markdown report. Saves to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`. `save_session_report_with_recovery` appends a "Manual recovery needed" section for any drain failures.
-- **`stages.rs`** — Platform primitives (`disable_interface`, `enable_interface`, `restart_services`, `platform_stage3`, etc.) — kept and made `pub` so the action registry calls them directly. The legacy `run_stage1/2/3` orchestrators are still in this file but unused; safe to remove in a follow-up.
+- **`stages.rs`** — Platform primitives (`disable_interface`, `enable_interface`, `restart_services`, `platform_stage3`, etc.) — kept and `pub` so the action registry calls them directly. The legacy `run_stage1/2/3` orchestrators, their DNS fallback handlers, `wait_for_connectivity`/`verify_dns_stability`, and `StepResult` were **removed in v3.4.0** (~650 lines). `connectivity.rs` now holds only `check_connectivity` + the shared `PORTAL_PROBE_URL` const (also used by the captive-portal deep diagnostic).
 - **`cmd.rs`** — `run_cmd` (legacy, returns `Result<Output, String>`) + `run_cmd_capture` (new, returns structured `CmdOutcome` with stdout/stderr/exit/duration). Reports render `CmdOutcome` payloads.
 
 ### High-risk prompts
@@ -428,13 +437,16 @@ Shared `#[test]`s must use bare filenames / forward-slash paths; gate `C:\…` p
 
 The statistics module (`src/speedtest/statistics.rs`) implements a multi-stage accuracy pipeline matching the [SpeedQX web speed test](https://speedqx.com/how-it-works):
 
-1. **Collect raw samples**: Each HTTP request / WebSocket measurement yields an individual Mbps value
-2. **Discard slow-start** (30%): First 30% of samples removed to eliminate TCP ramp-up
-3. **Upload-specific**: Keep only fastest 50% of post-warmup samples (upload ramp-up is slower)
-4. **IQR outlier filter**: Remove values outside Q1 - 1.5*IQR to Q3 + 1.5*IQR
-5. **Modified trimean**: `(P10 + 8*P50 + P90) / 10` — Ookla-style, heavily median-weighted
-6. **Winsorized cross-validation**: If Winsorized trimean diverges from IQR trimean by >15%, average both
-7. **Inverse-variance merge**: Combine every successful provider using `1/variance` weighting, with bounded source weights so no single provider dominates the result
-8. **Latency**: Fixed 0.4 CF / 0.6 NDT7 weights (NDT7's kernel MinRTT is structurally superior)
-9. **Divergence detection**: Flag when the full provider spread differs by >30%
-10. **Stability**: Coefficient of variation on combined samples (stable = CV < 0.15)
+1. **Collect dense raw samples**: per-request Mbps for the HTTP-loop providers (adaptively sized to ~2s/request via `adaptive.rs`), 500ms per-interval samples for NDT7 (client byte deltas down, server AppInfo deltas up) and the aggregate-counter providers (MSAK 2-stream, Apple 4-connection)
+2. **Sanitize**: non-finite samples dropped at the single `statistics::sanitize` choke point
+3. **Discard slow-start** (30%): First 30% of samples removed to eliminate TCP ramp-up (per-iteration for NDT7 — each iteration is a fresh connection)
+4. **Upload-specific**: Keep only fastest 50% of post-warmup samples (upload ramp-up is slower)
+5. **IQR outlier filter**: Remove values outside Q1 - 1.5*IQR to Q3 + 1.5*IQR
+6. **Modified trimean**: `(P10 + 8*P50 + P90) / 10` — Ookla-style, heavily median-weighted
+7. **Winsorized cross-validation**: If Winsorized trimean diverges from IQR trimean by >15%, average both
+8. **Minimum-sample floor**: providers need ≥4 sanitized samples per direction to join the merge (exclusions surfaced via `merge_exclusions` + an `Excluded` display row); if nobody reaches 4, all positive candidates merge (never 0.0 while data exists)
+9. **Inverse-variance merge**: Combine qualifying providers using `1/variance` weighting with 0.70-capped source weights; **unknown variance (≤0/non-finite — 1-sample providers, no-sample fallback values) is assigned the maximum known variance** (least trusted — the old floor rule inverted this)
+10. **Bootstrap CI**: percentile-method CI on the pooled per-direction samples (1000 resamples, data-seeded deterministic PRNG), suppressed below 8 pooled samples; surfaced as `±margin` in displays and the `confidence_intervals` JSON field
+11. **Latency**: Fixed 0.4 CF / 0.6 NDT7 weights (NDT7's kernel MinRTT is structurally superior); the no-CF/no-NDT7 fallback prefers jitter-bearing (multi-probe) providers
+12. **Divergence detection**: Flag when the full provider spread differs by >30%
+13. **Stability**: Coefficient of variation on combined samples (stable = CV < 0.15)

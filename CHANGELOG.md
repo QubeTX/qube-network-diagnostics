@@ -7,6 +7,147 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-06-10
+
+Comprehensive stability + accuracy hardening across all three subsystems
+(diagnostics, speed test, fix flow), two new speed-test providers, and an
+exhaustive technician mode (18 → 25 deep diagnostics).
+
+### Added
+- **Two new speed-test providers (4 → 6 in speedqx):**
+  - **M-Lab MSAK** (`src/speedtest/msak.rs`) — the multi-stream `throughput1`
+    successor to NDT7: two parallel WebSocket streams per direction measure
+    aggregate capacity (NDT7's single flow structurally underestimates on
+    high-BDP/lossy paths). Locate-API discovery, subprotocol
+    `net.measurementlab.throughput.v1`, 500ms aggregate sampling, kernel
+    `TCPInfo` MinRTT/RTT for ping/jitter. Same open M-Lab platform/policy as
+    the existing NDT7 integration. Skip with `--skip-msak`.
+  - **Apple networkQuality** (`src/speedtest/applenq.rs`) — the capacity half
+    of the IETF responsiveness methodology against
+    `mensura.cdn-apple.com`: 4 parallel HTTPS connections (large-object GETs /
+    upload-sink POSTs) with 500ms aggregate sampling and 10-probe warmed
+    latency. A fifth distinct CDN family — independent signal for the merge.
+    Skip with `--skip-apple`. (Ookla Speedtest.net was evaluated and excluded:
+    its EULA permits only personal, non-commercial use via the official CLI,
+    with no third-party protocol authorization — rationale documented in
+    `applenq.rs`.)
+- **Bootstrap confidence intervals surfaced**: the previously dormant
+  percentile-method bootstrap (`statistics::bootstrap_ci`) now runs on the
+  pooled per-direction samples and displays as `941 Mbps ±12 Mbps` in speedqx
+  and nd300 tech mode, with an additive `confidence_intervals` JSON field
+  (suppressed below 8 pooled samples; deterministic via data-seeded PRNG).
+- **Seven new deep diagnostics in technician mode** (18 → 25 total):
+  `route_path` (bounded traceroute with first-hop/ISP-boundary/largest-jump
+  analysis), `packet_loss` (sustained 30-probe bursts × 3 anycast targets),
+  `nat` (double-NAT + CGNAT 100.64/10 detection), `dns_benchmark` (system vs
+  public resolver timing + NXDOMAIN-wildcard hijack probe + subprocess-free
+  DNSSEC validation check), `wifi` (structured signal/channel/band/PHY/
+  security/rates via netsh/airport/nmcli-or-iw), `captive_portal`
+  (redirect-disabled probe), `ntp` (dependency-free SNTP clock-offset check
+  with HTTP-Date fallback; >30s skew is flagged — it breaks TLS).
+- **Partial results when diagnostics hit the wall-clock cap**: `run_all` now
+  enforces the cap internally and returns completed checks plus fabricated
+  `timed_out` Fail rows for unfinished ones (exit code stays 2). JSON gains a
+  top-level `timed_out` flag and per-row `timed_out` markers. **JSON
+  consumers keying on the old `{"error":"timeout"}` shape must migrate.**
+- New shared diagnostics infrastructure: `src/diagnostics/ping.rs` (one home
+  for the ping invocation/parsing previously triplicated), `retry_probe` /
+  `ping_budget` / `harvest_or` helpers and a `TRACE` (60s) timeout class in
+  `diagnostics/util.rs`, and `src/speedtest/adaptive.rs` (throughput-targeted
+  request sizing).
+
+### Changed
+- **Core diagnostic verdicts are de-flaked via consistent-failure requirements**
+  (single transient blips no longer flip verdicts):
+  - Gateway: 3-ping burst + conditional second burst — Fail now requires 0/6
+    replies; partial loss is a new Warn with loss %. Additive
+    `packets_sent`/`packets_received` JSON fields.
+  - DNS: three independent domains (`dns.google`, `one.one.one.one`,
+    `example.com`) probed concurrently with one retry each; verdict on
+    count-resolved + **median** time. One slow domain among fast peers no
+    longer Warns. Additive `resolution_tests` JSON field.
+  - Latency: 6 pings/target (was 4); average-based Warns require ≥2 reachable
+    targets; exactly one reachable target reports partial reachability
+    instead of letting that target's latency set the verdict.
+  - Ports: two endpoints per port on independent operators (80/443/53 across
+    1.1.1.1↔8.8.8.8; 22 across github.com↔gitlab.com), 2 attempts each — open
+    if either connects, so one provider's outage no longer Warns. New
+    `outcome` field (`open`/`blocked`/`unresolved`); unresolved ports are
+    excluded from the verdict denominator; `latency_ms` is now connect-only.
+- **Speed-test merge hardening:** all samples flow through a non-finite
+  sanitize choke point; unknown variance (1-sample providers, no-sample
+  fallback values) is now treated as LEAST trusted in the inverse-variance
+  merge (the old floor rule handed degenerate providers the highest weight);
+  providers need ≥4 samples per direction to join the headline merge, with
+  exclusions reported in an additive `merge_exclusions` JSON field and an
+  `Excluded` display row. **Merged numbers shift where degenerate providers
+  were previously over-weighted (intended).**
+- **NDT7 sampling density:** 500ms per-interval download samples and
+  server-`AppInfo`-delta upload samples (~20 per 10s iteration vs exactly 1
+  before); upload frame growth switched to the reference-client
+  16×-bytes-sent rule (1MB frames after ~8MB vs ~101MB). Per-provider
+  `bandwidth_samples` arrays are substantially larger — flag for any JSON
+  consumer parsing them.
+- **Adaptive request sizing:** LibreSpeed download `ckSize` and the
+  LibreSpeed/Cloudflare/fast.com upload payloads now target ~2s per request
+  at the last measured throughput (LibreSpeed's fixed 100MB chunks yielded
+  0–2 samples per 30s window on slower lines).
+- **fast.com:** latency upgraded from one unloaded HEAD probe to a 10-probe
+  warmed burst (min + RFC 3550 jitter — jitter was always null before);
+  upload give-up softened to 5 consecutive failures with a small-payload
+  retry. LibreSpeed server selection probes 30 candidates (was 5) and the
+  hardcoded fallback list is now 9 geo-diverse servers (was 3 EU/US-East).
+- **Real bufferbloat measurement** (tech mode): ping bursts run *during*
+  sustained multi-stream download/upload saturation phases with per-direction
+  A+–F grades (the old implementation admitted its loaded number was an
+  estimate). Now honors `--fast`. Real path-MTU discovery (DF-bit binary
+  search) joins the MTU section; IPv6 gains an HTTPS-over-v6 fetch and a
+  v4-vs-v6 connect comparison; proxy gains PAC reachability + WPAD detection;
+  ARP gains gateway-presence/duplicate-MAC health analysis.
+- **`nd300 fix` evidence quality:**
+  - The loop's diagnostic passes force-skip the speed test (no action targets
+    Speed — pinned by a registry invariant test; a speed-only failure now
+    reports cleanly instead of looping to `Exhausted`, and the freed budget
+    funds the confirmation pass below).
+  - A failing baseline is **re-confirmed with a second diagnostic pass**
+    before the first repair plan; only failures present in both passes are
+    acted on. Transient blips self-clear (outcome `Fixed`, zero actions);
+    flickering failures are recorded as intermittent (report section + JSON
+    `intermittent_failures`).
+  - Effectiveness attribution fixed: a cleared failure is credited only to
+    the most recent successful action that iteration whose declared targets
+    contain it (previously every successful action got credit for every
+    cleared key, letting natural recoveries bias planning).
+  - Re-disabling a VPN after re-enable now requires two consecutive failed
+    connectivity checks.
+- `--speed-duration` default raised 10 → 15 seconds (the run_all cap formula
+  is unchanged: 4×15+30 = the existing 90s floor); tech mode's cap gains a
+  +150s deep-probe budget. speedqx's six providers run sequentially —
+  a full default run is now ~5.5 minutes (use the skip flags to trim).
+
+### Removed
+- The legacy fixed Stage 1/2/3 orchestrators (`run_stage1/2/3`), their DNS
+  fallback handlers, `wait_for_connectivity`/`verify_dns_stability`, and the
+  `StepResult` type (~650 lines) — unused since the v3.0 triage loop. All
+  platform primitives used by the action registry and restore machinery are
+  kept; the captive-portal probe URL is now a shared named constant.
+
+### Fixed
+- A latent budget bug where multi-probe ping bursts could be truncated by the
+  fixed 10s subprocess cap (budgets now scale with probe count via
+  `ping_budget`).
+- The aggregate latency fallback can no longer be set by a single noisy
+  unloaded probe (jitter-bearing providers are preferred).
+- A 21-way `tokio::join!` of inlined futures overflowed the Windows
+  main-thread stack in tech mode; module futures are now boxed.
+
+### Tests
+- ~110 new unit tests: pure verdict functions for every reworked core module,
+  per-OS canned-transcript parsers (ping/tracert/traceroute/netsh/airport/
+  nmcli/iw/dig), merge/CI statistics, SNTP packet math, fix-loop scenarios
+  via a new scripted-diagnostics seam (`DiagProbe`), and effectiveness
+  attribution rules.
+
 ## [3.3.2] - 2026-06-08
 
 Build/release-infra hardening only — no changes to the `nd300`/`speedqx` binaries.

@@ -3,17 +3,17 @@
 [![Build Status](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml/badge.svg)](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 
-Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes **SpeedQX**, a standalone quad-provider speed test.
+Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes **SpeedQX**, a standalone six-provider speed test.
 
 ## Features
 
 - **Two operating modes**: User mode (clean summary) and Technician mode (deep diagnostics)
 - **8 core diagnostics**: adapters, interfaces, gateway, DNS, public IP, latency, speed test, port connectivity
-- **18 deep diagnostics** (technician mode): ARP, routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy, VPN, firewall, DNS cache, IPv6, MTU, connection states, bufferbloat, reverse DNS, TLS inspection, traffic counters
+- **25 deep diagnostics** (technician mode): ARP (+ gateway health), routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy (+ PAC/WPAD), VPN, firewall, DNS cache, IPv6 (+ real v6 fetch), MTU (+ path-MTU probe), connection states, real bufferbloat (loaded latency during saturation), reverse DNS, TLS inspection, traffic counters, route path (traceroute analysis), sustained packet loss, NAT/CGNAT analysis, Wi-Fi link quality, DNS resolver benchmark (+ hijack/DNSSEC checks), captive portal detection, clock sync (NTP)
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
-- **Quad-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) with bounded N-provider inverse-variance aggregation, modified trimean (Ookla-style), and RFC 3550 jitter for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
+- **Six-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) + M-Lab MSAK (multi-stream) + Apple networkQuality, with bounded N-provider inverse-variance aggregation, minimum-sample floors, modified trimean (Ookla-style), RFC 3550 jitter, and bootstrap confidence intervals ("941 Mbps ±12 Mbps") for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
 - **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and runs a probe-and-retry chain: cargo first when available, cargo-dist installer as universal fallback (curl → wget on macOS/Linux, PowerShell → pwsh on Windows). On Windows it can also upgrade in place via the matching first-class installer (MSI/EXE × Global/Corporate), chosen from an install marker, with SHA-256 verification of the download (refuse-on-mismatch). It cleans up shadowing non-Cargo ND300 installs when migrating to `cargo install nd300`, verifies the new version actually landed, and surfaces per-strategy failures with specific reasons.
-- **SpeedQX** standalone speed test binary — all 4 providers with per-provider breakdown and real-time progress
+- **SpeedQX** standalone speed test binary — all 6 providers with per-provider breakdown and real-time progress (full run ~5.5 minutes at defaults; `--skip-msak`/`--skip-apple` for the classic 4-provider run)
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
 - **Unicode box-drawing** table rendering with ASCII fallback
@@ -156,14 +156,17 @@ nd300 fix --help    # subcommand-specific help
 ### speedqx — Standalone Speed Test
 
 ```sh
-# Full quad-provider speed test (Cloudflare + NDT7 + LibreSpeed + fast.com)
+# Full six-provider speed test (Cloudflare + NDT7 + LibreSpeed + fast.com + MSAK + Apple)
 speedqx
 
-# Custom duration per direction (30s download + 30s upload per provider)
+# Custom duration per direction (60s download + 60s upload per provider)
 speedqx --duration 60
 
 # Override fast.com duration (defaults to "auto")
 speedqx --fastcom-duration 30
+
+# Classic 4-provider run
+speedqx --skip-msak --skip-apple
 
 # JSON output
 speedqx --json
@@ -201,7 +204,7 @@ speedqx --duration 10 --latency-probes 5
 | `--ascii` | Use ASCII characters instead of Unicode box-drawing |
 | `--no-color` | Disable colored output |
 | `--fast` | Skip the speed test (faster execution) |
-| `--speed-duration <SECS>` | Speed test duration in seconds (default: 10, min: 4) |
+| `--speed-duration <SECS>` | Speed test duration in seconds, per direction per provider (default: 15, min: 4) |
 | `--verbose` | Show additional debug/trace information |
 | `-d, --dns` | Change DNS servers and verify connectivity (requires elevated privileges) |
 | `-f, --fix` | Run the diagnostic-driven triage / fix loop (requires elevated privileges). Equivalent to `nd300 fix`. |
@@ -229,9 +232,11 @@ speedqx --duration 10 --latency-probes 5
 | `--json` | Output results as JSON |
 | `--ascii` | Use ASCII characters instead of Unicode box-drawing |
 | `--no-color` | Disable colored output |
-| `--duration <VALUE>` | Test duration per direction for CF/NDT7/LS: seconds or "auto" (default: 30) |
+| `--duration <VALUE>` | Test duration per direction for CF/NDT7/LS/MSAK/Apple: seconds or "auto" (default: 30) |
 | `--fastcom-duration <VALUE>` | Test duration per direction for fast.com: seconds or "auto" (default: auto) |
 | `--latency-probes <N>` | Number of latency probes (default: 20) |
+| `--skip-msak` | Skip the M-Lab MSAK multi-stream provider |
+| `--skip-apple` | Skip the Apple networkQuality provider |
 | `--update` | Check for updates and install the latest version |
 | `-v, --version` | Print version |
 | `-h, --help` | Print help |
@@ -240,7 +245,7 @@ speedqx --duration 10 --latency-probes 5
 
 **User mode** (default) runs 8 core diagnostics and presents a clean summary table. Ideal for quick network health checks.
 
-**Technician mode** (`-t`) runs all 8 core diagnostics plus 18 additional deep diagnostic modules. Produces a detailed technical report with per-module breakdowns, suitable for troubleshooting and support workflows.
+**Technician mode** (`-t`) runs all 8 core diagnostics plus 25 additional deep diagnostic modules. Produces a detailed technical report with per-module breakdowns, suitable for troubleshooting and support workflows. A full technician run takes ~2–4 minutes — the long probes (traceroute, sustained packet loss, loaded bufferbloat) are doing real work.
 
 ## Diagnostics Covered
 
@@ -251,28 +256,35 @@ speedqx --duration 10 --latency-probes 5
 4. DNS Resolution
 5. Public IP
 6. Latency
-7. Speed Test (Cloudflare + M-Lab NDT7 in nd300; all 4 providers in SpeedQX)
+7. Speed Test (Cloudflare + M-Lab NDT7 in nd300; all 6 providers in SpeedQX)
 8. Port Connectivity
 
 ### Deep Diagnostics (technician mode only)
-9. ARP Table
+9. ARP Table + Gateway Health
 10. Routing Table
 11. Active Connections
 12. Listening Ports
 13. DHCP Lease Info
 14. Protocol Statistics
 15. Adapter Hardware Details
-16. Proxy Detection
+16. Proxy Detection (+ PAC validation, WPAD discovery)
 17. VPN Detection
 18. Firewall Status
 19. DNS Cache
-20. IPv6 Connectivity
-21. MTU Discovery
+20. IPv6 Connectivity (+ real HTTPS-over-v6 fetch, v4-vs-v6 comparison)
+21. MTU per Interface + Path-MTU Discovery
 22. Connection State Summary
-23. Bufferbloat Detection
+23. Bufferbloat (real loaded-latency measurement, per-direction grades)
 24. Reverse DNS
 25. TLS Inspection
 26. Traffic Counters
+27. Route Path (traceroute with LAN/ISP/backbone analysis)
+28. Sustained Packet Loss (30 probes × 3 targets)
+29. NAT Analysis (double-NAT, CGNAT detection)
+30. Wi-Fi Link Quality (signal, channel, band, PHY, security)
+31. DNS Resolver Benchmark (+ NXDOMAIN-hijack and DNSSEC checks)
+32. Captive Portal Detection
+33. Clock Sync (SNTP offset measurement)
 
 ## Fix Flow (`nd300 fix` / `nd300 -f`)
 

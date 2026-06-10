@@ -6,6 +6,52 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 10, 2026 — steadier results, more accurate speeds, two new speed-test providers, and a much deeper technician mode
+
+This is a big one. The whole tool was given a stability and accuracy pass: the everyday checks no longer flip-flop between runs, the speed test numbers are more trustworthy (and now come with an honesty range), two well-known speed-test services joined the lineup, and technician mode grew from 18 deep checks to 25 — including several entirely new kinds of analysis.
+
+**Improved — the everyday checks no longer flip-flop**
+- Several of the basic checks used to rest on a single attempt: one ping to your router, one lookup of one website name, one connection attempt per port. One unlucky dropped packet could make a perfectly healthy network look broken. Now every one of those checks gathers several samples — and only reports a real problem when the failure is consistent. Your router now gets two rounds of pings before being called unreachable; the internet-name check tries three independent names and judges by the middle result, so one slow name can't spoil the verdict; and each port is tried against two different well-known services, so one company's outage no longer counts against your network.
+- If the full check-up runs out of time on a badly degraded network, you now get everything that *did* finish, with the unfinished items clearly marked as timed out — instead of getting nothing at all. (If you have a script that watches for the old "timed out" message in the JSON output, it should now look at the new timed-out markers instead.)
+
+**Improved — speed test accuracy**
+- The way results from the different speed-test services are combined had a subtle flaw: a service that only managed to grab one or two measurements before failing was treated as *more* trustworthy than a service with lots of steady measurements — exactly backwards. That's fixed: sparse, unreliable contributions are now either set aside (and the results table tells you when that happened) or given the least say in the final number.
+- Every service now produces far more individual measurements during its test — the M-Lab test used to contribute as little as one measurement per run, and one provider used to fetch such enormous chunks that slow connections barely got measured at all. Transfers now size themselves to your connection speed so fast and slow lines alike get a steady stream of samples.
+- Your headline speed now comes with an honesty range — for example "941 Mbps ±12 Mbps" — so you can see how confident the measurement actually is. The fast.com latency reading, previously based on a single probe, is now a proper multi-probe measurement with jitter.
+- The backup server list for one of the providers used to be entirely in Europe and the US East Coast; it now spans four continents, and the tool considers six times as many candidate servers when picking the closest one.
+
+**Added — two new speed-test providers**
+- The standalone speed test now runs **six** services instead of four. New are **M-Lab's next-generation multi-stream test** (which measures total capacity the way commercial speed tests do, where the older M-Lab test deliberately measures a single connection) and **Apple's network quality service** — the same infrastructure Apple's built-in macOS speed test uses. More independent, reputable measurements means the combined number is harder to skew. Each can be turned off with its own skip flag, and the full six-provider run takes about five and a half minutes at the default settings.
+- We also looked hard at adding Speedtest.net (Ookla) — the most recognized name of all — and concluded their license terms simply don't allow an independent tool like this one to use their network. We've written the reasoning down in the code so the question doesn't have to be re-litigated.
+
+**Added — technician mode is now exhaustive (18 → 25 deep checks)**
+- **Route tracing**: follows your traffic hop by hop toward the internet, points out where your home network ends and your provider's begins, and flags whether a slowdown lives in your house, at your provider, or beyond.
+- **Sustained packet-loss test**: thirty probes to each of three independent services — catches the intermittent drops that short tests miss.
+- **Connection-sharing analysis**: detects "double NAT" (two routers stacked, a common cause of game/video-call trouble) and carrier-grade NAT (where your provider shares one public address among many customers — which quietly breaks port forwarding and hosting).
+- **DNS service benchmark and honesty check**: times your name-lookup service against the big public alternatives, catches providers that hijack typo'd addresses to show ads, and checks whether your resolver verifies cryptographically-signed answers.
+- **Wi-Fi link quality**: signal strength, channel, band, connection speed, and security — with a clear warning if you're on an open or obsolete-security network.
+- **Captive portal detection**: spots hotel/café/airport sign-in pages that silently intercept your traffic.
+- **Clock check**: a skewed system clock breaks secure connections in ways that look exactly like a broken network; the tool now measures your clock against internet time servers and says so plainly. (It found a real 1.2-second drift on our own test machine the first time it ran.)
+- The existing deep checks got real teeth too: the bufferbloat test now genuinely measures latency *while* flooding the connection in both directions (it previously admitted its number was an estimate); the packet-size check now actually probes how large a packet can cross your whole path (catching VPN/tunnel squeeze); the IPv6 check now performs a real fetch over IPv6 rather than just noting an address exists; the proxy check verifies a configured auto-config script actually loads and warns if proxy auto-discovery is answering on your network; and the network-neighbors table is screened for signs of spoofing or a rogue second router.
+- Technician mode takes about 2–4 minutes now — it's doing far more.
+
+**Improved — the auto-repair command acts on solid evidence**
+- Before changing anything, the fix command now **double-checks the problem with a second diagnostic pass** and only repairs what failed both times. A momentary blip now ends with "everything's fine" instead of an unnecessary repair. Problems that flickered between the two passes are noted in the report as transient.
+- Its internal memory of "which repair helped" was giving every repair credit whenever anything got better — including things that recovered on their own. Credit now goes only to the repair actually aimed at the thing that recovered, so the tool's repair ordering learns from real wins.
+- The fix command also no longer runs a full bandwidth test before every repair round (a repair can't fix raw speed anyway) — that alone frees most of its time budget for actual repairs. And after re-enabling your VPN, it now double-checks before concluding the VPN broke your connection and switching it back off.
+
+**Changed (be aware if you script against the tool)**
+- The default speed-test portion of a normal check-up runs a little longer (15 seconds per direction instead of 10) for steadier numbers — a standard run takes roughly half a minute longer.
+- All the new data appears as *additions* to the JSON output; nothing existing was renamed or removed. The headline speed numbers can read differently than before on the same connection — that's the over-weighting fix doing its job, not a regression.
+
+**Removed**
+- A chunk of leftover machinery from the old fixed three-stage repair design (replaced two major versions ago) was deleted outright. Nothing you could reach still used it.
+
+**Behind the scenes**
+- About 110 new automated tests pin down the new verdict rules, the parsers for each operating system's command output, the statistics, and the repair loop's new double-checking behavior — including a test harness that can feed the repair loop scripted diagnostic results without touching a real network.
+
+---
+
 ## June 8, 2026 — release pipeline made resilient to a GitHub outage
 
 **Behind the scenes**
