@@ -5,9 +5,13 @@ use crate::render::progress::create_spinner;
 use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
 #[cfg(any(windows, target_os = "linux"))]
 use super::wifi;
+use crate::actions::is_interactive;
 #[cfg(target_os = "linux")]
 use crate::actions::prompt_string;
-use crate::actions::{is_interactive, prompt_yes_no};
+// After the v3.4.0 legacy-orchestrator removal, only the Windows stage-3
+// Wi-Fi-profile prompt still asks a yes/no question in this file.
+#[cfg(windows)]
+use crate::actions::prompt_yes_no;
 
 /// Restart platform networking services.
 pub async fn restart_services() -> Result<String, String> {
