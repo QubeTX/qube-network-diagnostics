@@ -7,10 +7,11 @@ use tokio_tungstenite::tungstenite::Message;
 const LOCATE_URL: &str = "https://locate.measurementlab.net/v2/nearest/ndt/ndt7";
 
 /// Initial upload frame size (8 KB) — doubles up to MAX_UPLOAD_FRAME.
-const INITIAL_UPLOAD_FRAME_SIZE: usize = 8192;
+/// Shared with the MSAK provider (same M-Lab WebSocket message scaling).
+pub(crate) const INITIAL_UPLOAD_FRAME_SIZE: usize = 8192;
 
 /// Maximum upload frame size (1 MB).
-const MAX_UPLOAD_FRAME_SIZE: usize = 1 << 20;
+pub(crate) const MAX_UPLOAD_FRAME_SIZE: usize = 1 << 20;
 
 /// Minimum remaining time to start a new iteration (3 seconds).
 const MIN_REMAINING_SECS: u64 = 3;
@@ -27,8 +28,9 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 /// when the bytes sent so far exceed 16× the current frame size. Reaches
 /// 1 MB frames after ~8 MB sent — the old "double every 100 frames" rule
 /// needed ~101 MB, so slower uplinks spent the whole test in ramp mode with
-/// high per-frame overhead.
-fn should_grow_frame(frame_size: usize, bytes_sent: u64) -> bool {
+/// high per-frame overhead. Shared with the MSAK provider (same scaling rule
+/// in the throughput1 spec).
+pub(crate) fn should_grow_frame(frame_size: usize, bytes_sent: u64) -> bool {
     frame_size < MAX_UPLOAD_FRAME_SIZE && bytes_sent >= 16 * frame_size as u64
 }
 

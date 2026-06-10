@@ -191,7 +191,8 @@ pub struct MigrateArgs {
 
 /// SpeedQX Internet Speed Test - QubeTX Developer Tools
 ///
-/// Quad-provider speed test using Cloudflare, M-Lab NDT7, LibreSpeed, and fast.com.
+/// Six-provider speed test using Cloudflare, M-Lab NDT7, LibreSpeed, fast.com,
+/// M-Lab MSAK, and Apple networkQuality.
 #[derive(Parser)]
 #[command(
     name = "speedqx",
@@ -200,12 +201,14 @@ pub struct MigrateArgs {
     disable_version_flag = true,
     about = "SpeedQX Internet Speed Test - QubeTX Developer Tools",
     long_about = "SpeedQX Internet Speed Test - QubeTX Developer Tools\n\n\
-        Quad-provider speed test using Cloudflare, M-Lab NDT7, LibreSpeed, and fast.com (Netflix).\n\
-        All four providers run and results are aggregated for maximum accuracy.",
+        Six-provider speed test using Cloudflare, M-Lab NDT7, LibreSpeed, fast.com (Netflix),\n\
+        M-Lab MSAK (multi-stream), and Apple networkQuality.\n\
+        All providers run sequentially and results are aggregated for maximum accuracy.",
     after_long_help = "EXAMPLES:\n\
-        \x20 speedqx                     Run full speed test (all 4 providers)\n\
-        \x20 speedqx --duration 60       60s per direction for CF/NDT7/LS\n\
+        \x20 speedqx                     Run full speed test (all 6 providers)\n\
+        \x20 speedqx --duration 60       60s per direction for CF/NDT7/LS/MSAK/Apple\n\
         \x20 speedqx --fastcom-duration 30  Override fast.com to 30s/dir\n\
+        \x20 speedqx --skip-msak --skip-apple  Classic 4-provider run\n\
         \x20 speedqx update              Check for updates and install\n\
         \x20 speedqx --update            Same as 'speedqx update' (legacy flag form)\n\
         \x20 speedqx --json              Output results as JSON\n\n\
@@ -245,6 +248,14 @@ pub struct SpeedQXCli {
     /// Number of latency probes
     #[arg(long, default_value = "20", help_heading = "Speed Test")]
     pub latency_probes: u32,
+
+    /// Skip the M-Lab MSAK multi-stream provider
+    #[arg(long = "skip-msak", help_heading = "Speed Test")]
+    pub skip_msak: bool,
+
+    /// Skip the Apple networkQuality provider
+    #[arg(long = "skip-apple", help_heading = "Speed Test")]
+    pub skip_apple: bool,
 
     /// Check for updates and install the latest version (legacy flag form of `speedqx update`)
     #[arg(long = "update", help_heading = "Actions")]

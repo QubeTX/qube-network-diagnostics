@@ -11,6 +11,9 @@ pub async fn check(config: &Config) -> (DiagnosticResult, Option<SpeedTestResult
         fastcom_duration: TestDuration::Auto,
         latency_probes: 10,
         provider_set: speedtest::ProviderSet::Diagnostic,
+        // Diagnostic mode runs CF + NDT7 only; these flags are All-mode only.
+        msak_enabled: false,
+        apple_enabled: false,
         use_colors: config.use_colors,
     };
 
@@ -93,6 +96,12 @@ fn update_progress(pb: &ProgressBar, phase: Phase, progress: f64) {
         Phase::FcDiscovery => (97.0, 1.0, "FC discovery..."),
         Phase::FcDownload => (98.0, 1.0, "FC download..."),
         Phase::FcUpload => (99.0, 1.0, "FC upload..."),
+        // MSAK/Apple run only in speedqx's All provider set — never in
+        // nd300's Diagnostic mode — but the match stays exhaustive.
+        Phase::MsakDiscovery | Phase::MsakDownload | Phase::MsakUpload => (99.0, 1.0, "MSAK..."),
+        Phase::AnqDiscovery | Phase::AnqDownload | Phase::AnqUpload => {
+            (99.0, 1.0, "Apple networkQuality...")
+        }
         Phase::Computing => (100.0, 0.0, "Computing..."),
     };
 

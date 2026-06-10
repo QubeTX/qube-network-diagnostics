@@ -1,8 +1,10 @@
 pub(crate) mod adaptive;
+pub mod applenq;
 pub mod cloudflare;
 pub mod display;
 pub mod fastcom;
 pub mod librespeed;
+pub mod msak;
 pub mod ndt7;
 pub mod statistics;
 
@@ -22,7 +24,8 @@ pub enum TestDuration {
 /// Which providers to run
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProviderSet {
-    /// All 4 providers: Cloudflare, NDT7, LibreSpeed, fast.com (speedqx default)
+    /// All 6 providers: Cloudflare, NDT7, LibreSpeed, fast.com, M-Lab MSAK,
+    /// Apple networkQuality (speedqx default)
     All,
     /// Diagnostic subset: Cloudflare + NDT7 only (nd300 default)
     Diagnostic,
@@ -31,7 +34,7 @@ pub enum ProviderSet {
 /// Configuration for the speed test orchestrator
 #[derive(Debug, Clone)]
 pub struct SpeedTestConfig {
-    /// Duration per direction for CF, NDT7, LibreSpeed (default: 30s)
+    /// Duration per direction for CF, NDT7, LibreSpeed, MSAK, Apple (default: 30s)
     pub duration: TestDuration,
     /// Duration per direction for fast.com (default: Auto)
     pub fastcom_duration: TestDuration,
@@ -39,6 +42,10 @@ pub struct SpeedTestConfig {
     pub latency_probes: u32,
     /// Which providers to run
     pub provider_set: ProviderSet,
+    /// Run the M-Lab MSAK multi-stream provider (All mode only)
+    pub msak_enabled: bool,
+    /// Run the Apple networkQuality provider (All mode only)
+    pub apple_enabled: bool,
     /// Enable colored output
     pub use_colors: bool,
 }
@@ -50,6 +57,8 @@ impl Default for SpeedTestConfig {
             fastcom_duration: TestDuration::Auto,
             latency_probes: 20,
             provider_set: ProviderSet::All,
+            msak_enabled: true,
+            apple_enabled: true,
             use_colors: true,
         }
     }
@@ -70,6 +79,12 @@ pub enum Phase {
     FcDiscovery,
     FcDownload,
     FcUpload,
+    MsakDiscovery,
+    MsakDownload,
+    MsakUpload,
+    AnqDiscovery,
+    AnqDownload,
+    AnqUpload,
     Computing,
 }
 
@@ -648,7 +663,7 @@ where
         providers.push(ndt_result);
     }
 
-    // LibreSpeed + fast.com (only in All mode)
+    // LibreSpeed + fast.com + MSAK + Apple networkQuality (only in All mode)
     if config.provider_set == ProviderSet::All {
         {
             let pg = progress.clone();
@@ -666,6 +681,24 @@ where
                 cb(&fc_result);
             }
             providers.push(fc_result);
+        }
+
+        if config.msak_enabled {
+            let pg = progress.clone();
+            let msak_result = msak::run(&config, move |phase, p| pg(phase, p)).await;
+            if let Some(ref cb) = on_provider_complete {
+                cb(&msak_result);
+            }
+            providers.push(msak_result);
+        }
+
+        if config.apple_enabled {
+            let pg = progress.clone();
+            let anq_result = applenq::run(&config, move |phase, p| pg(phase, p)).await;
+            if let Some(ref cb) = on_provider_complete {
+                cb(&anq_result);
+            }
+            providers.push(anq_result);
         }
     }
 
