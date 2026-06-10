@@ -25,6 +25,16 @@ pub fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo as f64)
 }
 
+// ── Sanitization ────────────────────────────────────────────────────────
+
+/// Drop non-finite samples (NaN / ±inf). The single choke point through
+/// which every merge input flows: provider arithmetic is individually
+/// guarded, but a corrupted sample must never reach the trimean pipeline or
+/// the inverse-variance merge.
+pub fn sanitize(values: &[f64]) -> Vec<f64> {
+    values.iter().copied().filter(|v| v.is_finite()).collect()
+}
+
 // ── Central tendency ────────────────────────────────────────────────────
 
 pub fn mean(values: &[f64]) -> f64 {
@@ -433,5 +443,61 @@ pub fn bootstrap_ci(
         lower,
         upper,
         margin: (upper - lower) / 2.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_drops_nan_and_infinite() {
+        let cleaned = sanitize(&[f64::NAN, 1.0, f64::INFINITY, 2.0, f64::NEG_INFINITY]);
+        assert_eq!(cleaned, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn sanitize_keeps_clean_input_intact() {
+        let cleaned = sanitize(&[3.0, 1.0, 2.0]);
+        assert_eq!(cleaned, vec![3.0, 1.0, 2.0]);
+    }
+
+    fn well_behaved_samples() -> Vec<f64> {
+        (0..20).map(|i| 95.0 + (i % 5) as f64 * 2.5).collect()
+    }
+
+    /// The PRNG is seeded from the data, so identical input must produce
+    /// identical bounds — JSON output stays reproducible.
+    #[test]
+    fn bootstrap_ci_is_deterministic() {
+        let samples = well_behaved_samples();
+        let a = bootstrap_ci(&samples, accurate_bandwidth, 1000, 0.05);
+        let b = bootstrap_ci(&samples, accurate_bandwidth, 1000, 0.05);
+        assert_eq!(a.lower, b.lower);
+        assert_eq!(a.upper, b.upper);
+        assert_eq!(a.estimate, b.estimate);
+    }
+
+    #[test]
+    fn bootstrap_ci_brackets_estimate() {
+        let samples = well_behaved_samples();
+        let ci = bootstrap_ci(&samples, accurate_bandwidth, 1000, 0.05);
+        assert!(
+            ci.lower <= ci.estimate && ci.estimate <= ci.upper,
+            "lower {} <= estimate {} <= upper {}",
+            ci.lower,
+            ci.estimate,
+            ci.upper
+        );
+        assert!(ci.margin >= 0.0);
+    }
+
+    /// Below 4 samples the percentile method is degenerate; the function
+    /// returns a zero-margin CI — callers must suppress display in that case.
+    #[test]
+    fn bootstrap_ci_degenerate_below_four() {
+        let ci = bootstrap_ci(&[100.0, 110.0, 105.0], accurate_bandwidth, 1000, 0.05);
+        assert_eq!(ci.margin, 0.0);
+        assert_eq!(ci.lower, ci.upper);
     }
 }

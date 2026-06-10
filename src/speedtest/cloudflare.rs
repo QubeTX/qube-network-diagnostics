@@ -1,3 +1,4 @@
+use super::adaptive::adaptive_chunk_bytes;
 use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
 use reqwest::Client;
 use std::time::{Duration, Instant};
@@ -6,8 +7,12 @@ const LATENCY_URL: &str = "https://speed.cloudflare.com/__down?bytes=0";
 const DOWNLOAD_URL: &str = "https://speed.cloudflare.com/__down?bytes=10000000";
 const UPLOAD_URL: &str = "https://speed.cloudflare.com/__up";
 
-/// Chunk size for upload payloads (2 MB).
-const UPLOAD_CHUNK_SIZE: usize = 2_000_000;
+/// Adaptive upload sizing (see `adaptive::adaptive_chunk_bytes`): each POST
+/// targets ~2s at the previously measured throughput, keeping the sample rate
+/// constant across link speeds.
+const TARGET_REQUEST_SECS: f64 = 2.0;
+const UPLOAD_MIN_BYTES: u64 = 256 * 1024;
+const UPLOAD_MAX_BYTES: u64 = 16_000_000;
 
 /// Minimum per-request timeout floor. A request started just before the phase
 /// deadline still gets at least this long so a near-deadline request isn't
@@ -137,13 +142,20 @@ where
     // ── Upload phase ─────────────────────────────────────────────────
     progress(Phase::CfUpload, 0.0);
 
-    let upload_payload = vec![0u8; UPLOAD_CHUNK_SIZE];
     let ul_deadline = Instant::now() + Duration::from_secs(ul_secs);
     let mut ul_bytes: u64 = 0;
     let ul_start = Instant::now();
     let mut ul_mbps_samples: Vec<f64> = Vec::new();
+    // Adaptive payload sizing; the buffer is only rebuilt when the size
+    // actually changes.
+    let mut ul_chunk_bytes: u64 = UPLOAD_MIN_BYTES.max(1_000_000);
+    let mut upload_payload = vec![0u8; ul_chunk_bytes as usize];
 
     while Instant::now() < ul_deadline {
+        if upload_payload.len() as u64 != ul_chunk_bytes {
+            upload_payload = vec![0u8; ul_chunk_bytes as usize];
+        }
+        let req_bytes = upload_payload.len() as u64;
         let req_start = Instant::now();
         match client
             .post(UPLOAD_URL)
@@ -154,16 +166,24 @@ where
         {
             Ok(resp) if resp.status().is_success() => {
                 let req_duration = req_start.elapsed().as_secs_f64();
-                ul_bytes += UPLOAD_CHUNK_SIZE as u64;
+                ul_bytes += req_bytes;
                 if req_duration > 0.0 {
-                    ul_mbps_samples
-                        .push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
+                    let mbps = (req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0);
+                    ul_mbps_samples.push(mbps);
+                    ul_chunk_bytes = adaptive_chunk_bytes(
+                        mbps,
+                        TARGET_REQUEST_SECS,
+                        UPLOAD_MIN_BYTES,
+                        UPLOAD_MAX_BYTES,
+                    );
                 }
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let frac = (elapsed / ul_secs as f64).min(1.0);
                 progress(Phase::CfUpload, frac);
             }
-            Err(_) => {}
+            Err(_) => {
+                ul_chunk_bytes = UPLOAD_MIN_BYTES;
+            }
             _ => {}
         }
     }

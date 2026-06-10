@@ -62,8 +62,8 @@ pub struct Nd300Cli {
     #[arg(long, help_heading = "Speed Test", global = true)]
     pub fast: bool,
 
-    /// Speed test duration in seconds
-    #[arg(long, default_value = "10", help_heading = "Speed Test", global = true)]
+    /// Speed test duration in seconds (per direction, per provider)
+    #[arg(long, default_value = "15", help_heading = "Speed Test", global = true)]
     pub speed_duration: u64,
 
     /// Change DNS servers and verify connectivity

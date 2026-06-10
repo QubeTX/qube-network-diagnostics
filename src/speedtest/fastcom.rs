@@ -1,3 +1,4 @@
+use super::adaptive::adaptive_chunk_bytes;
 use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
 use reqwest::Client;
 use std::time::{Duration, Instant};
@@ -17,8 +18,20 @@ const AUTO_DOWNLOAD_SECS: u64 = 15;
 /// Default auto-mode upload duration (seconds).
 const AUTO_UPLOAD_SECS: u64 = 10;
 
-/// Upload chunk size (4 MB).
-const UPLOAD_CHUNK_SIZE: usize = 4_000_000;
+/// Latency probes against the nearest OCA (first two discarded as TCP/TLS
+/// warmup — the same shape as the Cloudflare/LibreSpeed probes).
+const LATENCY_PROBES: usize = 10;
+const LATENCY_WARMUP_DISCARD: usize = 2;
+
+/// Adaptive upload sizing (see `adaptive::adaptive_chunk_bytes`).
+const TARGET_REQUEST_SECS: f64 = 2.0;
+const UPLOAD_MIN_BYTES: u64 = 256 * 1024;
+const UPLOAD_MAX_BYTES: u64 = 16_000_000;
+
+/// Consecutive POST failures before concluding the OCA doesn't accept
+/// uploads. After the first two failures one small-payload retry is attempted
+/// (some OCAs reject large POSTs but accept small ones).
+const UPLOAD_GIVE_UP_AFTER: u32 = 5;
 
 /// Minimum per-request timeout floor (see cloudflare.rs::remaining_budget).
 const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
@@ -121,20 +134,35 @@ where
     let mut dl_mbps_samples: Vec<f64> = Vec::new();
     let mut url_idx = 0;
 
-    // Measure latency with a small initial request (1 byte range)
+    // Measure latency with a burst of tiny range requests (warmup discarded,
+    // min of the rest), matching the Cloudflare/LibreSpeed probe shape — the
+    // old single probe was so noisy it could distort the aggregate latency
+    // fallback, and jitter was never measured at all.
     let mut ping_ms: Option<f64> = None;
+    let mut jitter_ms: Option<f64> = None;
     if let Some(first_url) = urls.first() {
-        // Use a tiny range request to measure connection RTT, not download time
         let ping_url = format!("{}&bytes=1", first_url);
-        let ping_start = Instant::now();
-        if client
-            .head(&ping_url)
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .is_ok()
-        {
-            ping_ms = Some(ping_start.elapsed().as_secs_f64() * 1000.0);
+        let mut rtts: Vec<f64> = Vec::with_capacity(LATENCY_PROBES);
+        for _ in 0..LATENCY_PROBES {
+            let ping_start = Instant::now();
+            if client
+                .head(&ping_url)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .is_ok()
+            {
+                rtts.push(ping_start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        let warmup_skip = LATENCY_WARMUP_DISCARD.min(rtts.len());
+        let trimmed = &rtts[warmup_skip..];
+        ping_ms = trimmed
+            .iter()
+            .copied()
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        if trimmed.len() >= 2 {
+            jitter_ms = Some(statistics::jitter_rfc3550(trimmed));
         }
     }
 
@@ -182,18 +210,27 @@ where
     // fast.com upload is less documented; attempt POST to the same URLs
     progress(Phase::FcUpload, 0.0);
 
-    let upload_payload = vec![0u8; UPLOAD_CHUNK_SIZE];
     let ul_deadline = Instant::now() + Duration::from_secs(ul_secs);
     let mut ul_bytes: u64 = 0;
     let ul_start = Instant::now();
     let mut ul_mbps_samples: Vec<f64> = Vec::new();
     url_idx = 0;
 
+    // Adaptive payload sizing; on early consecutive failures, retry once with
+    // the minimum payload before counting further failures — some OCAs reject
+    // large POSTs but accept small ones.
+    let mut ul_chunk_bytes: u64 = UPLOAD_MIN_BYTES.max(1_000_000);
+    let mut upload_payload = vec![0u8; ul_chunk_bytes as usize];
     let mut upload_failures = 0u32;
+    let mut tried_small_payload = false;
     while Instant::now() < ul_deadline {
         let url = &urls[url_idx % urls.len()];
         url_idx += 1;
 
+        if upload_payload.len() as u64 != ul_chunk_bytes {
+            upload_payload = vec![0u8; ul_chunk_bytes as usize];
+        }
+        let req_bytes = upload_payload.len() as u64;
         let req_start = Instant::now();
         match client
             .post(url)
@@ -206,10 +243,16 @@ where
         {
             Ok(resp) if resp.status().is_success() => {
                 let req_duration = req_start.elapsed().as_secs_f64();
-                ul_bytes += UPLOAD_CHUNK_SIZE as u64;
+                ul_bytes += req_bytes;
                 if req_duration > 0.0 {
-                    ul_mbps_samples
-                        .push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
+                    let mbps = (req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0);
+                    ul_mbps_samples.push(mbps);
+                    ul_chunk_bytes = adaptive_chunk_bytes(
+                        mbps,
+                        TARGET_REQUEST_SECS,
+                        UPLOAD_MIN_BYTES,
+                        UPLOAD_MAX_BYTES,
+                    );
                 }
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let frac = (elapsed / ul_secs as f64).min(1.0);
@@ -218,8 +261,12 @@ where
             }
             _ => {
                 upload_failures += 1;
-                // If 3+ consecutive failures, upload not supported — stop trying
-                if upload_failures >= 3 {
+                if upload_failures >= 2 && !tried_small_payload {
+                    tried_small_payload = true;
+                    ul_chunk_bytes = UPLOAD_MIN_BYTES;
+                    continue;
+                }
+                if upload_failures >= UPLOAD_GIVE_UP_AFTER {
                     break;
                 }
             }
@@ -253,7 +300,7 @@ where
             .unwrap_or_else(|| "unknown".to_string()),
         location,
         ping_ms,
-        jitter_ms: None, // fast.com doesn't provide jitter data
+        jitter_ms,
         download_mbps,
         upload_mbps,
         download_bytes: dl_bytes,

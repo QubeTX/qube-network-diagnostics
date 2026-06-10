@@ -18,6 +18,31 @@ const MIN_REMAINING_SECS: u64 = 3;
 /// Maximum duration to wait for a single download or upload test (safety cap).
 const SINGLE_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Per-interval sampling tick for download throughput (~20 samples per 10s
+/// iteration — each iteration used to contribute exactly ONE sample, which
+/// starved the trimean pipeline at short budgets).
+const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Official ndt7 reference-client frame-growth rule: grow the binary frame
+/// when the bytes sent so far exceed 16× the current frame size. Reaches
+/// 1 MB frames after ~8 MB sent — the old "double every 100 frames" rule
+/// needed ~101 MB, so slower uplinks spent the whole test in ramp mode with
+/// high per-frame overhead.
+fn should_grow_frame(frame_size: usize, bytes_sent: u64) -> bool {
+    frame_size < MAX_UPLOAD_FRAME_SIZE && bytes_sent >= 16 * frame_size as u64
+}
+
+/// Throughput between two successive server AppInfo reports. The server's
+/// received-byte counter is ground truth for upload (client-side `bytes_sent`
+/// only measures buffer fill). `None` when time or bytes did not advance.
+fn appinfo_delta_mbps(prev_bytes: u64, prev_us: u64, cur_bytes: u64, cur_us: u64) -> Option<f64> {
+    if cur_us <= prev_us || cur_bytes <= prev_bytes {
+        return None;
+    }
+    let mbps = ((cur_bytes - prev_bytes) as f64 * 8.0) / (cur_us - prev_us) as f64;
+    mbps.is_finite().then_some(mbps)
+}
+
 /// Run the NDT7 (M-Lab) speed test: server discovery, download, upload.
 pub async fn run<F>(config: &SpeedTestConfig, progress: F) -> ProviderResult
 where
@@ -154,7 +179,18 @@ where
         total_dl_bytes += dl_result.bytes;
         total_dl_duration += dl_result.duration_s;
 
-        if dl_result.throughput_mbps > 0.0 {
+        // Per-interval samples feed the trimean pipeline. Each iteration is a
+        // fresh TCP connection with its own slow start, so the ramp is
+        // discarded per iteration; the global pipeline's additional trim then
+        // operates on already-stable samples (harmless for robust
+        // estimators). Iterations that yielded no interval samples fall back
+        // to their summary throughput, as before.
+        if !dl_result.interval_mbps.is_empty() {
+            all_download_mbps.extend(statistics::discard_slow_start(
+                &dl_result.interval_mbps,
+                0.3,
+            ));
+        } else if dl_result.throughput_mbps > 0.0 {
             all_download_mbps.push(dl_result.throughput_mbps);
         }
         if let Some(p) = dl_result.ping_ms {
@@ -204,7 +240,13 @@ where
         total_ul_bytes += ul_result.bytes;
         total_ul_duration += ul_result.duration_s;
 
-        if ul_result.throughput_mbps > 0.0 {
+        // Same per-interval policy as the download loop above.
+        if !ul_result.interval_mbps.is_empty() {
+            all_upload_mbps.extend(statistics::discard_slow_start(
+                &ul_result.interval_mbps,
+                0.3,
+            ));
+        } else if ul_result.throughput_mbps > 0.0 {
             all_upload_mbps.push(ul_result.throughput_mbps);
         }
         if let Some(p) = ul_result.ping_ms {
@@ -284,6 +326,9 @@ struct SubTestResult {
     duration_s: f64,
     ping_ms: Option<f64>,
     smoothed_rtts: Vec<f64>,
+    /// Per-interval throughput samples (download: 500ms client-side byte
+    /// deltas; upload: deltas between server AppInfo reports).
+    interval_mbps: Vec<f64>,
 }
 
 /// Connect to an NDT7 WebSocket endpoint with the required subprotocol header.
@@ -355,6 +400,9 @@ where
     let mut final_bytes: u64 = 0;
     let mut final_elapsed_us: u64 = 0;
     let mut total_received: u64 = 0;
+    let mut interval_mbps: Vec<f64> = Vec::new();
+    let mut last_sample_bytes: u64 = 0;
+    let mut last_sample_at = Instant::now();
     let start = Instant::now();
     let deadline = tokio::time::Instant::from_std(start + duration);
     // Pinned absolute safety cap computed ONCE: a single fixed instant the
@@ -362,10 +410,24 @@ where
     // `sleep(SINGLE_TEST_TIMEOUT)` re-armed a fresh 30s timer every iteration,
     // so it could never actually fire and was dead.)
     let hard_cap = tokio::time::Instant::from_std(start + SINGLE_TEST_TIMEOUT);
+    let mut sampler = tokio::time::interval(SAMPLE_INTERVAL);
+    sampler.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    sampler.reset(); // skip the immediate first tick
 
     loop {
         let msg = tokio::select! {
             msg = read.next() => msg,
+            _ = sampler.tick() => {
+                let now = Instant::now();
+                let dt = now.duration_since(last_sample_at).as_secs_f64();
+                let db = total_received.saturating_sub(last_sample_bytes);
+                if dt > 0.1 && db > 0 {
+                    interval_mbps.push(db as f64 * 8.0 / (dt * 1_000_000.0));
+                }
+                last_sample_at = now;
+                last_sample_bytes = total_received;
+                continue;
+            }
             _ = tokio::time::sleep_until(deadline) => break,
             _ = tokio::time::sleep_until(hard_cap) => break,
         };
@@ -435,6 +497,7 @@ where
         duration_s,
         ping_ms,
         smoothed_rtts,
+        interval_mbps,
     })
 }
 
@@ -460,13 +523,49 @@ where
     // a `write.send` that wedges (e.g. a half-open socket that never flushes)
     // can't hang past SINGLE_TEST_TIMEOUT. Mirrors the download loop's cap.
     let hard_cap = tokio::time::Instant::from_std(start + SINGLE_TEST_TIMEOUT);
-    let mut frame_count: u64 = 0;
 
     let mut min_rtts: Vec<f64> = Vec::new();
     let mut smoothed_rtts: Vec<f64> = Vec::new();
     let mut final_bytes: u64 = 0;
     let mut final_elapsed_us: u64 = 0;
     let mut bytes_sent: u64 = 0;
+    let mut interval_mbps: Vec<f64> = Vec::new();
+    // Previous AppInfo (bytes, elapsed_us) for per-report delta samples.
+    let mut prev_appinfo: (u64, u64) = (0, 0);
+
+    // Parse one server measurement message, updating RTT vectors, the final
+    // AppInfo counters, and the per-report throughput samples.
+    let mut ingest_measurement = |text: &str,
+                                  min_rtts: &mut Vec<f64>,
+                                  smoothed_rtts: &mut Vec<f64>,
+                                  interval_mbps: &mut Vec<f64>,
+                                  final_bytes: &mut u64,
+                                  final_elapsed_us: &mut u64| {
+        if let Ok(measurement) = serde_json::from_str::<serde_json::Value>(text) {
+            if let Some(min_rtt) = measurement["TCPInfo"]["MinRTT"].as_u64() {
+                if min_rtt > 0 {
+                    min_rtts.push(min_rtt as f64 / 1000.0);
+                }
+            }
+            if let Some(smoothed) = measurement["TCPInfo"]["SmoothedRTT"].as_u64() {
+                if smoothed > 0 {
+                    smoothed_rtts.push(smoothed as f64 / 1000.0);
+                }
+            }
+            let msg_bytes = measurement["AppInfo"]["NumBytes"].as_u64();
+            let msg_elapsed = measurement["AppInfo"]["ElapsedTime"].as_u64();
+            if let (Some(bytes), Some(elapsed_us)) = (msg_bytes, msg_elapsed) {
+                if let Some(mbps) =
+                    appinfo_delta_mbps(prev_appinfo.0, prev_appinfo.1, bytes, elapsed_us)
+                {
+                    interval_mbps.push(mbps);
+                }
+                prev_appinfo = (bytes, elapsed_us);
+                *final_bytes = bytes;
+                *final_elapsed_us = elapsed_us;
+            }
+        }
+    };
 
     // Send data and read server measurements concurrently
     loop {
@@ -484,13 +583,13 @@ where
                 match send_result {
                     Ok(()) => {
                         bytes_sent += frame_size as u64;
-                        frame_count += 1;
                         let elapsed = start.elapsed().as_secs_f64();
                         progress((elapsed / duration.as_secs_f64()).min(0.99));
 
-                        // Double frame size periodically for better saturation
-                        if frame_count.is_multiple_of(100) && frame_size < MAX_UPLOAD_FRAME_SIZE {
-                            frame_size *= 2;
+                        // Grow the frame per the reference-client rule for
+                        // fast saturation without per-frame overhead bias.
+                        if should_grow_frame(frame_size, bytes_sent) {
+                            frame_size = (frame_size * 2).min(MAX_UPLOAD_FRAME_SIZE);
                             upload_data = vec![0u8; frame_size];
                         }
                     }
@@ -501,24 +600,14 @@ where
             msg = read.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(measurement) = serde_json::from_str::<serde_json::Value>(&text) {
-                            if let Some(min_rtt) = measurement["TCPInfo"]["MinRTT"].as_u64() {
-                                if min_rtt > 0 {
-                                    min_rtts.push(min_rtt as f64 / 1000.0);
-                                }
-                            }
-                            if let Some(smoothed) = measurement["TCPInfo"]["SmoothedRTT"].as_u64() {
-                                if smoothed > 0 {
-                                    smoothed_rtts.push(smoothed as f64 / 1000.0);
-                                }
-                            }
-                            if let Some(num_bytes) = measurement["AppInfo"]["NumBytes"].as_u64() {
-                                final_bytes = num_bytes;
-                            }
-                            if let Some(elapsed) = measurement["AppInfo"]["ElapsedTime"].as_u64() {
-                                final_elapsed_us = elapsed;
-                            }
-                        }
+                        ingest_measurement(
+                            &text,
+                            &mut min_rtts,
+                            &mut smoothed_rtts,
+                            &mut interval_mbps,
+                            &mut final_bytes,
+                            &mut final_elapsed_us,
+                        );
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(_)) => break,
@@ -540,24 +629,14 @@ where
 
         match msg {
             Some(Ok(Message::Text(text))) => {
-                if let Ok(measurement) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if let Some(min_rtt) = measurement["TCPInfo"]["MinRTT"].as_u64() {
-                        if min_rtt > 0 {
-                            min_rtts.push(min_rtt as f64 / 1000.0);
-                        }
-                    }
-                    if let Some(smoothed) = measurement["TCPInfo"]["SmoothedRTT"].as_u64() {
-                        if smoothed > 0 {
-                            smoothed_rtts.push(smoothed as f64 / 1000.0);
-                        }
-                    }
-                    if let Some(num_bytes) = measurement["AppInfo"]["NumBytes"].as_u64() {
-                        final_bytes = num_bytes;
-                    }
-                    if let Some(elapsed) = measurement["AppInfo"]["ElapsedTime"].as_u64() {
-                        final_elapsed_us = elapsed;
-                    }
-                }
+                ingest_measurement(
+                    &text,
+                    &mut min_rtts,
+                    &mut smoothed_rtts,
+                    &mut interval_mbps,
+                    &mut final_bytes,
+                    &mut final_elapsed_us,
+                );
             }
             Some(Ok(Message::Close(_))) | None => break,
             Some(Err(_)) => break,
@@ -593,6 +672,7 @@ where
         duration_s,
         ping_ms,
         smoothed_rtts,
+        interval_mbps,
     })
 }
 
@@ -613,5 +693,56 @@ fn error_result(msg: String) -> ProviderResult {
         packet_loss_pct: None,
         error: Some(msg),
         bandwidth_samples: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_grows_at_16x_sent_bytes() {
+        // Below the threshold: no growth.
+        assert!(!should_grow_frame(8192, 16 * 8192 - 1));
+        // At the threshold: grow.
+        assert!(should_grow_frame(8192, 16 * 8192));
+        // Reaches 1 MB frames after ~8 MB sent — the old double-every-100-
+        // frames rule needed ~101 MB.
+        let mut frame = INITIAL_UPLOAD_FRAME_SIZE;
+        let mut sent: u64 = 0;
+        while frame < MAX_UPLOAD_FRAME_SIZE {
+            sent += frame as u64;
+            if should_grow_frame(frame, sent) {
+                frame *= 2;
+            }
+        }
+        assert!(
+            sent <= 10 * 1024 * 1024,
+            "1 MB frames should be reached within ~8-10 MB sent, took {} bytes",
+            sent
+        );
+    }
+
+    #[test]
+    fn frame_capped_at_max() {
+        assert!(!should_grow_frame(MAX_UPLOAD_FRAME_SIZE, u64::MAX));
+    }
+
+    #[test]
+    fn appinfo_delta_basic() {
+        // 1 MB in 500ms → 16.777 Mbps (bits / microseconds = Mbps).
+        let mbps = appinfo_delta_mbps(0, 0, 1_048_576, 500_000).unwrap();
+        assert!((mbps - 16.777).abs() < 0.01, "got {}", mbps);
+
+        // Second report continues from the first.
+        let mbps2 = appinfo_delta_mbps(1_048_576, 500_000, 3_145_728, 1_000_000).unwrap();
+        assert!((mbps2 - 33.554).abs() < 0.01, "got {}", mbps2);
+    }
+
+    #[test]
+    fn appinfo_delta_rejects_nonincreasing() {
+        assert!(appinfo_delta_mbps(100, 1000, 100, 2000).is_none()); // bytes flat
+        assert!(appinfo_delta_mbps(100, 1000, 200, 1000).is_none()); // time flat
+        assert!(appinfo_delta_mbps(200, 2000, 100, 3000).is_none()); // bytes regressed
     }
 }

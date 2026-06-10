@@ -192,6 +192,8 @@ mod tests {
             duration_s: 0.0,
             stability: None,
             provider_divergence: None,
+            confidence_intervals: None,
+            merge_exclusions: Vec::new(),
         }
     }
 

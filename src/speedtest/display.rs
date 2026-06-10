@@ -138,14 +138,26 @@ fn render_multi_provider(
         builder = builder.row("Jitter", &format!("{:.1} ms", jitter));
     }
 
-    // Download / Upload
+    // Download / Upload (±margin when a bootstrap CI was computed)
+    let dl_margin = result
+        .confidence_intervals
+        .as_ref()
+        .and_then(|ci| ci.download.as_ref())
+        .map(|ci| format!(" ±{}", format_mbps(ci.margin)))
+        .unwrap_or_default();
+    let ul_margin = result
+        .confidence_intervals
+        .as_ref()
+        .and_then(|ci| ci.upload.as_ref())
+        .map(|ci| format!(" ±{}", format_mbps(ci.margin)))
+        .unwrap_or_default();
     builder = builder.row(
         "Download",
-        &format!("{} (avg)", format_mbps(result.download_mbps)),
+        &format!("{}{} (avg)", format_mbps(result.download_mbps), dl_margin),
     );
     builder = builder.row(
         "Upload",
-        &format!("{} (avg)", format_mbps(result.upload_mbps)),
+        &format!("{}{} (avg)", format_mbps(result.upload_mbps), ul_margin),
     );
 
     // Packet loss
@@ -155,6 +167,29 @@ fn render_multi_provider(
 
     // Duration
     builder = builder.row("Duration", &format!("{:.1}s", result.duration_s));
+
+    // Providers excluded from the headline merge for insufficient samples
+    if !result.merge_exclusions.is_empty() {
+        let list = result
+            .merge_exclusions
+            .iter()
+            .map(|e| {
+                format!(
+                    "{} {} ({} sample{})",
+                    e.provider,
+                    if e.direction == "download" {
+                        "DL"
+                    } else {
+                        "UL"
+                    },
+                    e.samples,
+                    if e.samples == 1 { "" } else { "s" },
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        builder = builder.row("Excluded", &list);
+    }
 
     // Stability metrics
     if let Some(ref stability) = result.stability {

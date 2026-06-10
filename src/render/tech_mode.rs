@@ -267,21 +267,59 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
         if let Some(jitter) = speed.jitter_ms {
             b = b.row("Jitter", &format!("{:.1} ms", jitter));
         }
+        let dl_margin = speed
+            .confidence_intervals
+            .as_ref()
+            .and_then(|ci| ci.download.as_ref())
+            .map(|ci| format!(" ±{}", crate::speedtest::format_mbps(ci.margin)))
+            .unwrap_or_default();
+        let ul_margin = speed
+            .confidence_intervals
+            .as_ref()
+            .and_then(|ci| ci.upload.as_ref())
+            .map(|ci| format!(" ±{}", crate::speedtest::format_mbps(ci.margin)))
+            .unwrap_or_default();
         b = b.row(
             "Download",
             &format!(
-                "{} (avg)",
-                crate::speedtest::format_mbps(speed.download_mbps)
+                "{}{} (avg)",
+                crate::speedtest::format_mbps(speed.download_mbps),
+                dl_margin
             ),
         );
         b = b.row(
             "Upload",
-            &format!("{} (avg)", crate::speedtest::format_mbps(speed.upload_mbps)),
+            &format!(
+                "{}{} (avg)",
+                crate::speedtest::format_mbps(speed.upload_mbps),
+                ul_margin
+            ),
         );
         if let Some(loss) = speed.packet_loss_pct {
             b = b.row("Packet Loss", &format!("{:.0}%", loss));
         }
         b = b.row("Duration", &format!("{:.1}s", speed.duration_s));
+        if !speed.merge_exclusions.is_empty() {
+            let list = speed
+                .merge_exclusions
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{} {} ({} sample{})",
+                        e.provider,
+                        if e.direction == "download" {
+                            "DL"
+                        } else {
+                            "UL"
+                        },
+                        e.samples,
+                        if e.samples == 1 { "" } else { "s" },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            b = b.row("Excluded", &list);
+        }
 
         // Per-provider breakdown
         for provider in &speed.providers {
