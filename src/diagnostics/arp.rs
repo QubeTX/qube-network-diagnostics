@@ -8,6 +8,92 @@ pub struct ArpEntry {
     pub entry_type: String,
 }
 
+// ── ARP gateway health (v3.4.0+) ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DuplicateIpMacs {
+    pub ip: String,
+    pub macs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArpHealth {
+    pub gateway_in_table: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_mac: Option<String>,
+    /// IPs that appear with more than one distinct MAC — an ARP-spoofing or
+    /// dual-router indicator.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub duplicate_ip_macs: Vec<DuplicateIpMacs>,
+    pub assessment: String,
+    pub level: String,
+}
+
+/// Pure post-processing over an already-collected ARP table — zero extra
+/// runtime. `None` when there's nothing to assess.
+pub fn assess_health(
+    arp_table: Option<&[ArpEntry]>,
+    gateway_ip: Option<&str>,
+) -> Option<ArpHealth> {
+    let table = arp_table?;
+    if table.is_empty() {
+        return None;
+    }
+
+    let gateway_entry = gateway_ip.and_then(|gw| table.iter().find(|e| e.ip == gw));
+    let gateway_in_table = gateway_entry.is_some();
+    let gateway_mac = gateway_entry.map(|e| e.mac.clone());
+
+    // Group MACs per IP; flag IPs with more than one distinct MAC. Ignore
+    // broadcast/multicast pseudo-entries.
+    let mut per_ip: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for entry in table {
+        if entry.mac.eq_ignore_ascii_case("ff-ff-ff-ff-ff-ff")
+            || entry.mac.eq_ignore_ascii_case("ff:ff:ff:ff:ff:ff")
+        {
+            continue;
+        }
+        let macs = per_ip.entry(entry.ip.as_str()).or_default();
+        if !macs
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(entry.mac.as_str()))
+        {
+            macs.push(entry.mac.as_str());
+        }
+    }
+    let mut duplicate_ip_macs: Vec<DuplicateIpMacs> = per_ip
+        .into_iter()
+        .filter(|(_, macs)| macs.len() > 1)
+        .map(|(ip, macs)| DuplicateIpMacs {
+            ip: ip.to_string(),
+            macs: macs.into_iter().map(|m| m.to_string()).collect(),
+        })
+        .collect();
+    duplicate_ip_macs.sort_by(|a, b| a.ip.cmp(&b.ip));
+
+    let (assessment, level) = if !duplicate_ip_macs.is_empty() {
+        (
+            "An IP maps to multiple MAC addresses — possible ARP spoofing or a misconfigured second router",
+            "warn",
+        )
+    } else if gateway_ip.is_some() && !gateway_in_table {
+        (
+            "Gateway is missing from the ARP table after a full diagnostic run — possible L2 problem",
+            "warn",
+        )
+    } else {
+        ("ARP table looks healthy", "ok")
+    };
+
+    Some(ArpHealth {
+        gateway_in_table,
+        gateway_mac,
+        duplicate_ip_macs,
+        assessment: assessment.to_string(),
+        level: level.to_string(),
+    })
+}
+
 pub async fn collect() -> Option<Vec<ArpEntry>> {
     #[cfg(windows)]
     {
@@ -112,4 +198,66 @@ async fn collect_linux() -> Option<Vec<ArpEntry>> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    fn entry(ip: &str, mac: &str) -> ArpEntry {
+        ArpEntry {
+            ip: ip.to_string(),
+            mac: mac.to_string(),
+            interface: "eth0".to_string(),
+            entry_type: "dynamic".to_string(),
+        }
+    }
+
+    #[test]
+    fn healthy_table_with_gateway() {
+        let table = [
+            entry("192.168.1.1", "aa-bb-cc-dd-ee-ff"),
+            entry("192.168.1.50", "11-22-33-44-55-66"),
+        ];
+        let h = assess_health(Some(&table), Some("192.168.1.1")).unwrap();
+        assert!(h.gateway_in_table);
+        assert_eq!(h.gateway_mac.as_deref(), Some("aa-bb-cc-dd-ee-ff"));
+        assert_eq!(h.level, "ok");
+    }
+
+    #[test]
+    fn duplicate_macs_flagged() {
+        let table = [
+            entry("192.168.1.1", "aa-bb-cc-dd-ee-ff"),
+            entry("192.168.1.1", "11-22-33-44-55-66"),
+        ];
+        let h = assess_health(Some(&table), Some("192.168.1.1")).unwrap();
+        assert_eq!(h.duplicate_ip_macs.len(), 1);
+        assert_eq!(h.level, "warn");
+        assert!(h.assessment.contains("spoofing"));
+    }
+
+    #[test]
+    fn missing_gateway_flagged() {
+        let table = [entry("192.168.1.50", "11-22-33-44-55-66")];
+        let h = assess_health(Some(&table), Some("192.168.1.1")).unwrap();
+        assert!(!h.gateway_in_table);
+        assert_eq!(h.level, "warn");
+    }
+
+    #[test]
+    fn broadcast_entries_ignored() {
+        let table = [
+            entry("192.168.1.255", "ff-ff-ff-ff-ff-ff"),
+            entry("192.168.1.255", "FF:FF:FF:FF:FF:FF"),
+        ];
+        let h = assess_health(Some(&table), None).unwrap();
+        assert!(h.duplicate_ip_macs.is_empty());
+    }
+
+    #[test]
+    fn empty_or_missing_table_is_none() {
+        assert!(assess_health(None, Some("192.168.1.1")).is_none());
+        assert!(assess_health(Some(&[]), Some("192.168.1.1")).is_none());
+    }
 }

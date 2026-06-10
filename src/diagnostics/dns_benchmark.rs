@@ -1,0 +1,381 @@
+//! DNS resolver benchmark + integrity checks — deep diagnostic.
+//!
+//! Times A-record lookups against the system resolver and three public
+//! resolvers (concurrent chains, sequential queries within each), then runs
+//! two integrity probes:
+//!
+//! - **NXDOMAIN-wildcard hijack**: a random label under .com must NOT
+//!   resolve; if it does, the resolver (typically the ISP) is rewriting
+//!   NXDOMAIN responses to ad/search pages.
+//! - **DNSSEC validation**: `dnssec-failed.org` carries a deliberately bogus
+//!   signature. A validating resolver refuses to resolve it; a
+//!   non-validating one returns an address. Subprocess-free and identical on
+//!   all platforms.
+
+use serde::Serialize;
+use std::time::{Duration, Instant};
+
+use super::util;
+
+const TEST_DOMAINS: &[&str] = &["example.com", "wikipedia.org", "cloudflare.com"];
+
+const PUBLIC_RESOLVERS: &[(&str, &str)] = &[
+    ("Cloudflare", "1.1.1.1"),
+    ("Google", "8.8.8.8"),
+    ("Quad9", "9.9.9.9"),
+];
+
+/// Whole-module budget.
+const MODULE_BUDGET: Duration = Duration::from_secs(20);
+
+/// Deliberately-bogus DNSSEC zone maintained for validation testing.
+const DNSSEC_BOGUS_DOMAIN: &str = "dnssec-failed.org";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolverTiming {
+    pub name: String,
+    /// "system" for the OS resolver, else the server IP.
+    pub server: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_ms: Option<f64>,
+    pub queries_ok: u8,
+    pub queries_total: u8,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DnsBenchmark {
+    pub resolvers: Vec<ResolverTiming>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fastest: Option<String>,
+    /// How much slower the system resolver is than the fastest public one
+    /// (positive = system slower).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_vs_fastest_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hijack_detected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dnssec_validating: Option<bool>,
+    pub assessment: String,
+    pub level: String,
+}
+
+pub async fn collect() -> Option<DnsBenchmark> {
+    tokio::time::timeout(MODULE_BUDGET, collect_inner())
+        .await
+        .unwrap_or_default()
+}
+
+async fn collect_inner() -> Option<DnsBenchmark> {
+    // Benchmark all resolver chains concurrently.
+    let mut chains = Vec::new();
+    chains.push(tokio::spawn(benchmark_system()));
+    for (name, server) in PUBLIC_RESOLVERS {
+        chains.push(tokio::spawn(benchmark_public(name, server)));
+    }
+    let resolvers: Vec<ResolverTiming> = futures_util::future::join_all(chains)
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+
+    // Control: did the system resolver resolve anything at all? If DNS is
+    // dead the core DNS check already failed — skip this section.
+    let system_ok = resolvers
+        .iter()
+        .any(|r| r.server == "system" && r.queries_ok > 0);
+    if !system_ok {
+        return None;
+    }
+
+    // Integrity probes (system resolver).
+    let hijack_detected = Some(hijack_probe().await);
+    let bogus_resolved =
+        util::lookup_host_timeout(format!("{}:443", DNSSEC_BOGUS_DOMAIN), util::RESOLVE)
+            .await
+            .is_some_and(|addrs| !addrs.is_empty());
+    let dnssec_validating = Some(!bogus_resolved);
+
+    Some(build_benchmark(
+        resolvers,
+        hijack_detected,
+        dnssec_validating,
+    ))
+}
+
+/// Pure assembly + verdict — unit-testable without a network.
+fn build_benchmark(
+    resolvers: Vec<ResolverTiming>,
+    hijack_detected: Option<bool>,
+    dnssec_validating: Option<bool>,
+) -> DnsBenchmark {
+    let fastest_public = resolvers
+        .iter()
+        .filter(|r| r.server != "system")
+        .filter_map(|r| r.avg_ms.map(|ms| (r, ms)))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let system_ms = resolvers
+        .iter()
+        .find(|r| r.server == "system")
+        .and_then(|r| r.avg_ms);
+
+    let fastest = fastest_public.map(|(r, _)| r.name.clone());
+    let system_vs_fastest_ms = match (system_ms, fastest_public) {
+        (Some(sys), Some((_, fast))) => Some(sys - fast),
+        _ => None,
+    };
+
+    let system_much_slower = matches!(
+        (system_ms, fastest_public),
+        (Some(sys), Some((_, fast))) if sys > 2.0 * fast && (sys - fast) > 50.0
+    );
+
+    let (assessment, level) = if hijack_detected == Some(true) {
+        (
+            "DNS hijack detected: non-existent domains resolve — the resolver is rewriting NXDOMAIN (typically ISP ad redirection)",
+            "fail",
+        )
+    } else if dnssec_validating == Some(false) {
+        (
+            "Resolver does not validate DNSSEC — forged DNS answers would not be detected",
+            "warn",
+        )
+    } else if system_much_slower {
+        (
+            "System resolver is much slower than public alternatives — consider changing DNS servers",
+            "warn",
+        )
+    } else {
+        ("Resolver is fast and honest", "ok")
+    };
+
+    DnsBenchmark {
+        resolvers,
+        fastest,
+        system_vs_fastest_ms,
+        hijack_detected,
+        dnssec_validating,
+        assessment: assessment.to_string(),
+        level: level.to_string(),
+    }
+}
+
+/// Time the system resolver across the test domains.
+async fn benchmark_system() -> ResolverTiming {
+    let mut times = Vec::new();
+    let mut ok: u8 = 0;
+    for domain in TEST_DOMAINS {
+        let start = Instant::now();
+        if util::lookup_host_timeout(format!("{}:443", domain), util::RESOLVE)
+            .await
+            .is_some_and(|a| !a.is_empty())
+        {
+            times.push(start.elapsed().as_secs_f64() * 1000.0);
+            ok += 1;
+        }
+    }
+    ResolverTiming {
+        name: "System".to_string(),
+        server: "system".to_string(),
+        avg_ms: avg(&times),
+        queries_ok: ok,
+        queries_total: TEST_DOMAINS.len() as u8,
+    }
+}
+
+/// Time a public resolver across the test domains via the platform's DNS
+/// query tool.
+async fn benchmark_public(name: &str, server: &str) -> ResolverTiming {
+    let mut times = Vec::new();
+    let mut ok: u8 = 0;
+    for domain in TEST_DOMAINS {
+        if let Some(ms) = query_via_server(domain, server).await {
+            times.push(ms);
+            ok += 1;
+        }
+    }
+    ResolverTiming {
+        name: name.to_string(),
+        server: server.to_string(),
+        avg_ms: avg(&times),
+        queries_ok: ok,
+        queries_total: TEST_DOMAINS.len() as u8,
+    }
+}
+
+fn avg(times: &[f64]) -> Option<f64> {
+    if times.is_empty() {
+        None
+    } else {
+        Some(times.iter().sum::<f64>() / times.len() as f64)
+    }
+}
+
+/// Query `domain` against a specific `server`.
+///
+/// Unix: `dig` reports its own `Query time` (parse it — subprocess spawn
+/// overhead excluded). Windows: `nslookup` has no timing output, so the
+/// subprocess is wall-clocked; the constant spawn overhead affects every
+/// resolver equally, so comparisons stay fair (noted for absolute values).
+async fn query_via_server(domain: &str, server: &str) -> Option<f64> {
+    #[cfg(windows)]
+    {
+        let start = Instant::now();
+        let mut cmd = tokio::process::Command::new("nslookup");
+        cmd.args(["-timeout=2", domain, server]);
+        let output = util::run_with_timeout(cmd, util::SLOW).await?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        // The answer section repeats "Address"; a failed lookup prints
+        // "can't find" instead.
+        if text.contains("can't find") || !text.contains("Address") {
+            return None;
+        }
+        Some(start.elapsed().as_secs_f64() * 1000.0)
+    }
+
+    #[cfg(unix)]
+    {
+        let mut cmd = tokio::process::Command::new("dig");
+        cmd.args([
+            &format!("@{}", server),
+            domain,
+            "+time=2",
+            "+tries=1",
+            "+noall",
+            "+answer",
+            "+stats",
+        ]);
+        let output = util::run_with_timeout(cmd, util::SLOW).await?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        parse_dig_query_time(&text)
+    }
+}
+
+/// Parse `;; Query time: 23 msec` from dig output.
+#[cfg(any(unix, test))]
+fn parse_dig_query_time(text: &str) -> Option<f64> {
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix(";; Query time:") {
+            let num: String = rest
+                .trim()
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            return num.parse().ok();
+        }
+    }
+    None
+}
+
+/// Resolve a random label that must not exist. Resolving anyway = the
+/// resolver wildcards NXDOMAIN. The label is derived from time + pid (no
+/// rand dependency); collisions with a real domain are practically
+/// impossible.
+async fn hijack_probe() -> bool {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 + d.as_secs())
+        .unwrap_or(0xdead_beef);
+    let mixed = nanos
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(std::process::id() as u64);
+    let label = format!("nd300-{:016x}.com:443", mixed);
+
+    util::lookup_host_timeout(label, util::RESOLVE)
+        .await
+        .is_some_and(|addrs| !addrs.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timing(name: &str, server: &str, avg_ms: Option<f64>, ok: u8) -> ResolverTiming {
+        ResolverTiming {
+            name: name.to_string(),
+            server: server.to_string(),
+            avg_ms,
+            queries_ok: ok,
+            queries_total: 3,
+        }
+    }
+
+    #[test]
+    fn parse_dig_query_time_works() {
+        let out =
+            "example.com. 300 IN A 93.184.216.34\n;; Query time: 23 msec\n;; SERVER: 1.1.1.1#53";
+        assert_eq!(parse_dig_query_time(out), Some(23.0));
+        assert_eq!(parse_dig_query_time("no stats here"), None);
+    }
+
+    #[test]
+    fn hijack_is_fail_level() {
+        let b = build_benchmark(
+            vec![timing("System", "system", Some(20.0), 3)],
+            Some(true),
+            Some(true),
+        );
+        assert_eq!(b.level, "fail");
+        assert!(b.assessment.contains("hijack"));
+    }
+
+    #[test]
+    fn non_validating_dnssec_warns() {
+        let b = build_benchmark(
+            vec![timing("System", "system", Some(20.0), 3)],
+            Some(false),
+            Some(false),
+        );
+        assert_eq!(b.level, "warn");
+        assert!(b.assessment.contains("DNSSEC"));
+    }
+
+    #[test]
+    fn slow_system_resolver_warns() {
+        let b = build_benchmark(
+            vec![
+                timing("System", "system", Some(180.0), 3),
+                timing("Cloudflare", "1.1.1.1", Some(15.0), 3),
+            ],
+            Some(false),
+            Some(true),
+        );
+        assert_eq!(b.level, "warn");
+        assert_eq!(b.fastest.as_deref(), Some("Cloudflare"));
+        assert!(b.system_vs_fastest_ms.is_some_and(|d| d > 100.0));
+    }
+
+    #[test]
+    fn modestly_slower_system_is_ok() {
+        // 2x but under the 50ms absolute floor — not worth a warning.
+        let b = build_benchmark(
+            vec![
+                timing("System", "system", Some(30.0), 3),
+                timing("Cloudflare", "1.1.1.1", Some(12.0), 3),
+            ],
+            Some(false),
+            Some(true),
+        );
+        assert_eq!(b.level, "ok");
+    }
+
+    #[test]
+    fn healthy_resolver_is_ok() {
+        let b = build_benchmark(
+            vec![
+                timing("System", "system", Some(14.0), 3),
+                timing("Cloudflare", "1.1.1.1", Some(15.0), 3),
+                timing("Google", "8.8.8.8", Some(18.0), 3),
+            ],
+            Some(false),
+            Some(true),
+        );
+        assert_eq!(b.level, "ok");
+    }
+}

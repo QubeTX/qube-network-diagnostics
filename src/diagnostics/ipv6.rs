@@ -8,6 +8,19 @@ pub struct Ipv6Info {
     pub addresses: Vec<Ipv6Address>,
     pub connectivity: Ipv6Connectivity,
     pub dual_stack: bool,
+    /// Real HTTPS-over-v6 fetch succeeded (additive, v3.4.0+).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub v6_http_ok: Option<bool>,
+    /// Timed TCP connect to a v4 anycast endpoint (ms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub v4_connect_ms: Option<f64>,
+    /// Timed TCP connect to a v6 anycast endpoint (ms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub v6_connect_ms: Option<f64>,
+    /// v6 − v4 connect time: the happy-eyeballs penalty users feel when v6
+    /// is configured but slow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub v6_penalty_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,12 +52,61 @@ pub async fn collect_with_cache(cache: &SharedCache) -> Option<Ipv6Info> {
 
     let dual_stack = has_global;
 
+    // Deep probes (v3.4.0+): only meaningful when a global v6 address exists.
+    let (v6_http_ok, v4_connect_ms, v6_connect_ms, v6_penalty_ms) = if has_global {
+        let v6_http = fetch_over_v6().await;
+        let v4_ms = timed_connect("1.1.1.1:443").await;
+        let v6_ms = timed_connect("[2606:4700:4700::1111]:443").await;
+        let penalty = match (v4_ms, v6_ms) {
+            (Some(v4), Some(v6)) => Some(v6 - v4),
+            _ => None,
+        };
+        (Some(v6_http), v4_ms, v6_ms, penalty)
+    } else {
+        (None, None, None, None)
+    };
+
     Some(Ipv6Info {
         available: !addresses.is_empty(),
         addresses,
         connectivity,
         dual_stack,
+        v6_http_ok,
+        v4_connect_ms,
+        v6_connect_ms,
+        v6_penalty_ms,
     })
+}
+
+/// HTTPS fetch pinned to an IPv6 literal — proves real end-to-end v6, not
+/// just an address assignment.
+async fn fetch_over_v6() -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get("https://[2606:4700:4700::1111]/cdn-cgi/trace")
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// Timed TCP connect — used for the v4-vs-v6 happy-eyeballs comparison.
+async fn timed_connect(addr: &str) -> Option<f64> {
+    let start = std::time::Instant::now();
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::TcpStream::connect(addr),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Some(start.elapsed().as_secs_f64() * 1000.0),
+        _ => None,
+    }
 }
 
 async fn get_ipv6_addresses_cached(cache: &SharedCache) -> Vec<Ipv6Address> {
@@ -135,6 +197,11 @@ pub async fn collect() -> Option<Ipv6Info> {
         addresses,
         connectivity,
         dual_stack,
+        // The cache-less path skips the deep probes (used outside tech mode).
+        v6_http_ok: None,
+        v4_connect_ms: None,
+        v6_connect_ms: None,
+        v6_penalty_ms: None,
     })
 }
 

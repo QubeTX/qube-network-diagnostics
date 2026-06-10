@@ -2,10 +2,12 @@ pub mod adapter_hw_stats;
 pub mod adapters;
 pub mod arp;
 pub mod bufferbloat;
+pub mod captive_portal;
 pub mod connection_states;
 pub mod connections;
 pub mod dhcp;
 pub mod dns;
+pub mod dns_benchmark;
 pub mod dns_cache;
 pub mod firewall;
 pub mod gateway;
@@ -14,12 +16,16 @@ pub mod ipv6;
 pub mod latency;
 pub mod listening_ports;
 pub mod mtu;
+pub mod nat;
+pub mod ntp;
+pub mod packet_loss;
 pub mod ping;
 pub mod ports;
 pub mod protocol_stats;
 pub mod proxy;
 pub mod public_ip;
 pub mod reverse_dns;
+pub mod route_path;
 pub mod routing_table;
 pub mod shared_cache;
 pub mod speed;
@@ -27,6 +33,7 @@ pub mod tls_inspection;
 pub mod traffic_counters;
 pub mod util;
 pub mod vpn;
+pub mod wifi;
 
 use serde::Serialize;
 
@@ -193,6 +200,26 @@ pub struct TechnicianResults {
     pub tls_inspection: Option<tls_inspection::TlsInspectionResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traffic_counters: Option<Vec<traffic_counters::TrafficCounter>>,
+
+    // ── Exhaustive tech mode additions (v3.4.0+) ──
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_path: Option<route_path::RoutePath>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packet_loss: Option<Vec<packet_loss::LossResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nat_analysis: Option<nat::NatAnalysis>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<Vec<wifi::WifiLink>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_benchmark: Option<dns_benchmark::DnsBenchmark>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captive_portal: Option<captive_portal::CaptivePortalResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_sync: Option<ntp::ClockSync>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_mtu: Option<mtu::PathMtu>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arp_health: Option<arp::ArpHealth>,
 }
 
 /// Wall-clock cap for a full `run_all` pass.
@@ -210,12 +237,23 @@ pub struct TechnicianResults {
 pub fn run_all_cap(config: &Config) -> std::time::Duration {
     const RUN_ALL_CAP_FLOOR: std::time::Duration = std::time::Duration::from_secs(90);
     const RUN_ALL_CAP_HEADROOM: u64 = 30;
+    /// Extra budget for technician mode's long deep probes: the concurrent
+    /// T1 set (≤~30s internal budgets) + traceroute/sustained-loss pair
+    /// (≤60s) + the real bufferbloat test (≤35s), plus slack. Every probe is
+    /// individually bounded, so the cap stays a pure anti-hang backstop.
+    const TECH_DEEP_BUDGET_SECS: u64 = 150;
 
-    if config.skip_speed {
+    let base = if config.skip_speed {
         RUN_ALL_CAP_FLOOR
     } else {
         std::time::Duration::from_secs(4 * config.speed_duration + RUN_ALL_CAP_HEADROOM)
             .max(RUN_ALL_CAP_FLOOR)
+    };
+
+    if config.is_tech_mode() {
+        base + std::time::Duration::from_secs(TECH_DEEP_BUDGET_SECS)
+    } else {
+        base
     }
 }
 
@@ -343,10 +381,13 @@ pub async fn run_all(config: &Config, cap: std::time::Duration) -> DiagnosticRes
             timed_out = true;
             None
         } else {
-            let tech = tokio::time::timeout_at(deadline, async {
-                adapters::enrich_driver_info(&mut adapter_details).await;
-                run_technician_diagnostics(config).await
-            })
+            let tech = tokio::time::timeout_at(
+                deadline,
+                Box::pin(async {
+                    adapters::enrich_driver_info(&mut adapter_details).await;
+                    run_technician_diagnostics(config, public_ip_details.as_ref()).await
+                }),
+            )
             .await;
             match tech {
                 Ok(t) => Some(t),
@@ -383,7 +424,10 @@ pub async fn run_all(config: &Config, cap: std::time::Duration) -> DiagnosticRes
     }
 }
 
-async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
+async fn run_technician_diagnostics(
+    config: &Config,
+    public_ip: Option<&public_ip::PublicIpInfo>,
+) -> TechnicianResults {
     if config.verbose {
         eprintln!("[verbose] Running technician deep diagnostics...");
     }
@@ -391,6 +435,11 @@ async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
     // Pre-fetch shared data to avoid duplicate subprocess calls
     let cache = shared_cache::SharedCache::build_for_tech_mode().await;
 
+    // ── T1: concurrent, bandwidth-light modules ─────────────────────
+    // Each module future is boxed: a flat join! of 21 inlined async state
+    // machines is large enough to overflow the main thread's stack on
+    // Windows (observed as STATUS_STACK_OVERFLOW); boxing keeps the joined
+    // future itself small.
     let (
         arp_table,
         routing,
@@ -409,28 +458,54 @@ async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
         rdns,
         tls_insp,
         traffic,
+        wifi_links,
+        dns_bench,
+        portal,
+        clock,
     ) = tokio::join!(
-        arp::collect(),
-        routing_table::collect(),
-        connections::collect_with_cache(&cache),
-        listening_ports::collect_with_cache(&cache),
-        dhcp::collect_with_cache(&cache),
-        protocol_stats::collect(),
-        adapter_hw_stats::collect_with_cache(&cache),
-        proxy::collect(),
-        vpn::collect_with_cache(&cache),
-        firewall::collect(),
-        dns_cache::collect(),
-        ipv6::collect_with_cache(&cache),
-        mtu::collect(),
-        connection_states::collect_with_cache(&cache),
-        reverse_dns::collect_with_cache(&cache),
-        tls_inspection::collect(),
-        traffic_counters::collect_with_cache(&cache),
+        Box::pin(arp::collect()),
+        Box::pin(routing_table::collect()),
+        Box::pin(connections::collect_with_cache(&cache)),
+        Box::pin(listening_ports::collect_with_cache(&cache)),
+        Box::pin(dhcp::collect_with_cache(&cache)),
+        Box::pin(protocol_stats::collect()),
+        Box::pin(adapter_hw_stats::collect_with_cache(&cache)),
+        Box::pin(proxy::collect()),
+        Box::pin(vpn::collect_with_cache(&cache)),
+        Box::pin(firewall::collect()),
+        Box::pin(dns_cache::collect()),
+        Box::pin(ipv6::collect_with_cache(&cache)),
+        Box::pin(mtu::collect()),
+        Box::pin(connection_states::collect_with_cache(&cache)),
+        Box::pin(reverse_dns::collect_with_cache(&cache)),
+        Box::pin(tls_inspection::collect()),
+        Box::pin(traffic_counters::collect_with_cache(&cache)),
+        Box::pin(wifi::collect()),
+        Box::pin(dns_benchmark::collect()),
+        Box::pin(captive_portal::collect()),
+        Box::pin(ntp::collect()),
     );
 
-    // Bufferbloat needs speed test data, run separately
-    let bufferbloat = bufferbloat::collect().await;
+    // ── T2: long, latency-sensitive probes — isolated from T1's
+    // subprocess spawn-storm so ping timings aren't scheduling-jittered,
+    // and from bufferbloat's saturation below.
+    let (route, loss, path_mtu) = tokio::join!(
+        Box::pin(route_path::collect()),
+        Box::pin(packet_loss::collect()),
+        Box::pin(mtu::probe_path_mtu()),
+    );
+
+    // ── T2b: derived analyses — pure post-processing, ~0ms ──────────
+    let nat_analysis = nat::analyze(
+        cache.gateway_ip.as_deref(),
+        public_ip,
+        route.as_ref().map(|r| r.hops.as_slice()),
+    );
+    let arp_health = arp::assess_health(arp_table.as_deref(), cache.gateway_ip.as_deref());
+
+    // ── T3: bufferbloat LAST — it deliberately saturates the link and
+    // would corrupt T2's loss/latency numbers if overlapped.
+    let bufferbloat = Box::pin(bufferbloat::collect(config)).await;
 
     TechnicianResults {
         arp_table,
@@ -451,5 +526,14 @@ async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
         reverse_dns: rdns,
         tls_inspection: tls_insp,
         traffic_counters: traffic,
+        route_path: route,
+        packet_loss: loss,
+        nat_analysis,
+        wifi: wifi_links,
+        dns_benchmark: dns_bench,
+        captive_portal: portal,
+        clock_sync: clock,
+        path_mtu,
+        arp_health,
     }
 }
