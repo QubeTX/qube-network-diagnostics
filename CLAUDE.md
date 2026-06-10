@@ -21,6 +21,8 @@ cargo run --bin nd300 -- --fast       # Skip speed test
 cargo run --bin nd300 -- fix --fast   # Skip speed test inside the fix subcommand
 cargo run --bin nd300 -- update       # Self-update to latest release (also `--update`)
 cargo test --lib actions::fix::triage  # Triage planner unit tests
+cargo run --bin speedqx -- --duration 5 --fastcom-duration 5 --no-color   # ~1-min live smoke of all 6 providers
+cargo run --bin nd300 -- -t --fast --no-color   # live smoke of all 25 deep modules without the saturating phases
 ```
 
 Security advisories: `cargo audit` (install once via `cargo install cargo-audit --locked`) auto-reads the project's `.cargo/audit.toml` ignore-list — when an advisory can't be cleared by a dep bump, add it there with a rationale instead of re-triaging. On a Windows host, use `cargo tree --target all -i <crate>` to see platform-gated transitive deps (e.g. the Linux netlink stack that pulls `paste`); plain `cargo tree` only shows host-target deps.
@@ -103,8 +105,8 @@ Triggers in user prompts: "release", "ship it", "deploy", "tag the release", "pu
 2. **Update `CHANGELOG.md` + `HUMAN_CHANGELOG.md`** in lockstep (every technical entry needs a plain-English counterpart — see "Changelog rule"). Date = the host's current date.
 3. **Update `README.md`** (user-visible flags/commands/behavior) and **`CLAUDE.md` / `AGENTS.md`** (architecture/workflow changes).
 4. **Bump the homepage version fallbacks** in the `qube-machine-report-homepage` repo — the `useGitHubVersion('QubeTX/qube-network-diagnostics', '<new>')` calls in `ND300Install.jsx`, `ND300Hero.jsx`, `ND300Footer.jsx`, and `InstallGuideContent.jsx` (the live GitHub fetch overrides on a healthy network; this keeps the offline fallback current). Ship as its own PR → merge to `main` → Vercel auto-deploys.
-5. **Local verification:** `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo publish --dry-run --locked --allow-dirty`, `cargo package --list --locked --allow-dirty`, `cargo build --release`. If installers changed, validate them locally (see "Installer build pitfalls"). After committing, rerun publish/package without `--allow-dirty`.
-6. **Stage specific files** (never `git add -A` — risks `nul`, `.env`, artifacts). **Commit** (`feat:`/`fix:`/`docs:`) with trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`. Open a PR (git-workflow); the PR runs `ci.yml` across macOS + Linux + Windows.
+5. **Local verification:** `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo publish --dry-run --locked --allow-dirty`, `cargo package --list --locked --allow-dirty`, `cargo build --release`. If installers changed, validate them locally (see "Installer build pitfalls"). After committing, rerun publish/package without `--allow-dirty`. **If the CLI surface changed** (flags, defaults, help text): `cargo build` regenerates `man/nd300.1`/`man/speedqx.1` in-tree via build.rs — **commit the regenerated man pages**, or the CI `crates-publish` job fails with a dirty-working-directory error (this failed the first v3.4.0 publish).
+6. **Stage specific files** (never `git add -A` — risks `nul`, `.env`, artifacts). **Commit** (`feat:`/`fix:`/`docs:`) with a `Co-Authored-By: Claude <model name> <noreply@anthropic.com>` trailer naming the model actually in use (e.g. `Claude Fable 5`). Open a PR (git-workflow); the PR runs `ci.yml` across macOS + Linux + Windows.
 7. **Merge the PR to `main`.** `ci.yml` runs on the main push → `crates-publish.yml` then publishes the `nd300` crate (idempotent — a docs-only / unchanged-version merge safely skips).
 8. **Push the release tag:** `git fetch origin main && git tag vX.Y.Z origin/main && git push origin vX.Y.Z`. This fires `release.yml` (6 targets + Global MSI + shell/PS installers + GitHub Release) → which chains `windows-installers.yml` (Corporate MSI + 2 Inno EXEs + sidecars). **Never reuse a tag** — cargo-dist treats tags as immutable; always go forward.
 9. **Watch + verify:** watch `release.yml` then `windows-installers.yml` (poll-loop below). Confirm: crate published (`crates-publish` green / `cargo owner --list nd300`), `gh release view vX.Y.Z` shows **28 assets**, `cargo install nd300 --force` works.
@@ -422,6 +424,8 @@ cargo-dist **suppresses** WiX `candle`'s real error (you only see "candle failed
 ### Cross-platform Rust gotcha
 
 Shared `#[test]`s must use bare filenames / forward-slash paths; gate `C:\…` paths under `#[cfg(windows)]`. On Linux `\` is a literal char, so `Path::new(r"C:\x\nd300.exe").file_name()` returns the *whole* string — a `C:\`-path test passes on Windows but fails on Linux (this is exactly why the v3.2.0 allowlist test failed only on Linux CI). Windows-only helpers must be `#[cfg(windows)]` (not merely unused) or they trip `-D warnings` as dead code on macOS/Linux.
+
+When pruning "unused" imports in files with per-OS `#[cfg]` branches (e.g. `actions/fix/stages.rs`), grep every platform's branch first — Windows-local clippy cannot see macOS/Linux usages (removing `use super::adapters;` failed 4 CI jobs in v3.4.0). Prefer platform-gating imports (`#[cfg(windows)] use ...`) over leaving them ungated.
 
 ### CI gates (`ci.yml` + `release.yml`)
 
