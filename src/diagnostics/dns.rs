@@ -6,7 +6,11 @@ use super::DiagnosticResult;
 #[derive(Debug, Clone, Serialize)]
 pub struct DnsInfo {
     pub servers: Vec<DnsServer>,
+    /// The `dns.google` probe, kept for JSON backward compatibility.
     pub resolution_test: Option<DnsResolutionTest>,
+    /// All probed domains (additive field, v3.4.0+).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resolution_tests: Vec<DnsResolutionTest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,8 +38,11 @@ pub async fn check() -> (DiagnosticResult, Option<DnsInfo>) {
         );
     }
 
-    // Test DNS resolution
-    let resolution = test_dns_resolution().await;
+    // Test DNS resolution against several independent domains concurrently.
+    // The verdict uses the count resolved + the median time, so one slow or
+    // dropped lookup can no longer flip the verdict on a healthy network.
+    let tests: Vec<DnsResolutionTest> =
+        futures_util::future::join_all(TEST_DOMAINS.iter().map(|d| test_domain(d))).await;
 
     let server_results: Vec<DnsServer> = servers
         .iter()
@@ -48,27 +55,60 @@ pub async fn check() -> (DiagnosticResult, Option<DnsInfo>) {
 
     let info = DnsInfo {
         servers: server_results,
-        resolution_test: resolution.clone(),
+        resolution_test: tests.iter().find(|t| t.domain == TEST_DOMAINS[0]).cloned(),
+        resolution_tests: tests.clone(),
     };
 
-    let result = match resolution {
-        Some(ref test) if test.resolved => {
-            let time_ms = test.resolution_time_ms;
-            if time_ms > 500.0 {
-                DiagnosticResult::warn("DNS", format!("Resolving slowly ({:.0}ms)", time_ms))
-            } else if time_ms > 200.0 {
-                DiagnosticResult::warn(
-                    "DNS",
-                    format!("Resolving with moderate latency ({:.0}ms)", time_ms),
-                )
-            } else {
-                DiagnosticResult::ok("DNS", format!("Resolving normally ({:.0}ms)", time_ms))
-            }
-        }
-        _ => DiagnosticResult::fail("DNS", "DNS resolution failed"),
-    };
+    let result = dns_verdict(&tests);
 
     (result, Some(info))
+}
+
+/// Pure verdict over the resolution probes — unit-testable without a network.
+///
+/// - 0 resolved → Fail
+/// - some (but not all) resolved → Warn (partial resolution)
+/// - all resolved → verdict on the **median** resolution time
+///   (≤200ms Ok, 200–500ms Warn, >500ms Warn-slow)
+fn dns_verdict(tests: &[DnsResolutionTest]) -> DiagnosticResult {
+    let total = tests.len();
+    let mut resolved_times: Vec<f64> = tests
+        .iter()
+        .filter(|t| t.resolved)
+        .map(|t| t.resolution_time_ms)
+        .collect();
+
+    if resolved_times.is_empty() {
+        return DiagnosticResult::fail("DNS", "DNS resolution failed");
+    }
+
+    if resolved_times.len() < total {
+        return DiagnosticResult::warn(
+            "DNS",
+            format!(
+                "Partial DNS resolution ({}/{} domains)",
+                resolved_times.len(),
+                total
+            ),
+        );
+    }
+
+    resolved_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = resolved_times[resolved_times.len() / 2];
+
+    if median > 500.0 {
+        DiagnosticResult::warn("DNS", format!("Resolving slowly ({:.0}ms median)", median))
+    } else if median > 200.0 {
+        DiagnosticResult::warn(
+            "DNS",
+            format!("Resolving with moderate latency ({:.0}ms median)", median),
+        )
+    } else {
+        DiagnosticResult::ok(
+            "DNS",
+            format!("Resolving normally ({:.0}ms median)", median),
+        )
+    }
 }
 
 async fn get_dns_servers() -> Vec<String> {
@@ -216,27 +256,137 @@ fn extract_ip(text: &str) -> Option<String> {
     None
 }
 
-async fn test_dns_resolution() -> Option<DnsResolutionTest> {
-    let domain = "dns.google";
-    let start = Instant::now();
+/// Domains probed for the resolution verdict. Three independent zones with
+/// distinct authoritative operators, so one slow/unlucky zone traversal can't
+/// flip the verdict.
+const TEST_DOMAINS: &[&str] = &["dns.google", "one.one.one.one", "example.com"];
 
-    // Use system DNS resolution (bounded so a black-holed resolver can't hang).
-    match super::util::lookup_host_timeout(format!("{}:443", domain), super::util::RESOLVE).await {
-        Some(addrs) => {
-            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-            let ips: Vec<String> = addrs.into_iter().map(|a| a.ip().to_string()).collect();
-            Some(DnsResolutionTest {
-                domain: domain.to_string(),
-                resolved: !ips.is_empty(),
-                resolution_time_ms: elapsed,
-                resolved_ips: ips,
-            })
+async fn test_domain(domain: &'static str) -> DnsResolutionTest {
+    let overall = Instant::now();
+
+    // Each lookup is retried once after a short pause — a single transient
+    // drop shouldn't count as a failed domain. The recorded time is the
+    // *successful attempt's* time only, so a retry doesn't masquerade as a
+    // slow resolver.
+    let outcome = super::util::retry_probe(2, std::time::Duration::from_millis(500), || async {
+        let start = Instant::now();
+        let addrs =
+            super::util::lookup_host_timeout(format!("{}:443", domain), super::util::RESOLVE)
+                .await?;
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        let ips: Vec<String> = addrs.into_iter().map(|a| a.ip().to_string()).collect();
+        if ips.is_empty() {
+            None
+        } else {
+            Some((elapsed, ips))
         }
-        None => Some(DnsResolutionTest {
+    })
+    .await;
+
+    match outcome {
+        Some((elapsed, ips)) => DnsResolutionTest {
+            domain: domain.to_string(),
+            resolved: true,
+            resolution_time_ms: elapsed,
+            resolved_ips: ips,
+        },
+        None => DnsResolutionTest {
             domain: domain.to_string(),
             resolved: false,
-            resolution_time_ms: start.elapsed().as_secs_f64() * 1000.0,
+            resolution_time_ms: overall.elapsed().as_secs_f64() * 1000.0,
             resolved_ips: vec![],
-        }),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_result(domain: &str, resolved: bool, time_ms: f64) -> DnsResolutionTest {
+        DnsResolutionTest {
+            domain: domain.to_string(),
+            resolved,
+            resolution_time_ms: time_ms,
+            resolved_ips: if resolved {
+                vec!["192.0.2.1".to_string()]
+            } else {
+                vec![]
+            },
+        }
+    }
+
+    use super::super::DiagnosticStatus;
+
+    #[test]
+    fn all_fast_ok() {
+        let tests = [
+            test_result("dns.google", true, 80.0),
+            test_result("one.one.one.one", true, 90.0),
+            test_result("example.com", true, 110.0),
+        ];
+        let v = dns_verdict(&tests);
+        assert_eq!(v.status, DiagnosticStatus::Ok);
+        assert!(v.summary.contains("median"));
+    }
+
+    /// The de-flake regression test: one slow outlier among fast peers must
+    /// not flip the verdict (the old single-domain check would have warned).
+    #[test]
+    fn single_slow_outlier_median_still_ok() {
+        let tests = [
+            test_result("dns.google", true, 1200.0),
+            test_result("one.one.one.one", true, 80.0),
+            test_result("example.com", true, 90.0),
+        ];
+        let v = dns_verdict(&tests);
+        assert_eq!(v.status, DiagnosticStatus::Ok);
+    }
+
+    #[test]
+    fn median_moderate_warns() {
+        let tests = [
+            test_result("dns.google", true, 250.0),
+            test_result("one.one.one.one", true, 300.0),
+            test_result("example.com", true, 220.0),
+        ];
+        let v = dns_verdict(&tests);
+        assert_eq!(v.status, DiagnosticStatus::Warn);
+        assert!(v.summary.contains("moderate"));
+    }
+
+    #[test]
+    fn median_slow_warns() {
+        let tests = [
+            test_result("dns.google", true, 800.0),
+            test_result("one.one.one.one", true, 900.0),
+            test_result("example.com", true, 700.0),
+        ];
+        let v = dns_verdict(&tests);
+        assert_eq!(v.status, DiagnosticStatus::Warn);
+        assert!(v.summary.contains("slowly"));
+    }
+
+    #[test]
+    fn partial_resolution_warns() {
+        let tests = [
+            test_result("dns.google", true, 80.0),
+            test_result("one.one.one.one", false, 5000.0),
+            test_result("example.com", true, 90.0),
+        ];
+        let v = dns_verdict(&tests);
+        assert_eq!(v.status, DiagnosticStatus::Warn);
+        assert!(v.summary.contains("2/3"));
+    }
+
+    #[test]
+    fn all_failed_fails() {
+        let tests = [
+            test_result("dns.google", false, 5000.0),
+            test_result("one.one.one.one", false, 5000.0),
+            test_result("example.com", false, 5000.0),
+        ];
+        let v = dns_verdict(&tests);
+        assert_eq!(v.status, DiagnosticStatus::Fail);
     }
 }

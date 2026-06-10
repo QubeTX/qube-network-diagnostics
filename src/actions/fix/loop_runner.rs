@@ -46,7 +46,7 @@ pub async fn run(
     }
 
     // Iteration 1: baseline diagnostics.
-    let baseline = diagnostics::run_all(config).await;
+    let baseline = diagnostics::run_all(config, diagnostics::run_all_cap(config)).await;
     session.record_baseline(baseline.clone());
 
     let mut current = baseline;
@@ -199,7 +199,7 @@ pub async fn run(
 
         // Re-probe.
         let prior_failures = actionable_failures(&current);
-        current = diagnostics::run_all(config).await;
+        current = diagnostics::run_all(config, diagnostics::run_all_cap(config)).await;
         let now_failures = actionable_failures(&current);
         session.record_iteration(iteration, current.clone());
         session.update_effectiveness(iteration, &prior_failures, &now_failures);

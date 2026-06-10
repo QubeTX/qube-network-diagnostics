@@ -94,27 +94,12 @@ async fn main() {
 
     // Safety net: diagnostics shell out and resolve hostnames, which on a
     // badly-broken network could still take longer than is useful even though
-    // each individual call is now bounded. Race the whole run against an
-    // overall wall-clock cap and a Ctrl-C handler so the tool always returns
-    // promptly with a clear message instead of appearing to hang. On a healthy
-    // network the diagnostics finish first and this is invisible.
-    //
-    // The cap must scale with `--speed-duration`: the diagnostic speed test runs
-    // the CF + NDT7 providers sequentially, each doing a download AND an upload
-    // for `speed_duration` seconds per direction, so the legitimate speed-test
-    // floor is ~`4 * speed_duration` (2 providers × 2 directions). A fixed 90s
-    // would falsely truncate a deliberately long speed test (e.g.
-    // `--speed-duration 60`) and misreport it as a "severely degraded network."
-    // 30s of headroom covers discovery/latency probes and the non-speed
-    // diagnostics; a 90s floor keeps the default/`--fast` behavior unchanged.
-    const RUN_ALL_CAP_FLOOR: std::time::Duration = std::time::Duration::from_secs(90);
-    const RUN_ALL_CAP_HEADROOM: u64 = 30;
-    let run_all_cap = if config.skip_speed {
-        RUN_ALL_CAP_FLOOR
-    } else {
-        std::time::Duration::from_secs(4 * config.speed_duration + RUN_ALL_CAP_HEADROOM)
-            .max(RUN_ALL_CAP_FLOOR)
-    };
+    // each individual call is bounded. `run_all` enforces a wall-clock cap
+    // internally (see `diagnostics::run_all_cap`) and — when the cap fires —
+    // returns *partial* results: completed checks are real, unfinished ones
+    // carry fabricated `timed_out` Fail rows. The Ctrl-C race keeps manual
+    // interruption prompt. On a healthy network none of this is visible.
+    let run_all_cap = diagnostics::run_all_cap(&config);
     let is_json = matches!(config.format, OutputFormat::Json);
 
     let results = tokio::select! {
@@ -129,25 +114,16 @@ async fn main() {
             std::process::exit(130);
         }
 
-        outcome = tokio::time::timeout(run_all_cap, diagnostics::run_all(&config)) => {
-            match outcome {
-                Ok(results) => results,
-                Err(_) => {
-                    if is_json {
-                        println!("{{\"error\":\"timeout\",\"timed_out\":true}}");
-                    } else {
-                        eprintln!(
-                            "Diagnostics timed out after {}s — your network appears to be \
-                             severely degraded or unreachable. Check your connection and \
-                             try again.",
-                            run_all_cap.as_secs()
-                        );
-                    }
-                    std::process::exit(2);
-                }
-            }
-        }
+        results = diagnostics::run_all(&config, run_all_cap) => results,
     };
+
+    if results.timed_out && !is_json {
+        eprintln!(
+            "Note: diagnostics hit the {}s wall-clock cap — results below are \
+             partial; checks that didn't finish are marked as timed out.",
+            run_all_cap.as_secs()
+        );
+    }
 
     let output = match config.format {
         OutputFormat::Table => {
@@ -194,5 +170,72 @@ fn enable_utf8_console() {
         unsafe {
             winapi::um::wincon::SetConsoleOutputCP(65001);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nd_300::diagnostics::DiagnosticResult;
+
+    fn all_ok_results() -> DiagnosticResults {
+        DiagnosticResults {
+            timestamp: "test".to_string(),
+            adapters: DiagnosticResult::ok("Adapters", "1 active"),
+            interfaces: DiagnosticResult::ok("Network", "1 up"),
+            gateway: DiagnosticResult::ok("Gateway", "reachable"),
+            dns: DiagnosticResult::ok("DNS", "resolving"),
+            public_ip: DiagnosticResult::ok("Internet", "203.0.113.1"),
+            latency: DiagnosticResult::ok("Latency", "low"),
+            speed: DiagnosticResult::ok("Speed", "fast"),
+            ports: DiagnosticResult::ok("Ports", "open"),
+            interface_details: None,
+            adapter_details: None,
+            gateway_details: None,
+            dns_details: None,
+            public_ip_details: None,
+            latency_details: None,
+            speed_details: None,
+            port_details: None,
+            technician: None,
+            timed_out: false,
+        }
+    }
+
+    #[test]
+    fn all_ok_exits_0() {
+        assert_eq!(determine_exit_code(&all_ok_results()), 0);
+    }
+
+    #[test]
+    fn warn_exits_1() {
+        let mut r = all_ok_results();
+        r.latency = DiagnosticResult::warn("Latency", "moderate");
+        assert_eq!(determine_exit_code(&r), 1);
+    }
+
+    #[test]
+    fn any_fail_exits_2() {
+        let mut r = all_ok_results();
+        r.latency = DiagnosticResult::warn("Latency", "moderate");
+        r.gateway = DiagnosticResult::fail("Gateway", "unreachable");
+        assert_eq!(determine_exit_code(&r), 2);
+    }
+
+    #[test]
+    fn skip_is_ignored() {
+        let mut r = all_ok_results();
+        r.speed = DiagnosticResult::skip("Speed", "skipped");
+        assert_eq!(determine_exit_code(&r), 0);
+    }
+
+    /// Fabricated timeout rows are Fail — the exit code must stay 2 so
+    /// scripts still see a degraded run, even though triage ignores them.
+    #[test]
+    fn timed_out_rows_still_exit_2() {
+        let mut r = all_ok_results();
+        r.ports = DiagnosticResult::timed_out_fail("Ports");
+        r.timed_out = true;
+        assert_eq!(determine_exit_code(&r), 2);
     }
 }

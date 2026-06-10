@@ -152,6 +152,12 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
         if let Some(lat) = gw.latency_ms {
             b = b.row("Latency", &format!("{:.1}ms", lat));
         }
+        if gw.packets_sent > 0 {
+            b = b.row(
+                "Probes",
+                &format!("{}/{} replies", gw.packets_received, gw.packets_sent),
+            );
+        }
         output.push_str(&b.finish());
         output.push('\n');
     }
@@ -165,13 +171,26 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
             b = b.row("Server", &server.address);
         }
 
-        if let Some(ref test) = dns.resolution_test {
-            b = b.divider();
-            b = b.row("Test Domain", &test.domain);
-            b = b.row("Resolved", if test.resolved { "Yes" } else { "No" });
-            b = b.row("Time", &format!("{:.1}ms", test.resolution_time_ms));
-            for ip in &test.resolved_ips {
-                b = b.row("Resolved IP", ip);
+        if dns.resolution_tests.is_empty() {
+            // Pre-v3.4.0 shape: a single probe.
+            if let Some(ref test) = dns.resolution_test {
+                b = b.divider();
+                b = b.row("Test Domain", &test.domain);
+                b = b.row("Resolved", if test.resolved { "Yes" } else { "No" });
+                b = b.row("Time", &format!("{:.1}ms", test.resolution_time_ms));
+                for ip in &test.resolved_ips {
+                    b = b.row("Resolved IP", ip);
+                }
+            }
+        } else {
+            for test in &dns.resolution_tests {
+                b = b.divider();
+                b = b.row("Test Domain", &test.domain);
+                b = b.row("Resolved", if test.resolved { "Yes" } else { "No" });
+                b = b.row("Time", &format!("{:.1}ms", test.resolution_time_ms));
+                for ip in &test.resolved_ips {
+                    b = b.row("Resolved IP", ip);
+                }
             }
         }
         output.push_str(&b.finish());
@@ -297,7 +316,11 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
             .divider();
 
         for port in ports {
-            let status = if port.open { "Open" } else { "Blocked" };
+            let status = match port.outcome {
+                crate::diagnostics::ports::PortOutcome::Open => "Open",
+                crate::diagnostics::ports::PortOutcome::Blocked => "Blocked",
+                crate::diagnostics::ports::PortOutcome::Unresolved => "Untested (DNS)",
+            };
             let lat = port
                 .latency_ms
                 .map(|l| format!(" ({:.0}ms)", l))

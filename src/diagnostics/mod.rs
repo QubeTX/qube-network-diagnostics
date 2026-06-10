@@ -14,6 +14,7 @@ pub mod ipv6;
 pub mod latency;
 pub mod listening_ports;
 pub mod mtu;
+pub mod ping;
 pub mod ports;
 pub mod protocol_stats;
 pub mod proxy;
@@ -45,6 +46,12 @@ pub struct DiagnosticResult {
     pub status: DiagnosticStatus,
     pub summary: String,
     pub details: Option<String>,
+    /// True when this row was fabricated because the check did not finish
+    /// before the wall-clock cap — it is evidence of overall slowness, not of
+    /// this specific subsystem failing. The fix flow's triage skips these
+    /// rows; the exit code still treats them as Fail. (Additive, v3.4.0+.)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub timed_out: bool,
 }
 
 impl DiagnosticResult {
@@ -54,6 +61,7 @@ impl DiagnosticResult {
             status: DiagnosticStatus::Ok,
             summary: summary.into(),
             details: None,
+            timed_out: false,
         }
     }
 
@@ -63,6 +71,7 @@ impl DiagnosticResult {
             status: DiagnosticStatus::Warn,
             summary: summary.into(),
             details: None,
+            timed_out: false,
         }
     }
 
@@ -72,6 +81,7 @@ impl DiagnosticResult {
             status: DiagnosticStatus::Fail,
             summary: summary.into(),
             details: None,
+            timed_out: false,
         }
     }
 
@@ -81,6 +91,20 @@ impl DiagnosticResult {
             status: DiagnosticStatus::Skip,
             summary: summary.into(),
             details: None,
+            timed_out: false,
+        }
+    }
+
+    /// A fabricated Fail row for a check that did not finish before the
+    /// wall-clock cap. Marked `timed_out` so consumers (the fix flow's
+    /// triage, JSON scripters) can tell it apart from a real finding.
+    pub fn timed_out_fail(category: impl Into<String>) -> Self {
+        Self {
+            category: category.into(),
+            status: DiagnosticStatus::Fail,
+            summary: "Timed out — network severely degraded".to_string(),
+            details: None,
+            timed_out: true,
         }
     }
 
@@ -123,6 +147,12 @@ pub struct DiagnosticResults {
     // Technician-mode deep diagnostics
     #[serde(skip_serializing_if = "Option::is_none")]
     pub technician: Option<TechnicianResults>,
+
+    /// True when the wall-clock cap fired mid-run: the rows above are partial
+    /// (completed checks are real; unfinished ones carry fabricated
+    /// `timed_out` Fail rows). (Additive, v3.4.0+.)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -165,10 +195,64 @@ pub struct TechnicianResults {
     pub traffic_counters: Option<Vec<traffic_counters::TrafficCounter>>,
 }
 
-pub async fn run_all(config: &Config) -> DiagnosticResults {
-    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+/// Wall-clock cap for a full `run_all` pass.
+///
+/// Diagnostics shell out and resolve hostnames, which on a badly-broken
+/// network could still take longer than is useful even though each individual
+/// call is bounded. The cap must scale with `--speed-duration`: the
+/// diagnostic speed test runs the CF + NDT7 providers sequentially, each
+/// doing a download AND an upload for `speed_duration` seconds per direction,
+/// so the legitimate speed-test floor is ~`4 * speed_duration` (2 providers ×
+/// 2 directions). A fixed 90s would falsely truncate a deliberately long
+/// speed test (e.g. `--speed-duration 60`). 30s of headroom covers
+/// discovery/latency probes and the non-speed diagnostics; a 90s floor keeps
+/// the default/`--fast` behavior unchanged.
+pub fn run_all_cap(config: &Config) -> std::time::Duration {
+    const RUN_ALL_CAP_FLOOR: std::time::Duration = std::time::Duration::from_secs(90);
+    const RUN_ALL_CAP_HEADROOM: u64 = 30;
 
-    // Run core diagnostics concurrently
+    if config.skip_speed {
+        RUN_ALL_CAP_FLOOR
+    } else {
+        std::time::Duration::from_secs(4 * config.speed_duration + RUN_ALL_CAP_HEADROOM)
+            .max(RUN_ALL_CAP_FLOOR)
+    }
+}
+
+pub async fn run_all(config: &Config, cap: std::time::Duration) -> DiagnosticResults {
+    let deadline = tokio::time::Instant::now() + cap;
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut timed_out = false;
+
+    // Spawn the core checks so that, if the deadline fires, the ones that
+    // already finished can still be harvested — the user gets partial results
+    // instead of nothing.
+    let mut adapters_h = tokio::spawn(adapters::check());
+    let mut interfaces_h = tokio::spawn(interfaces::check());
+    let mut gateway_h = tokio::spawn(gateway::check());
+    let mut dns_h = tokio::spawn(dns::check());
+    let mut public_ip_h = tokio::spawn(public_ip::check());
+    let mut latency_h = tokio::spawn(latency::check());
+    let mut ports_h = tokio::spawn(ports::check());
+
+    // Race the joined set against the deadline. `&mut JoinHandle` is a future
+    // (JoinHandle: Unpin), so on the deadline branch the handles are still
+    // owned and can be harvested individually below.
+    let completed = tokio::select! {
+        results = async {
+            tokio::join!(
+                &mut adapters_h,
+                &mut interfaces_h,
+                &mut gateway_h,
+                &mut dns_h,
+                &mut public_ip_h,
+                &mut latency_h,
+                &mut ports_h,
+            )
+        } => Some(results),
+        _ = tokio::time::sleep_until(deadline) => None,
+    };
+
     let (
         (adapters_result, adapter_details),
         (interfaces_result, interface_details),
@@ -177,31 +261,101 @@ pub async fn run_all(config: &Config) -> DiagnosticResults {
         (public_ip_result, public_ip_details),
         (latency_result, latency_details),
         (ports_result, port_details),
-    ) = tokio::join!(
-        adapters::check(),
-        interfaces::check(),
-        gateway::check(),
-        dns::check(),
-        public_ip::check(),
-        latency::check(),
-        ports::check(),
-    );
+    ) = match completed {
+        Some((a, i, g, d, p, l, po)) => (
+            // A JoinError here means the check panicked; surface it as a
+            // timed-out-style fabricated row rather than crashing the run.
+            a.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Adapters"), Vec::new())),
+            i.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Network"), Vec::new())),
+            g.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Gateway"), None)),
+            d.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("DNS"), None)),
+            p.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Internet"), None)),
+            l.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Latency"), Vec::new())),
+            po.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Ports"), Vec::new())),
+        ),
+        None => {
+            timed_out = true;
+            (
+                util::harvest_or(
+                    adapters_h,
+                    (DiagnosticResult::timed_out_fail("Adapters"), Vec::new()),
+                )
+                .await,
+                util::harvest_or(
+                    interfaces_h,
+                    (DiagnosticResult::timed_out_fail("Network"), Vec::new()),
+                )
+                .await,
+                util::harvest_or(
+                    gateway_h,
+                    (DiagnosticResult::timed_out_fail("Gateway"), None),
+                )
+                .await,
+                util::harvest_or(dns_h, (DiagnosticResult::timed_out_fail("DNS"), None)).await,
+                util::harvest_or(
+                    public_ip_h,
+                    (DiagnosticResult::timed_out_fail("Internet"), None),
+                )
+                .await,
+                util::harvest_or(
+                    latency_h,
+                    (DiagnosticResult::timed_out_fail("Latency"), Vec::new()),
+                )
+                .await,
+                util::harvest_or(
+                    ports_h,
+                    (DiagnosticResult::timed_out_fail("Ports"), Vec::new()),
+                )
+                .await,
+            )
+        }
+    };
 
-    // Run speed test sequentially (it needs to saturate bandwidth)
+    // Run speed test sequentially (it needs to saturate bandwidth), bounded
+    // by whatever budget remains.
+    let now = tokio::time::Instant::now();
     let (speed_result, speed_details) = if config.skip_speed {
         (
             DiagnosticResult::skip("Speed", "Speed test skipped (--fast)"),
             None,
         )
+    } else if timed_out || now >= deadline {
+        timed_out = true;
+        (
+            DiagnosticResult::skip("Speed", "Skipped — diagnostics timed out"),
+            None,
+        )
     } else {
-        speed::check(config).await
+        match tokio::time::timeout_at(deadline, speed::check(config)).await {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                timed_out = true;
+                (DiagnosticResult::timed_out_fail("Speed"), None)
+            }
+        }
     };
 
-    // Enrich adapter details with driver info in tech mode only (WMI query)
+    // Enrich adapter details with driver info in tech mode only (WMI query),
+    // and run the deep diagnostics with the remaining budget.
     let mut adapter_details = adapter_details;
     let technician = if config.is_tech_mode() {
-        adapters::enrich_driver_info(&mut adapter_details).await;
-        Some(run_technician_diagnostics(config).await)
+        if tokio::time::Instant::now() >= deadline {
+            timed_out = true;
+            None
+        } else {
+            let tech = tokio::time::timeout_at(deadline, async {
+                adapters::enrich_driver_info(&mut adapter_details).await;
+                run_technician_diagnostics(config).await
+            })
+            .await;
+            match tech {
+                Ok(t) => Some(t),
+                Err(_) => {
+                    timed_out = true;
+                    None
+                }
+            }
+        }
     } else {
         None
     };
@@ -225,6 +379,7 @@ pub async fn run_all(config: &Config) -> DiagnosticResults {
         speed_details,
         port_details: Some(port_details),
         technician,
+        timed_out,
     }
 }
 

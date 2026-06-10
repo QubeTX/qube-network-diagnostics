@@ -33,6 +33,57 @@ pub const QUICK: Duration = Duration::from_secs(5);
 /// probe.
 pub const SLOW: Duration = Duration::from_secs(10);
 
+/// Budget for single long-running probe subprocesses that legitimately take
+/// tens of seconds end-to-end (`tracert`/`traceroute`/`tracepath`, sustained
+/// multi-count `ping` bursts). These are still individually bounded so a
+/// wedged probe can't hold the whole run hostage.
+pub const TRACE: Duration = Duration::from_secs(60);
+
+/// Per-command budget for an N-probe ping burst: 2s reply timeout per probe
+/// plus 4s of process/DNS overhead. The fixed [`SLOW`] cap silently truncates
+/// bursts of more than ~3 probes (e.g. a 6-probe burst can take ~12s on a
+/// degraded link), flipping a slow-but-working target to "unreachable" —
+/// size the budget to the burst instead.
+pub fn ping_budget(count: u32) -> Duration {
+    Duration::from_secs(2 * count as u64 + 4)
+}
+
+/// Retry an async probe until it returns `Some`, up to `attempts` total tries
+/// with a fixed `delay` between them.
+///
+/// For first-success probes (DNS lookups, TCP connects) where a transient
+/// blip shouldn't flip a verdict. Ping bursts intentionally do NOT use this —
+/// they measure loss across a fixed sample count instead.
+pub async fn retry_probe<T, F, Fut>(attempts: u32, delay: Duration, mut op: F) -> Option<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    for attempt in 0..attempts {
+        if let Some(v) = op().await {
+            return Some(v);
+        }
+        if attempt + 1 < attempts {
+            tokio::time::sleep(delay).await;
+        }
+    }
+    None
+}
+
+/// Abort `handle` and return its value if it finished before the abort,
+/// else `fallback`.
+///
+/// Used by the diagnostics deadline harvester: when the wall-clock cap fires,
+/// each still-running check is aborted and replaced with a fallback result so
+/// the user always gets a complete (if partially degraded) result set.
+pub async fn harvest_or<T>(handle: tokio::task::JoinHandle<T>, fallback: T) -> T {
+    handle.abort();
+    match handle.await {
+        Ok(v) => v,
+        Err(_) => fallback,
+    }
+}
+
 /// Run a subprocess with a timeout.
 ///
 /// Consumes `cmd`, races `cmd.output()` against `dur`, and returns:
@@ -144,4 +195,82 @@ mod tests {
     // a fast/cached resolve can return `Some` before the timer fires (observed
     // flaking under concurrent test load). It was removed to keep the release
     // `cargo test` gate stable.
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn retry_probe_first_success_calls_once() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        let out = retry_probe(3, Duration::from_millis(1), move || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Some(42)
+            }
+        })
+        .await;
+        assert_eq!(out, Some(42));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_probe_retries_then_succeeds() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        let out = retry_probe(3, Duration::from_millis(1), move || {
+            let c = c.clone();
+            async move {
+                let n = c.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    None
+                } else {
+                    Some("ok")
+                }
+            }
+        })
+        .await;
+        assert_eq!(out, Some("ok"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn retry_probe_exhausts_to_none() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        let out: Option<u8> = retry_probe(2, Duration::from_millis(1), move || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                None
+            }
+        })
+        .await;
+        assert_eq!(out, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn ping_budget_scales_with_count() {
+        assert_eq!(ping_budget(1), Duration::from_secs(6));
+        assert_eq!(ping_budget(6), Duration::from_secs(16));
+        assert_eq!(ping_budget(30), Duration::from_secs(64));
+    }
+
+    #[tokio::test]
+    async fn harvest_or_returns_finished_value() {
+        let handle = tokio::spawn(async { 42 });
+        // Give the task a chance to complete before harvesting.
+        tokio::task::yield_now().await;
+        let v = harvest_or(handle, 0).await;
+        assert_eq!(v, 42);
+    }
+
+    #[tokio::test]
+    async fn harvest_or_falls_back_for_pending() {
+        let handle = tokio::spawn(std::future::pending::<u32>());
+        let v = harvest_or(handle, 7).await;
+        assert_eq!(v, 7);
+    }
 }

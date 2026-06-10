@@ -68,6 +68,13 @@ pub fn actionable_failures(results: &DiagnosticResults) -> HashSet<DiagnosticKey
     for (res, key) in pairs.iter() {
         match res.status {
             DiagnosticStatus::Fail => {
+                if res.timed_out {
+                    // Fabricated row: the check never finished before the
+                    // wall-clock cap. It is evidence of overall slowness, not
+                    // of this subsystem failing — repairing based on it would
+                    // be acting on a guess.
+                    continue;
+                }
                 if matches!(key, DiagnosticKey::Latency) {
                     // Public ICMP/UDP latency probes are commonly filtered
                     // even when HTTP/DNS/gateway connectivity is healthy.
@@ -328,6 +335,7 @@ mod tests {
             speed_details: None,
             port_details: None,
             technician: None,
+            timed_out: false,
         }
     }
 
