@@ -326,10 +326,18 @@ pub async fn offer_reenable(disabled: &[DisabledVpn], config: &Config) {
             if is_interactive(config) {
                 print_step_ok(&format!("Re-enabled {}", vpn.name), config);
             }
-            // Verify connectivity after re-enable
+            // Verify connectivity after re-enable. Re-disabling the user's
+            // VPN is destructive, so require TWO consecutive failed samples
+            // (~3s apart) before concluding the VPN broke connectivity — a
+            // single blip must not kill a working VPN.
             let spinner = create_spinner("Verifying connectivity...");
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            let connected = super::connectivity::check_connectivity().await;
+            let mut connected = super::connectivity::check_connectivity().await;
+            if !connected {
+                spinner.set_message("Confirming connectivity loss...");
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                connected = super::connectivity::check_connectivity().await;
+            }
             spinner.finish_and_clear();
 
             if !connected {

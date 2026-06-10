@@ -124,6 +124,25 @@ fn render_markdown(
         md.push('\n');
     }
 
+    // Baseline confirmation (second pass before the first repair plan)
+    if let Some(confirmation) = &session.baseline_confirmation {
+        md.push_str("## Baseline confirmation (second pass)\n\n");
+        md.push_str(
+            "The failing baseline was double-checked with a second diagnostic pass; only \
+             failures present in both passes were acted on.\n\n",
+        );
+        md.push_str(&render_diagnostic_table(confirmation));
+        md.push('\n');
+        if !session.intermittent.is_empty() {
+            let mut keys: Vec<DiagnosticKey> = session.intermittent.iter().copied().collect();
+            keys.sort_by_key(|k| format!("{:?}", k));
+            md.push_str(&format!(
+                "_Transient (seen in only one pass, not acted on): {}._\n\n",
+                describe_keys(&keys)
+            ));
+        }
+    }
+
     // Iteration timeline
     md.push_str("## Iteration timeline\n\n");
     if session.action_log.is_empty() {

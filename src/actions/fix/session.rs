@@ -247,6 +247,10 @@ impl RestoreRegistry {
 pub struct ActionRecord {
     pub action_id: super::action::ActionId,
     pub label: &'static str,
+    /// The failure categories this action declares it can address — used by
+    /// effectiveness attribution so an action is only credited for clearing
+    /// failures it actually targets.
+    pub targets: &'static [DiagnosticKey],
     pub outcome: ActionOutcome,
     pub duration: Duration,
     pub iteration: u8,
@@ -267,6 +271,13 @@ pub struct IterationSnapshot {
 pub struct Session {
     pub started_at: Instant,
     pub baseline: Option<DiagnosticResults>,
+    /// The second baseline pass used to confirm the failure set before the
+    /// first repair plan. Kept separate from `snapshots` so the report's
+    /// "final snapshot" and the JSON `iterations` count keep their meaning.
+    pub baseline_confirmation: Option<DiagnosticResults>,
+    /// Failures seen in exactly one of the two baseline passes — transient
+    /// flickers. Their later "recoveries" earn no effectiveness credit.
+    pub intermittent: std::collections::HashSet<DiagnosticKey>,
     pub snapshots: Vec<IterationSnapshot>,
     pub action_log: Vec<ActionRecord>,
     pub attempts: Attempts,
@@ -280,6 +291,8 @@ impl Session {
         Self {
             started_at: Instant::now(),
             baseline: None,
+            baseline_confirmation: None,
+            intermittent: std::collections::HashSet::new(),
             snapshots: Vec::new(),
             action_log: Vec::new(),
             attempts: Attempts::new(),
@@ -310,6 +323,17 @@ impl Session {
             .push(IterationSnapshot { iteration, results });
     }
 
+    /// Record the second baseline pass and the failures that flickered
+    /// between the two passes.
+    pub fn record_confirmation(
+        &mut self,
+        results: DiagnosticResults,
+        intermittent: std::collections::HashSet<DiagnosticKey>,
+    ) {
+        self.baseline_confirmation = Some(results);
+        self.intermittent = intermittent;
+    }
+
     pub fn record_action(
         &mut self,
         iteration: u8,
@@ -326,6 +350,7 @@ impl Session {
         self.action_log.push(ActionRecord {
             action_id: action.id,
             label: action.label,
+            targets: action.targets,
             outcome,
             duration,
             iteration,
@@ -334,8 +359,11 @@ impl Session {
         });
     }
 
-    /// After an iteration: compare prior failures to current ones; for each
-    /// action applied this iteration, mark which targets newly cleared.
+    /// After an iteration: compare prior failures to current ones; credit each
+    /// newly-cleared failure to the **most recent successful action this
+    /// iteration whose declared targets contain it**. Failures flagged
+    /// intermittent at baseline earn no credit — natural recoveries must not
+    /// bias future planning toward unrelated actions.
     pub fn update_effectiveness(
         &mut self,
         iteration: u8,
@@ -346,21 +374,18 @@ impl Session {
             .difference(current_failures)
             .copied()
             .collect();
-        if cleared.is_empty() {
-            return;
-        }
-        // Attribute clears to the last action in this iteration that targeted them.
-        for record in self.action_log.iter().rev() {
-            if record.iteration != iteration {
-                break;
-            }
-            if !record.outcome.ok {
+        for key in cleared {
+            if self.intermittent.contains(&key) {
                 continue;
             }
-            // Find the registry action so we can read its targets.
-            // (The label match is sufficient — ActionIds are unique.)
-            for k in cleared.iter() {
-                self.effectiveness.insert((record.action_id, *k), true);
+            if let Some(record) = self
+                .action_log
+                .iter()
+                .rev()
+                .take_while(|r| r.iteration == iteration)
+                .find(|r| r.outcome.ok && r.targets.contains(&key))
+            {
+                self.effectiveness.insert((record.action_id, key), true);
             }
         }
     }
@@ -419,6 +444,46 @@ impl<'a> Reporter<'a> {
                 color::yellow("→", self.config),
                 failure_count,
                 if failure_count == 1 { "" } else { "s" },
+            );
+        }
+    }
+
+    /// Announce the second baseline pass that double-checks the failure set.
+    pub fn confirmation_pass(&self) {
+        println!(
+            "  {} {}",
+            color::dim("→", self.config),
+            color::dim(
+                "Double-checking the failures with a second diagnostic pass...",
+                self.config,
+            ),
+        );
+    }
+
+    /// Report how the confirmation pass shook out.
+    pub fn confirmation_result(&self, confirmed: usize, transient: usize) {
+        if confirmed == 0 && transient > 0 {
+            println!(
+                "  {} {}",
+                color::green("✓", self.config),
+                color::green(
+                    "The failures did not reproduce on the second pass — they were transient.",
+                    self.config,
+                ),
+            );
+        } else if transient > 0 {
+            println!(
+                "  {} {} confirmed, {} transient (will not be acted on)",
+                color::yellow("→", self.config),
+                confirmed,
+                transient,
+            );
+        } else {
+            println!(
+                "  {} {} failure{} confirmed on both passes",
+                color::yellow("→", self.config),
+                confirmed,
+                if confirmed == 1 { "" } else { "s" },
             );
         }
     }
@@ -876,5 +941,142 @@ mod restore_registry_tests {
     #[test]
     fn interrupted_exit_code_is_130() {
         assert_eq!(FinalOutcome::Interrupted(Vec::new()).exit_code(), 130);
+    }
+}
+
+#[cfg(test)]
+mod effectiveness_tests {
+    use super::*;
+    use crate::actions::fix::action::ActionId;
+    use std::collections::HashSet;
+
+    fn record(
+        action_id: ActionId,
+        targets: &'static [DiagnosticKey],
+        ok: bool,
+        iteration: u8,
+    ) -> ActionRecord {
+        ActionRecord {
+            action_id,
+            label: "test action",
+            targets,
+            outcome: if ok {
+                ActionOutcome::ok("ok")
+            } else {
+                ActionOutcome::fail("fail")
+            },
+            duration: Duration::from_millis(1),
+            iteration,
+            user_declined: false,
+            skipped_no_interaction: false,
+        }
+    }
+
+    fn keys(ks: &[DiagnosticKey]) -> HashSet<DiagnosticKey> {
+        ks.iter().copied().collect()
+    }
+
+    /// Pins the fix for the original bug: a successful action that does NOT
+    /// target the cleared key must earn no credit for it.
+    #[test]
+    fn credit_requires_matching_targets() {
+        let mut s = Session::new();
+        s.action_log.push(record(
+            ActionId::FlushArp,
+            &[DiagnosticKey::Gateway],
+            true,
+            1,
+        ));
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+
+        s.update_effectiveness(1, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert_eq!(
+            s.effectiveness
+                .get(&(ActionId::FlushDns, DiagnosticKey::Dns)),
+            Some(&true)
+        );
+        assert!(
+            !s.effectiveness
+                .contains_key(&(ActionId::FlushArp, DiagnosticKey::Dns)),
+            "non-targeting action must not be credited"
+        );
+    }
+
+    #[test]
+    fn most_recent_targeting_action_wins() {
+        let mut s = Session::new();
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+        s.action_log.push(record(
+            ActionId::SetDnsAutomatic,
+            &[DiagnosticKey::Dns],
+            true,
+            1,
+        ));
+
+        s.update_effectiveness(1, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert!(s
+            .effectiveness
+            .contains_key(&(ActionId::SetDnsAutomatic, DiagnosticKey::Dns)));
+        assert!(
+            !s.effectiveness
+                .contains_key(&(ActionId::FlushDns, DiagnosticKey::Dns)),
+            "only the most recent targeting action is credited"
+        );
+    }
+
+    #[test]
+    fn failed_action_earns_no_credit() {
+        let mut s = Session::new();
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], false, 1));
+
+        s.update_effectiveness(1, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert!(s.effectiveness.is_empty());
+    }
+
+    #[test]
+    fn prior_iteration_records_never_credited() {
+        let mut s = Session::new();
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+
+        s.update_effectiveness(2, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert!(s.effectiveness.is_empty());
+    }
+
+    #[test]
+    fn nothing_cleared_changes_nothing() {
+        let mut s = Session::new();
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+
+        s.update_effectiveness(
+            1,
+            &keys(&[DiagnosticKey::Dns]),
+            &keys(&[DiagnosticKey::Dns]),
+        );
+
+        assert!(s.effectiveness.is_empty());
+    }
+
+    /// A failure flagged intermittent at baseline must not generate credit
+    /// when it "clears" — that's the natural recovery the confirmation pass
+    /// observed, not the action working.
+    #[test]
+    fn intermittent_key_earns_no_credit() {
+        let mut s = Session::new();
+        s.intermittent.insert(DiagnosticKey::Dns);
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+
+        s.update_effectiveness(1, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert!(s.effectiveness.is_empty());
     }
 }

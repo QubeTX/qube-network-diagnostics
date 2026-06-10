@@ -20,8 +20,9 @@ use crate::diagnostics;
 use super::action::{self, DiagnosticKey};
 use super::session::{FinalOutcome, Reporter, RestoreRegistry, Session, DEFAULT_ITERATION_DELAY};
 use super::triage::{
-    actionable_failures, build_plan, hard_block_detected, requires_confirmation,
-    requires_high_risk_consent, HardBlock, MAX_ITERATIONS,
+    actionable_failures, build_plan, confirmed_failures, hard_block_detected,
+    intermittent_failures, requires_confirmation, requires_high_risk_consent, HardBlock,
+    MAX_ITERATIONS,
 };
 
 /// Outer timeout on the whole restore drain. The drain runs on every terminal
@@ -29,11 +30,44 @@ use super::triage::{
 /// bounded too, but this caps the aggregate so cleanup itself can never hang.
 const DRAIN_CAP: Duration = Duration::from_secs(90);
 
+/// Seam for injecting scripted diagnostics into the triage loop in tests.
+/// The real implementation wraps `diagnostics::run_all` with the loop's
+/// speed-skipping config.
+pub(crate) trait DiagProbe {
+    async fn probe(&mut self) -> diagnostics::DiagnosticResults;
+}
+
+struct RealProbe {
+    config: Config,
+}
+
+impl DiagProbe for RealProbe {
+    async fn probe(&mut self) -> diagnostics::DiagnosticResults {
+        diagnostics::run_all(&self.config, diagnostics::run_all_cap(&self.config)).await
+    }
+}
+
 /// Runs the full triage loop, populating the caller-owned `session` so the
 /// report stays rich even if the run is interrupted or panics. Returns the
 /// `FinalOutcome`. Destructive actions register inverse ops on `restore`; the
 /// caller drains it on every terminal path.
 pub async fn run(
+    config: &Config,
+    session: &mut Session,
+    restore: &RestoreRegistry,
+) -> FinalOutcome {
+    // Diagnostics inside the fix loop never run the speed test: no action
+    // targets Speed (pinned by `triage::tests::no_action_targets_speed`), and
+    // a ~40s+ sequential speed test per pass would spend the 240s wall-clock
+    // budget on re-probing instead of repairing.
+    let mut probe = RealProbe {
+        config: config.clone().with_skip_speed(),
+    };
+    run_with_probe(&mut probe, config, session, restore).await
+}
+
+async fn run_with_probe(
+    probe: &mut impl DiagProbe,
     config: &Config,
     session: &mut Session,
     restore: &RestoreRegistry,
@@ -46,14 +80,41 @@ pub async fn run(
     }
 
     // Iteration 1: baseline diagnostics.
-    let baseline = diagnostics::run_all(config, diagnostics::run_all_cap(config)).await;
+    let baseline = probe.probe().await;
     session.record_baseline(baseline.clone());
+
+    let first_failures = actionable_failures(&baseline);
+
+    if interactive {
+        reporter.baseline_summary(first_failures.len());
+    }
 
     let mut current = baseline;
 
-    if interactive {
-        let initial_failures = actionable_failures(&current);
-        reporter.baseline_summary(initial_failures.len());
+    // Evidence gate: a failing baseline is re-confirmed with a second pass
+    // before the first repair plan. Only failures present in BOTH passes are
+    // actionable in iteration 1 — a transient blip self-clears here instead
+    // of triggering a repair. Failures that flicker between the passes are
+    // recorded as intermittent so their later natural recoveries earn no
+    // effectiveness credit.
+    let mut confirmed_for_iter1: Option<std::collections::HashSet<DiagnosticKey>> = None;
+    if !first_failures.is_empty() {
+        if interactive {
+            reporter.confirmation_pass();
+        }
+        let second = probe.probe().await;
+        let second_failures = actionable_failures(&second);
+        let confirmed = confirmed_failures(&first_failures, &second_failures);
+        let intermittent = intermittent_failures(&first_failures, &second_failures);
+        if interactive {
+            reporter.confirmation_result(confirmed.len(), intermittent.len());
+        }
+        session.record_confirmation(second.clone(), intermittent);
+        // The freshest snapshot drives the loop (hard-block detection
+        // included), so a persistent hard-block shape still short-circuits
+        // and a transient one self-clears.
+        current = second;
+        confirmed_for_iter1 = Some(confirmed);
     }
 
     for iteration in 1..=MAX_ITERATIONS {
@@ -68,7 +129,12 @@ pub async fn run(
             return outcome;
         }
 
-        let failures = actionable_failures(&current);
+        // Iteration 1 plans against the confirmed evidence set; later
+        // iterations use their single re-probe as today (every failure they
+        // see has already been observed in at least two runs).
+        let failures = confirmed_for_iter1
+            .take()
+            .unwrap_or_else(|| actionable_failures(&current));
         if failures.is_empty() {
             let outcome = FinalOutcome::Fixed;
             session.final_outcome = Some(outcome.clone());
@@ -199,7 +265,7 @@ pub async fn run(
 
         // Re-probe.
         let prior_failures = actionable_failures(&current);
-        current = diagnostics::run_all(config, diagnostics::run_all_cap(config)).await;
+        current = probe.probe().await;
         let now_failures = actionable_failures(&current);
         session.record_iteration(iteration, current.clone());
         session.update_effectiveness(iteration, &prior_failures, &now_failures);
@@ -432,12 +498,20 @@ fn print_json_outcome(
         })
         .collect();
 
+    let mut intermittent: Vec<&str> = session
+        .intermittent
+        .iter()
+        .map(|k| diagnostic_key_str(*k))
+        .collect();
+    intermittent.sort_unstable();
+
     let value = json!({
         "action": "fix",
         "outcome": outcome_label,
         "exit_code": outcome.exit_code(),
         "iterations": session.snapshots.len().saturating_sub(1),
         "remaining_failures": remaining,
+        "intermittent_failures": intermittent,
         "applied_actions": actions_json,
         "elapsed_seconds": session.elapsed().as_secs(),
         "report_path": report_path.map(|p| p.display().to_string()),
@@ -478,5 +552,162 @@ fn hard_block_str(b: &HardBlock) -> &'static str {
         HardBlock::NoPhysicalLink => "no_physical_link",
         HardBlock::IspOutage => "isp_outage",
         HardBlock::EnterpriseVpnActive(_) => "enterprise_vpn_active",
+    }
+}
+
+#[cfg(test)]
+mod loop_tests {
+    use super::*;
+    use crate::diagnostics::{DiagnosticResult, DiagnosticResults};
+    use std::collections::VecDeque;
+
+    /// Scripted diagnostics: each probe pops the next pre-built result set.
+    /// Panics if the loop consumes more probes than the test scripted — that
+    /// panic IS an assertion on the loop's probe count.
+    struct ScriptedProbe {
+        script: VecDeque<DiagnosticResults>,
+    }
+
+    impl ScriptedProbe {
+        fn new(script: Vec<DiagnosticResults>) -> Self {
+            Self {
+                script: script.into(),
+            }
+        }
+    }
+
+    impl DiagProbe for ScriptedProbe {
+        async fn probe(&mut self) -> DiagnosticResults {
+            self.script
+                .pop_front()
+                .expect("ScriptedProbe ran dry — the loop probed more often than the test scripted")
+        }
+    }
+
+    fn all_ok() -> DiagnosticResults {
+        DiagnosticResults {
+            timestamp: "test".to_string(),
+            adapters: DiagnosticResult::ok("Adapters", "1 active"),
+            interfaces: DiagnosticResult::ok("Network", "1 up"),
+            gateway: DiagnosticResult::ok("Gateway", "reachable"),
+            dns: DiagnosticResult::ok("DNS", "resolving"),
+            public_ip: DiagnosticResult::ok("Internet", "203.0.113.1"),
+            latency: DiagnosticResult::ok("Latency", "low"),
+            speed: DiagnosticResult::skip("Speed", "skipped"),
+            ports: DiagnosticResult::ok("Ports", "open"),
+            interface_details: None,
+            adapter_details: None,
+            gateway_details: None,
+            dns_details: None,
+            public_ip_details: None,
+            latency_details: None,
+            speed_details: None,
+            port_details: None,
+            technician: None,
+            timed_out: false,
+        }
+    }
+
+    fn dns_failing() -> DiagnosticResults {
+        let mut r = all_ok();
+        r.dns = DiagnosticResult::fail("DNS", "DNS resolution failed");
+        r
+    }
+
+    /// Gateway fine, but public IP + ports dark — the ISP-outage shape that
+    /// `hard_block_detected` recognizes.
+    fn isp_outage() -> DiagnosticResults {
+        let mut r = all_ok();
+        r.public_ip = DiagnosticResult::fail("Internet", "Cannot determine public IP");
+        r.ports = DiagnosticResult::fail("Ports", "All tested ports blocked");
+        r
+    }
+
+    fn quiet_config() -> Config {
+        // JSON format keeps the loop non-interactive regardless of the test
+        // runner's TTY, so no prompts and no terminal output.
+        Config::new().with_json()
+    }
+
+    /// The core evidence-quality acceptance test: a failure on the first pass
+    /// that does not reproduce on the second is transient — no repair plan,
+    /// outcome Fixed, exactly two probes consumed.
+    #[tokio::test]
+    async fn transient_blip_is_fixed_without_actions() {
+        let mut probe = ScriptedProbe::new(vec![dns_failing(), all_ok()]);
+        let config = quiet_config();
+        let mut session = Session::new();
+        let restore = RestoreRegistry::new();
+
+        let outcome = run_with_probe(&mut probe, &config, &mut session, &restore).await;
+
+        assert!(matches!(outcome, FinalOutcome::Fixed), "got {:?}", outcome);
+        assert!(
+            session.action_log.is_empty(),
+            "no repair may run on unconfirmed evidence"
+        );
+        assert!(probe.script.is_empty(), "exactly two probes expected");
+        assert!(session.baseline_confirmation.is_some());
+        assert!(session.intermittent.contains(&DiagnosticKey::Dns));
+    }
+
+    /// A hard-block shape present on both passes short-circuits before any
+    /// action.
+    #[tokio::test]
+    async fn confirmed_hard_block_short_circuits() {
+        let mut probe = ScriptedProbe::new(vec![isp_outage(), isp_outage()]);
+        let config = quiet_config();
+        let mut session = Session::new();
+        let restore = RestoreRegistry::new();
+
+        let outcome = run_with_probe(&mut probe, &config, &mut session, &restore).await;
+
+        assert!(
+            matches!(outcome, FinalOutcome::HardBlock(HardBlock::IspOutage)),
+            "got {:?}",
+            outcome
+        );
+        assert!(session.action_log.is_empty());
+    }
+
+    /// A confirmed failure with every action's attempts pre-exhausted proves
+    /// the loop plans against the CONFIRMED set (not the raw second-pass set)
+    /// and reaches Exhausted without any apply IO.
+    #[tokio::test]
+    async fn confirmed_failure_with_no_actions_left_is_exhausted() {
+        let mut probe = ScriptedProbe::new(vec![dns_failing(), dns_failing()]);
+        let config = quiet_config();
+        let mut session = Session::new();
+        for action in action::all_actions() {
+            session.attempts.insert(action.id, u8::MAX);
+        }
+        let restore = RestoreRegistry::new();
+
+        let outcome = run_with_probe(&mut probe, &config, &mut session, &restore).await;
+
+        match outcome {
+            FinalOutcome::Exhausted(remaining) => {
+                assert_eq!(remaining, vec![DiagnosticKey::Dns]);
+            }
+            other => panic!("expected Exhausted, got {:?}", other),
+        }
+        assert!(session.action_log.is_empty());
+    }
+
+    /// A healthy baseline ends the run after a single probe — no confirmation
+    /// pass when there is nothing to confirm.
+    #[tokio::test]
+    async fn healthy_baseline_fixed_after_one_probe() {
+        let mut probe = ScriptedProbe::new(vec![all_ok()]);
+        let config = quiet_config();
+        let mut session = Session::new();
+        let restore = RestoreRegistry::new();
+
+        let outcome = run_with_probe(&mut probe, &config, &mut session, &restore).await;
+
+        assert!(matches!(outcome, FinalOutcome::Fixed));
+        assert!(probe.script.is_empty(), "exactly one probe expected");
+        assert!(session.baseline_confirmation.is_none());
+        assert!(session.action_log.is_empty());
     }
 }
