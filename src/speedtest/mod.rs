@@ -18,7 +18,7 @@ use serde::Serialize;
 use stat_primitives::Pcg32;
 use statistics::{merge_providers, BcaInterval, MergeProviderInput};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 /// SpeedQX methodology version stamped into every result payload
@@ -795,18 +795,70 @@ fn failed_provider(provider: &str, msg: &str) -> ProviderResult {
 
 /// Await a provider future, applying the FAST per-provider 25 s hard cap
 /// (METHODOLOGY.md §8). Outside FAST the future runs to completion.
+/// Liveness watchdog: a provider that reports NO progress for this long is
+/// wedged on something other than the network under test (a rate limiter, a
+/// silent WebSocket, a dead service, a hung discovery call) and is failed so
+/// the rest of the run continues untouched. Every honest code path — including
+/// a badly degraded link — emits progress at seconds scale (per latency probe,
+/// per completed/deadline-bounded transfer request, per WS measurement
+/// message), so 60 s of true silence is never a slow network.
+const PROVIDER_STALL_SECS: u64 = 60;
+
 async fn run_provider_future(
     fast: bool,
     provider_name: &str,
+    last_activity: Arc<StdMutex<Instant>>,
     fut: impl std::future::Future<Output = ProviderResult>,
 ) -> ProviderResult {
-    if fast {
-        match tokio::time::timeout(FAST_HARD_CAP, fut).await {
-            Ok(r) => r,
-            Err(_) => failed_provider(provider_name, "FAST 25s hard cap reached"),
+    let stall = Duration::from_secs(PROVIDER_STALL_SECS);
+    let watchdog = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let idle = last_activity
+                .lock()
+                .map(|t| t.elapsed())
+                .unwrap_or_default();
+            if idle >= stall {
+                break;
+            }
+        }
+    };
+    let bounded = async {
+        tokio::select! {
+            r = fut => Some(r),
+            _ = watchdog => None,
+        }
+    };
+    let outcome = if fast {
+        match tokio::time::timeout(FAST_HARD_CAP, bounded).await {
+            Ok(o) => o,
+            Err(_) => return failed_provider(provider_name, "FAST 25s hard cap reached"),
         }
     } else {
-        fut.await
+        bounded.await
+    };
+    outcome.unwrap_or_else(|| {
+        failed_provider(
+            provider_name,
+            &format!("stalled — no progress for {PROVIDER_STALL_SECS}s (non-network wedge)"),
+        )
+    })
+}
+
+/// Wrap a progress callback so every event stamps the provider's liveness
+/// clock for the stall watchdog in [`run_provider_future`].
+fn stamped_progress<F>(
+    progress: Arc<F>,
+    last_activity: Arc<StdMutex<Instant>>,
+) -> impl Fn(Phase, f64) + Send + Sync
+where
+    F: Fn(Phase, f64) + Send + Sync + 'static,
+{
+    move |phase, p| {
+        if let Ok(mut t) = last_activity.lock() {
+            *t = Instant::now();
+        }
+        progress(phase, p)
     }
 }
 
@@ -852,11 +904,13 @@ where
 
     // Cloudflare (always).
     {
-        let pg = progress.clone();
+        let last = Arc::new(StdMutex::new(Instant::now()));
+        let cb = stamped_progress(progress.clone(), last.clone());
         let r = run_provider_future(
             fast,
             "Cloudflare",
-            cloudflare::run(&provider_config, move |phase, p| pg(phase, p)),
+            last,
+            cloudflare::run(&provider_config, cb),
         )
         .await;
         record(&mut providers, r);
@@ -864,13 +918,10 @@ where
 
     // M-Lab NDT7 (always).
     {
-        let pg = progress.clone();
-        let r = run_provider_future(
-            fast,
-            "M-Lab NDT7",
-            ndt7::run(&provider_config, move |phase, p| pg(phase, p)),
-        )
-        .await;
+        let last = Arc::new(StdMutex::new(Instant::now()));
+        let cb = stamped_progress(progress.clone(), last.clone());
+        let r =
+            run_provider_future(fast, "M-Lab NDT7", last, ndt7::run(&provider_config, cb)).await;
         record(&mut providers, r);
     }
 
@@ -881,13 +932,10 @@ where
         ProviderSet::Diagnostic => false,
     };
     if run_msak {
-        let pg = progress.clone();
-        let r = run_provider_future(
-            fast,
-            "M-Lab MSAK",
-            msak::run(&provider_config, move |phase, p| pg(phase, p)),
-        )
-        .await;
+        let last = Arc::new(StdMutex::new(Instant::now()));
+        let cb = stamped_progress(progress.clone(), last.clone());
+        let r =
+            run_provider_future(fast, "M-Lab MSAK", last, msak::run(&provider_config, cb)).await;
         record(&mut providers, r);
     }
 
@@ -895,28 +943,49 @@ where
     // Vultr, Apple networkQuality.
     if config.provider_set == ProviderSet::All {
         {
-            let pg = progress.clone();
-            let r = librespeed::run(&provider_config, move |phase, p| pg(phase, p)).await;
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r = run_provider_future(
+                fast,
+                "LibreSpeed",
+                last,
+                librespeed::run(&provider_config, cb),
+            )
+            .await;
             record(&mut providers, r);
         }
         {
-            let pg = progress.clone();
-            let r = fastcom::run(&provider_config, move |phase, p| pg(phase, p)).await;
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r = run_provider_future(fast, "fast.com", last, fastcom::run(&provider_config, cb))
+                .await;
             record(&mut providers, r);
         }
         {
-            let pg = progress.clone();
-            let r = cachefly::run(&provider_config, move |phase, p| pg(phase, p)).await;
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r =
+                run_provider_future(fast, "CacheFly", last, cachefly::run(&provider_config, cb))
+                    .await;
             record(&mut providers, r);
         }
         {
-            let pg = progress.clone();
-            let r = vultr::run(&provider_config, move |phase, p| pg(phase, p)).await;
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r =
+                run_provider_future(fast, "Vultr", last, vultr::run(&provider_config, cb)).await;
             record(&mut providers, r);
         }
         if config.apple_enabled {
-            let pg = progress.clone();
-            let r = applenq::run(&provider_config, move |phase, p| pg(phase, p)).await;
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r = run_provider_future(
+                fast,
+                "Apple networkQuality",
+                last,
+                applenq::run(&provider_config, cb),
+            )
+            .await;
             record(&mut providers, r);
         }
     }
