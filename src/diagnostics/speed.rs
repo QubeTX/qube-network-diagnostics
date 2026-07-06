@@ -96,9 +96,14 @@ fn update_progress(pb: &ProgressBar, phase: Phase, progress: f64) {
         Phase::FcDiscovery => (97.0, 1.0, "FC discovery..."),
         Phase::FcDownload => (98.0, 1.0, "FC download..."),
         Phase::FcUpload => (99.0, 1.0, "FC upload..."),
-        // MSAK/Apple run only in speedqx's All provider set — never in
-        // nd300's Diagnostic mode — but the match stays exhaustive.
+        // MSAK/MSAK/CacheFly/Vultr/Apple run only in speedqx's FAST/FULL
+        // provider sets — never in nd300's Diagnostic mode — but the match
+        // stays exhaustive.
         Phase::MsakDiscovery | Phase::MsakDownload | Phase::MsakUpload => (99.0, 1.0, "MSAK..."),
+        Phase::CfyLatency | Phase::CfyDownload => (99.0, 1.0, "CacheFly..."),
+        Phase::VultrDiscovery | Phase::VultrLatency | Phase::VultrDownload => {
+            (99.0, 1.0, "Vultr...")
+        }
         Phase::AnqDiscovery | Phase::AnqDownload | Phase::AnqUpload => {
             (99.0, 1.0, "Apple networkQuality...")
         }
@@ -163,11 +168,18 @@ fn determine_speed_status(result: &SpeedTestResult) -> SpeedStatus {
 mod tests {
     use super::*;
     use crate::diagnostics::DiagnosticStatus;
-    use crate::speedtest::ProviderResult;
+    use crate::speedtest::{
+        statistics, AgreementInfo, MergedDirection, ProviderAvailability, ProviderResult,
+    };
 
     /// Build a ProviderResult with the given outcome. `error` Some marks a
     /// failed provider; `dl`/`ul` are Option throughput values.
     fn provider(error: Option<&str>, dl: Option<f64>, ul: Option<f64>) -> ProviderResult {
+        let availability = if error.is_some() {
+            ProviderAvailability::Failed
+        } else {
+            ProviderAvailability::Ran
+        };
         ProviderResult {
             provider: "Test".to_string(),
             server: "test-server".to_string(),
@@ -183,6 +195,18 @@ mod tests {
             packet_loss_pct: None,
             error: error.map(|e| e.to_string()),
             bandwidth_samples: None,
+            availability,
+            latency_stats: None,
+            loaded_latency: None,
+        }
+    }
+
+    fn direction(download: f64, upload: f64) -> MergedDirection {
+        MergedDirection {
+            download,
+            upload,
+            download_ci: None,
+            upload_ci: None,
         }
     }
 
@@ -192,11 +216,25 @@ mod tests {
         upload_mbps: f64,
     ) -> SpeedTestResult {
         SpeedTestResult {
+            methodology_version: "4.0",
+            platform: "cli",
+            provider_set: "diagnostic",
             ping_ms: None,
             jitter_ms: None,
+            jitter_rfc3550: None,
             download_mbps,
             upload_mbps,
             packet_loss_pct: None,
+            capacity: direction(download_mbps, upload_mbps),
+            consensus: direction(download_mbps, upload_mbps),
+            agreement: AgreementInfo {
+                i2: None,
+                band: statistics::AgreementBand::Insufficient,
+            },
+            upload_agreement: None,
+            rpm: None,
+            bufferbloat: None,
+            latency_stats: None,
             providers,
             duration_s: 0.0,
             stability: None,

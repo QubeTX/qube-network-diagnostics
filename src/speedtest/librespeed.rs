@@ -1,8 +1,21 @@
 use super::adaptive::adaptive_chunk_bytes;
-use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::{
+    statistics, BandwidthSamples, LatencyStats, Phase, ProviderAvailability, ProviderResult,
+    SpeedTestConfig, TestDuration,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
+
+/// Cache-busting variant of a URL (appends a unique nonce query param).
+fn cache_bust(url: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}nocache={nanos}")
+}
 
 const SERVER_LIST_URL: &str = "https://librespeed.org/backend-servers/servers.json";
 
@@ -177,46 +190,43 @@ where
         TestDuration::Auto => (15, 15),
     };
 
-    // ── Latency probes ───────────────────────────────────────────────
-    let probes = config.latency_probes.max(4);
-    let mut rtts: Vec<f64> = Vec::with_capacity(probes as usize);
+    // ── Dense idle-latency engine (METHODOLOGY.md §4) ────────────────
+    let n_probes = super::dense_probe_count(dl_secs as f64);
+    let base_ping_url = format!("{}/{}", selected.base_url, selected.ping_url);
+    let mut rtts: Vec<f64> = Vec::with_capacity(n_probes as usize);
     let mut failures: u32 = 0;
 
-    for i in 0..probes {
-        let ping_url = format!("{}/{}", selected.base_url, selected.ping_url);
+    for i in 0..n_probes {
         let start = Instant::now();
-        match client.head(&ping_url).send().await {
-            Ok(_) => {
-                rtts.push(start.elapsed().as_secs_f64() * 1000.0);
-            }
-            Err(_) => {
-                failures += 1;
-            }
+        match client
+            .head(cache_bust(&base_ping_url))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(_) => rtts.push(start.elapsed().as_secs_f64() * 1000.0),
+            Err(_) => failures += 1,
         }
-        let _ = i; // suppress unused warning
+        if i + 1 < n_probes {
+            tokio::time::sleep(super::DENSE_PROBE_INTERVAL).await;
+        }
     }
 
-    // Discard first 2 warmup probes
-    let warmup_skip = 2.min(rtts.len());
-    let trimmed: Vec<f64> = rtts[warmup_skip..].to_vec();
-
-    let ping_ms = if trimmed.is_empty() {
-        None
+    // Discard the first 3 warm-up probes; keep all if ≤ 3.
+    let measured: Vec<f64> = if rtts.len() > super::DENSE_PROBE_WARMUP {
+        rtts[super::DENSE_PROBE_WARMUP..].to_vec()
     } else {
-        trimmed
-            .iter()
-            .copied()
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        rtts.clone()
     };
+    let latency_stats = LatencyStats::from_rtts(&measured);
+    let ping_ms = measured
+        .iter()
+        .copied()
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let jitter_ms = latency_stats.as_ref().map(|ls| ls.pdv);
 
-    let jitter_ms = if trimmed.len() >= 2 {
-        Some(statistics::jitter_rfc3550(&trimmed))
-    } else {
-        None
-    };
-
-    let packet_loss_pct = if probes > 0 {
-        Some(failures as f64 / probes as f64 * 100.0)
+    let packet_loss_pct = if n_probes > 0 {
+        Some(failures as f64 / n_probes as f64 * 100.0)
     } else {
         None
     };
@@ -351,6 +361,11 @@ where
     } else {
         None
     };
+    let availability = if error.is_some() {
+        ProviderAvailability::Failed
+    } else {
+        ProviderAvailability::Ran
+    };
 
     Ok(ProviderResult {
         provider: "LibreSpeed".to_string(),
@@ -370,6 +385,9 @@ where
             download: dl_mbps_samples,
             upload: ul_mbps_samples,
         }),
+        availability,
+        latency_stats,
+        loaded_latency: None,
     })
 }
 
@@ -484,5 +502,8 @@ fn error_result(msg: String) -> ProviderResult {
         packet_loss_pct: None,
         error: Some(msg),
         bandwidth_samples: None,
+        availability: ProviderAvailability::Failed,
+        latency_stats: None,
+        loaded_latency: None,
     }
 }

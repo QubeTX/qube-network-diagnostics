@@ -1,16 +1,18 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH speedqx 1  "speedqx 3.4.0"
+.TH speedqx 1  "speedqx 3.5.0"
 .SH NAME
 speedqx \- SpeedQX Internet Speed Test \- QubeTX Developer Tools
 .SH SYNOPSIS
-\fBspeedqx\fR [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-duration\fR] [\fB\-\-fastcom\-duration\fR] [\fB\-\-latency\-probes\fR] [\fB\-\-skip\-msak\fR] [\fB\-\-skip\-apple\fR] [\fB\-\-update\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
+\fBspeedqx\fR [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-duration\fR] [\fB\-\-fastcom\-duration\fR] [\fB\-\-latency\-probes\fR] [\fB\-\-fast\fR] [\fB\-\-skip\-msak\fR] [\fB\-\-skip\-apple\fR] [\fB\-\-update\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 SpeedQX Internet Speed Test \- QubeTX Developer Tools
 .PP
-Six\-provider speed test using Cloudflare, M\-Lab NDT7, LibreSpeed, fast.com (Netflix),
-M\-Lab MSAK (multi\-stream), and Apple networkQuality.
-All providers run sequentially and results are aggregated for maximum accuracy.
+Eight\-provider speed test (SpeedQX Methodology v4) using Cloudflare, M\-Lab NDT7,
+M\-Lab MSAK (multi\-stream), LibreSpeed, fast.com (Netflix), CacheFly, Vultr, and
+Apple networkQuality. Providers run sequentially and are merged (capacity +
+consensus with confidence intervals) for maximum accuracy. \-\-fast runs a quick
+three\-provider subset with early stopping.
 .SH OPTIONS
 .TP
 \fB\-v\fR, \fB\-\-version\fR
@@ -37,7 +39,10 @@ Test duration per direction for CF/NDT7/LibreSpeed: seconds or "auto"
 Test duration per direction for fast.com: seconds or "auto" (default: auto)
 .TP
 \fB\-\-latency\-probes\fR \fI<LATENCY_PROBES>\fR [default: 20]
-Number of latency probes
+Number of latency probes (advisory; the dense engine is duration\-scaled)
+.TP
+\fB\-\-fast\fR
+FAST mode: Cloudflare + NDT7 + MSAK with early\-stop (default is the full 8\-provider run)
 .TP
 \fB\-\-skip\-msak\fR
 Skip the M\-Lab MSAK multi\-stream provider
@@ -57,16 +62,17 @@ speedqx\-help(1)
 Print this message or the help of the given subcommand(s)
 .SH EXTRA
 EXAMPLES:
-  speedqx                     Run full speed test (all 6 providers)
-  speedqx \-\-duration 60       60s per direction for CF/NDT7/LS/MSAK/Apple
+  speedqx                     Run the full 8\-provider test
+  speedqx \-\-fast              Quick run (Cloudflare + NDT7 + MSAK, early\-stop)
+  speedqx \-\-duration 60       60s per direction for the fixed\-duration providers
   speedqx \-\-fastcom\-duration 30  Override fast.com to 30s/dir
-  speedqx \-\-skip\-msak \-\-skip\-apple  Classic 4\-provider run
+  speedqx \-\-skip\-msak \-\-skip\-apple  Drop MSAK + Apple from the full run
   speedqx update              Check for updates and install
   speedqx \-\-update            Same as \*(Aqspeedqx update\*(Aq (legacy flag form)
   speedqx \-\-json              Output results as JSON
 
 Run \*(Aqspeedqx \-\-help\*(Aq for full details, or \*(Aqspeedqx \-h\*(Aq for a summary.
 .SH VERSION
-v3.4.0
+v3.5.0
 .SH AUTHORS
 Emmett S <hey@emmetts.dev>

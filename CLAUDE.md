@@ -21,7 +21,7 @@ cargo run --bin nd300 -- --fast       # Skip speed test
 cargo run --bin nd300 -- fix --fast   # Skip speed test inside the fix subcommand
 cargo run --bin nd300 -- update       # Self-update to latest release (also `--update`)
 cargo test --lib actions::fix::triage  # Triage planner unit tests
-cargo run --bin speedqx -- --duration 5 --fastcom-duration 5 --no-color   # ~1-min live smoke of all 6 providers
+cargo run --bin speedqx -- --duration 5 --fastcom-duration 5 --no-color   # quick live smoke of all 8 providers
 cargo run --bin nd300 -- -t --fast --no-color   # live smoke of all 25 deep modules without the saturating phases
 ```
 

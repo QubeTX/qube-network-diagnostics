@@ -49,7 +49,8 @@ visible, never silently missing. Failed providers appear with `availability: "fa
 
 **Test modes:**
 - **FAST** — Cloudflare + NDT7 + MSAK, with confidence-sequence early termination (§8).
-  Target ≈ 15–25 s. Default CLI flag: `speedqx --fast`.
+  Typically ≈ 1 minute end-to-end (each source early-stops when converged, hard-capped
+  at 25 s of sampling; the conservative EB sequence rarely stops sooner). CLI: `speedqx --fast`.
 - **FULL** — every provider available on the platform, fixed durations, no early stop.
   Default for `speedqx` (CLI).
 
@@ -124,7 +125,10 @@ w*_j = 1/(v_j + τ²)               consensus = Σ w*_j·y_j / Σ w*_j
 ```
 q  = Σ w*_j·(y_j − consensus)² / (k−1)      q' = max(1, q)
 SE = sqrt(q' / Σ w*_j)
-CI = estimate ± t(k−1, 0.975) · SE          # t-table (df: 1→12.706, 2→4.303, 3→3.182, 4→2.776, 5→2.571)
+CI = estimate ± t(k−1, 0.975) · SE
+# t-table (df: 1→12.706, 2→4.303, 3→3.182, 4→2.776, 5→2.571, 6→2.447, 7→2.365; clamp above 7)
+# HKSJ weights are the CAPPED random-effects weights (w* after the 0.70 cap, one renormalization).
+# The capacity CI uses the same HKSJ machinery restricted to the tier members.
 ```
 
 - **k = 2**: τ² is untrustworthy → report the honest union band
@@ -170,6 +174,10 @@ Naive "check the CI after every sample and stop when it's tight" is statisticall
 **anytime-valid confidence sequence** (empirical-Bernstein type) per provider:
 
 - Samples are rescaled to `[0, 1]` by a generous cap `U` (2× the fastest observed sample).
+- The running mean inside the variance accumulator is **strictly predictable** —
+  `muHat_i = (0.5 + Σ_{j<i} X_j) / i` uses only *prior* samples plus the 0.5 prior, never
+  the current sample. (The plug-in/inclusive form is anti-conservative and voids the
+  anytime-validity guarantee. Pinned 2026-07-06.)
 - The CS is valid at every sample size simultaneously; stopping when
   `CS half-width ≤ max(5% of estimate, 2 Mbps)` incurs **no** peeking penalty.
 - Hard cap: **25 s** per provider; a provider that hasn't converged reports what it has.
@@ -231,6 +239,10 @@ transcendental-heavy methods** — exact two-language reproducibility is a produ
 
 ## 12. Change log of this spec
 
+- **4.0.1** (2026-07-06): Clarifications from first implementation — t-table extended to
+  df ≤ 7 (clamp above); EB-CS running mean pinned to the strictly-predictable form; HKSJ
+  weight choice documented (capped RE weights; capacity CI = same machinery over the tier).
+  No change to `methodologyVersion` ("4.0") — results are unaffected in their meaning.
 - **4.0** (2026-07): First unified spec. Capacity/consensus hybrid merge with DL τ² + HKSJ
   CIs and I² agreement; plateau warm-up detection; block bootstrap + BCa; PDV jitter;
   delta-ms bufferbloat + RPM; min-RTT headline ping; FAST/FULL modes with anytime-valid

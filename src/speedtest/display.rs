@@ -110,12 +110,36 @@ pub fn render_results(result: &SpeedTestResult, use_ascii: bool, use_colors: boo
     render_multi_provider(result, chars, label_width, data_width, use_colors)
 }
 
+/// Human agreement label from the I²-derived band (METHODOLOGY.md §6).
+fn agreement_label(a: &super::AgreementInfo) -> String {
+    let band = match a.band {
+        super::statistics::AgreementBand::High => "High",
+        super::statistics::AgreementBand::Moderate => "Moderate",
+        super::statistics::AgreementBand::Low => "Low",
+        super::statistics::AgreementBand::VeryLow => "Very low",
+        super::statistics::AgreementBand::Insufficient => "Insufficient",
+    };
+    match a.i2 {
+        Some(i2) => format!("{} (I\u{b2} {:.0}%)", band, i2 * 100.0),
+        None => band.to_string(),
+    }
+}
+
+/// `±margin` string from a merged direction's CI (blank when absent/degenerate).
+fn ci_margin(ci: &Option<super::statistics::CiBounds>) -> String {
+    ci.as_ref()
+        .map(|c| (c.upper - c.lower) / 2.0)
+        .filter(|m| m.is_finite() && *m > 0.0)
+        .map(|m| format!(" \u{b1}{}", format_mbps(m)))
+        .unwrap_or_default()
+}
+
 fn render_multi_provider(
     result: &SpeedTestResult,
     chars: BoxChars,
     label_width: usize,
     data_width: usize,
-    _use_colors: bool,
+    use_colors: bool,
 ) -> String {
     let mut builder = ReportBuilder::new(label_width, data_width, chars);
 
@@ -126,72 +150,69 @@ fn render_multi_provider(
         width = label_width + data_width + 3
     ));
 
-    builder = builder.section_header("Averaged Results");
+    // ── L0: Headline (capacity ± CI, ping, PDV jitter) ──────────────
+    builder = builder.section_header("Capacity");
 
-    // Ping
-    if let Some(ping) = result.ping_ms {
-        builder = builder.row("Ping", &format!("{:.1} ms", ping));
-    }
-
-    // Jitter
-    if let Some(jitter) = result.jitter_ms {
-        builder = builder.row("Jitter", &format!("{:.1} ms", jitter));
-    }
-
-    // Download / Upload (±margin when a bootstrap CI was computed)
-    let dl_margin = result
-        .confidence_intervals
-        .as_ref()
-        .and_then(|ci| ci.download.as_ref())
-        .map(|ci| format!(" ±{}", format_mbps(ci.margin)))
-        .unwrap_or_default();
-    let ul_margin = result
-        .confidence_intervals
-        .as_ref()
-        .and_then(|ci| ci.upload.as_ref())
-        .map(|ci| format!(" ±{}", format_mbps(ci.margin)))
-        .unwrap_or_default();
     builder = builder.row(
         "Download",
-        &format!("{}{} (avg)", format_mbps(result.download_mbps), dl_margin),
+        &format!(
+            "{}{}",
+            format_mbps(result.download_mbps),
+            ci_margin(&result.capacity.download_ci)
+        ),
     );
     builder = builder.row(
         "Upload",
-        &format!("{}{} (avg)", format_mbps(result.upload_mbps), ul_margin),
+        &format!(
+            "{}{}",
+            format_mbps(result.upload_mbps),
+            ci_margin(&result.capacity.upload_ci)
+        ),
     );
 
-    // Packet loss
+    if let Some(ping) = result.ping_ms {
+        builder = builder.row("Ping (min-RTT)", &format!("{:.1} ms", ping));
+    }
+    if let Some(jitter) = result.jitter_ms {
+        builder = builder.row("Jitter (PDV)", &format!("{:.1} ms", jitter));
+    }
+    if let Some(bb) = &result.bufferbloat {
+        builder = builder.row(
+            "Bufferbloat",
+            &format!("{} ({:.0} ms)", bb.grade.as_str(), bb.delta_ms),
+        );
+    }
+    if let Some(rpm) = result.rpm {
+        builder = builder.row("Responsiveness", &format!("{:.0} RPM", rpm));
+    }
     if let Some(loss) = result.packet_loss_pct {
-        builder = builder.row("Packet Loss", &format!("{}%", loss));
+        builder = builder.row("Packet Loss", &format!("{:.0}%", loss));
     }
 
-    // Duration
-    builder = builder.row("Duration", &format!("{:.1}s", result.duration_s));
+    // ── L1: Quality (consensus, agreement, stability, exclusions) ───
+    builder = builder.section_header("Quality");
 
-    // Providers excluded from the headline merge for insufficient samples
-    if !result.merge_exclusions.is_empty() {
-        let list = result
-            .merge_exclusions
-            .iter()
-            .map(|e| {
-                format!(
-                    "{} {} ({} sample{})",
-                    e.provider,
-                    if e.direction == "download" {
-                        "DL"
-                    } else {
-                        "UL"
-                    },
-                    e.samples,
-                    if e.samples == 1 { "" } else { "s" },
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        builder = builder.row("Excluded", &list);
+    builder = builder.row(
+        "Consensus DL",
+        &format!(
+            "{}{}",
+            format_mbps(result.consensus.download),
+            ci_margin(&result.consensus.download_ci)
+        ),
+    );
+    builder = builder.row(
+        "Consensus UL",
+        &format!(
+            "{}{}",
+            format_mbps(result.consensus.upload),
+            ci_margin(&result.consensus.upload_ci)
+        ),
+    );
+    builder = builder.row("Agreement (DL)", &agreement_label(&result.agreement));
+    if let Some(ref ua) = result.upload_agreement {
+        builder = builder.row("Agreement (UL)", &agreement_label(ua));
     }
 
-    // Stability metrics
     if let Some(ref stability) = result.stability {
         let dl_label = if stability.download_stable {
             "Stable"
@@ -215,26 +236,46 @@ fn render_multi_provider(
         );
     }
 
-    // Provider divergence warning
-    if let Some(ref div) = result.provider_divergence {
-        if div.significant {
-            builder = builder.row(
-                "Divergence",
-                &format!(
-                    "DL {:.0}% / UL {:.0}% (significant)",
-                    div.download * 100.0,
-                    div.upload * 100.0,
-                ),
-            );
-        }
+    // Providers excluded from the merge for insufficient samples.
+    if !result.merge_exclusions.is_empty() {
+        let list = result
+            .merge_exclusions
+            .iter()
+            .map(|e| {
+                format!(
+                    "{} {} ({} sample{})",
+                    e.provider,
+                    if e.direction == "download" {
+                        "DL"
+                    } else {
+                        "UL"
+                    },
+                    e.samples,
+                    if e.samples == 1 { "" } else { "s" },
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        builder = builder.row("Excluded", &list);
     }
 
-    // Per-provider sections
+    builder = builder.row("Duration", &format!("{:.1}s", result.duration_s));
+
+    // ── L2: Per-provider breakdown (with availability) ──────────────
     for provider in &result.providers {
         builder = render_provider_section(builder, provider);
     }
 
     let mut output = builder.finish();
+
+    // Methodology footer.
+    let footer = format!("  SQX methodology {}", result.methodology_version);
+    if use_colors {
+        output.push_str(&format!("{}\n", owo_colors::OwoColorize::dimmed(&footer)));
+    } else {
+        output.push_str(&footer);
+        output.push('\n');
+    }
     output.push('\n');
     output
 }
@@ -306,6 +347,12 @@ fn render_provider_section(
     provider: &super::ProviderResult,
 ) -> ReportBuilder {
     let mut b = builder.section_header(&provider.provider);
+
+    // Platform-unavailable provider (schema parity; never on the CLI today).
+    if provider.availability == super::ProviderAvailability::UnavailablePlatform {
+        b = b.row("Status", "unavailable (platform)");
+        return b;
+    }
 
     // Error case
     if let Some(ref err) = provider.error {

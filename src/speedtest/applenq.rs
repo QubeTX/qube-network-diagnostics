@@ -22,7 +22,10 @@
 //! family from Cloudflare/M-Lab/Netflix/LibreSpeed, so it adds independent
 //! signal to the cross-provider merge.
 
-use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::{
+    statistics, BandwidthSamples, LatencyStats, Phase, ProviderAvailability, ProviderResult,
+    SpeedTestConfig, TestDuration,
+};
 use reqwest::Client;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -30,16 +33,22 @@ use std::time::{Duration, Instant};
 
 const CONFIG_URL: &str = "https://mensura.cdn-apple.com/api/v1/gm/config";
 
+/// Cache-busting variant of a URL (appends a unique nonce query param).
+fn cache_bust(url: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}nocache={nanos}")
+}
+
 /// Parallel connections per direction — the methodology saturates with a
 /// handful of connections; 4 matches the reference clients' starting load.
 const CONNECTIONS: usize = 4;
 
 /// Upload POST body size per request (2 MB, matching the Cloudflare loop).
 const UPLOAD_CHUNK_BYTES: usize = 2_000_000;
-
-/// Latency probes against the small object (first two discarded as warmup).
-const LATENCY_PROBES: usize = 10;
-const LATENCY_WARMUP_DISCARD: usize = 2;
 
 /// Aggregate sampling tick across the parallel connections.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
@@ -93,12 +102,17 @@ where
 
     progress(Phase::AnqDiscovery, 0.5);
 
-    // ── Latency: small-object probes (warmup discarded, min + jitter) ─
-    let mut rtts: Vec<f64> = Vec::with_capacity(LATENCY_PROBES);
-    for _ in 0..LATENCY_PROBES {
+    // ── Dense idle-latency engine (METHODOLOGY.md §4) ────────────────
+    let latency_secs = match &config.duration {
+        TestDuration::Seconds(s) => *s as f64,
+        TestDuration::Auto => AUTO_DOWNLOAD_SECS as f64,
+    };
+    let n_probes = super::dense_probe_count(latency_secs);
+    let mut rtts: Vec<f64> = Vec::with_capacity(n_probes as usize);
+    for i in 0..n_probes {
         let start = Instant::now();
         if let Ok(resp) = client
-            .get(&parsed.small_url)
+            .get(cache_bust(&parsed.small_url))
             .timeout(Duration::from_secs(5))
             .send()
             .await
@@ -107,18 +121,22 @@ where
             let _ = resp.bytes().await;
             rtts.push(start.elapsed().as_secs_f64() * 1000.0);
         }
+        if i + 1 < n_probes {
+            tokio::time::sleep(super::DENSE_PROBE_INTERVAL).await;
+        }
     }
-    let warmup_skip = LATENCY_WARMUP_DISCARD.min(rtts.len());
-    let trimmed = &rtts[warmup_skip..];
-    let ping_ms = trimmed
+    // Discard the first 3 warm-up probes; keep all if ≤ 3.
+    let measured: Vec<f64> = if rtts.len() > super::DENSE_PROBE_WARMUP {
+        rtts[super::DENSE_PROBE_WARMUP..].to_vec()
+    } else {
+        rtts.clone()
+    };
+    let latency_stats = LatencyStats::from_rtts(&measured);
+    let ping_ms = measured
         .iter()
         .copied()
         .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let jitter_ms = if trimmed.len() >= 2 {
-        Some(statistics::jitter_rfc3550(trimmed))
-    } else {
-        None
-    };
+    let jitter_ms = latency_stats.as_ref().map(|ls| ls.pdv);
 
     progress(Phase::AnqDiscovery, 1.0);
 
@@ -187,6 +205,9 @@ where
             download: dl_samples,
             upload: ul_samples,
         }),
+        availability: ProviderAvailability::Ran,
+        latency_stats,
+        loaded_latency: None,
     })
 }
 
@@ -356,6 +377,9 @@ fn error_result(msg: String) -> ProviderResult {
         packet_loss_pct: None,
         error: Some(msg),
         bandwidth_samples: None,
+        availability: ProviderAvailability::Failed,
+        latency_stats: None,
+        loaded_latency: None,
     }
 }
 

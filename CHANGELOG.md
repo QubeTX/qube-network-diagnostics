@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-07-06
+
+SpeedQX Methodology v4 — the unified cross-product measurement spec (see the new
+`METHODOLOGY.md`, `methodology_version: "4.0"`), shipping alongside the speedqx.com
+website (v3.0.x). Same algorithm, same constants, statistical parity asserted
+bit-exactly by shared golden vectors.
+
+### Added
+- **Two new download-only providers (6 → 8 in speedqx):** **CacheFly**
+  (`src/speedtest/cachefly.rs` — anycast CDN, 1/10/100 MB range-request ladder) and
+  **Vultr** (`src/speedtest/vultr.rs` — 8 global POPs, min-RTT POP selection with
+  per-probe timeouts so a dead POP can never stall the run).
+- **`--fast` mode:** Cloudflare + NDT7 + MSAK with per-provider anytime-valid
+  empirical-Bernstein confidence-sequence early stopping (strictly-predictable
+  running mean; stop at half-width ≤ max(5% of estimate, 2 Mbps); disabled on
+  high-RTT paths; a 25 s per-provider sampling cap that preserves completed work).
+- **v4 statistical core** (`src/speedtest/stat_primitives.rs` + `statistics.rs`):
+  pinned type-7 quantiles, PCG32 + Lemire deterministic PRNG, plateau warm-up
+  detector (replaces the fixed 30% slow-start discard), circular block bootstrap
+  (ℓ = max(2, round(∛n)), B = 2000) with BCa 95% intervals, Hodges–Lehmann
+  cross-check, DerSimonian–Laird τ² + I², Hartung–Knapp–Sidik–Jonkman CIs
+  (t-table pinned to df ≤ 7), and the **capacity + consensus hybrid merge**
+  (capability priors CF/Apple/fast.com 1.0 · LibreSpeed/CacheFly/Vultr 0.95 ·
+  MSAK 0.85 · NDT7 0.70; tier ≥ 0.85·max; 0.70 weight cap; MIN_MERGE_SAMPLES = 4
+  with recorded exclusions).
+- **Golden-vector parity suite** (`src/speedtest/golden_tests.rs` +
+  `golden-vectors.json`, committed identically to the website/app repos): every
+  fixture section asserted — arithmetic paths bit-exact (`f64::to_bits`),
+  transcendental paths at 1e-9 relative — in both debug and release builds.
+  Requires `serde_json`'s `float_roundtrip` feature (the default fast parser
+  rounds fixture literals 1 ULP low).
+- **New headline metrics** in results, `--json`, and the table renderer:
+  capacity ± CI (headline) and consensus ± CI, agreement `{i2, band}`, PDV jitter
+  (RFC 5481; RFC 3550 retained as a compat field), RPM responsiveness, and
+  per-provider `availability` (`ran`/`failed`/`unavailable-platform`), plus
+  `methodology_version` and `provider_set` stamps.
+
+### Changed
+- **Dense latency engine** on the HTTP providers (Cloudflare, LibreSpeed,
+  fast.com, Apple): duration-scaled `clamp(50, round(dur×3.3), 200)` probes with
+  a 3-probe warm-up discard at 50 ms pacing (up from ~10–20 probes discarding 2);
+  min-RTT headline preserved, full percentile ladder collected; kernel
+  `TCPInfo.MinRTT` cross-check from the M-Lab sockets unchanged.
+- **Cloudflare downloads are now adaptively sized** (1 MB → 25 MB targeting ~2 s
+  per request, mirroring the upload loop) instead of fixed 10 MB requests.
+- Headline download/upload in the results table is now **capacity** (± CI margin)
+  with consensus, agreement band, I², and RPM as quality rows; the per-provider
+  breakdown gains availability; footer stamps `SQX methodology 4.0`.
+- Warm-up probe discard on the new providers keeps all samples when a mostly
+  failed probe run yields fewer than the discard count (mirrors the TS reference;
+  the older providers' clamp-slice behavior is documented for later reconciliation).
+
+### Fixed
+- **`speed.cloudflare.com` per-IP rate limiting (HTTP 429) handled honestly:**
+  large-payload throttling previously made the Cloudflare download spin for its
+  whole phase collecting zero samples (and could silently understate merged
+  results). Both transfer loops now stop on the first 429, disclose it in the
+  provider's `error` (with the Retry-After horizon), keep the successfully
+  measured direction, and let the merge exclude the throttled one.
+- FAST mode's per-provider hard cap no longer discards a provider's completed
+  measurements when the cap fires mid-phase on high-RTT paths.
+
 ## [3.4.0] - 2026-06-10
 
 Comprehensive stability + accuracy hardening across all three subsystems

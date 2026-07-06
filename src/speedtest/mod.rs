@@ -1,16 +1,59 @@
 pub(crate) mod adaptive;
 pub mod applenq;
+pub mod cachefly;
 pub mod cloudflare;
 pub mod display;
 pub mod fastcom;
 pub mod librespeed;
 pub mod msak;
 pub mod ndt7;
+pub mod stat_primitives;
 pub mod statistics;
+pub mod vultr;
+
+#[cfg(test)]
+mod golden_tests;
 
 use serde::Serialize;
-use std::sync::Arc;
-use std::time::Instant;
+use stat_primitives::Pcg32;
+use statistics::{merge_providers, BcaInterval, MergeProviderInput};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
+
+/// SpeedQX methodology version stamped into every result payload
+/// (METHODOLOGY.md §1). Byte-identical to the website/app implementations.
+pub const METHODOLOGY_VERSION: &str = "4.0";
+
+/// Per-provider hard cap in FAST mode (METHODOLOGY.md §8): a provider that
+/// hasn't converged reports what it has; a stuck one is abandoned. This is the
+/// outer safety net (`run_provider_future`); providers whose runtime is
+/// RTT-scaled (Cloudflare's dense-latency engine) additionally self-bound a
+/// margin below this so they return real partial data instead of being killed
+/// and discarded here.
+pub(crate) const FAST_HARD_CAP: Duration = Duration::from_secs(25);
+
+/// Short per-direction budget for FAST-mode providers. Cloudflare's RTT-scaled
+/// dense-latency engine can still push a single provider toward [`FAST_HARD_CAP`]
+/// on high-RTT links, so `cloudflare::run` additionally caps its whole FAST run
+/// against an internal soft deadline (a margin below `FAST_HARD_CAP`) and
+/// returns the data it has gathered, rather than being killed by the outer
+/// timeout and discarded (§8 "reports what it has"). The empirical-Bernstein
+/// confidence sequence (§8) trims the transfer phases further per provider.
+const FAST_PER_DIR_SECS: u64 = 8;
+
+/// Dense idle-latency probe count (METHODOLOGY.md §4):
+/// `clamp(50, round(durationSeconds × 3.3), 200)` — auto (≈15 s) → 50, 30 s → 99.
+pub fn dense_probe_count(duration_secs: f64) -> u32 {
+    (duration_secs * 3.3).round().clamp(50.0, 200.0) as u32
+}
+
+/// Inter-probe interval for the dense latency engine (METHODOLOGY.md §4).
+pub const DENSE_PROBE_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Warm-up probes discarded by the dense latency engine (DNS + TCP + TLS
+/// amortization), METHODOLOGY.md §4.
+pub const DENSE_PROBE_WARMUP: usize = 3;
 
 /// Test duration configuration
 #[derive(Debug, Clone)]
@@ -21,13 +64,16 @@ pub enum TestDuration {
     Auto,
 }
 
-/// Which providers to run
+/// Which providers to run (METHODOLOGY.md §3).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProviderSet {
-    /// All 6 providers: Cloudflare, NDT7, LibreSpeed, fast.com, M-Lab MSAK,
-    /// Apple networkQuality (speedqx default)
+    /// FULL: every provider — Cloudflare, NDT7, MSAK, LibreSpeed, fast.com,
+    /// CacheFly, Vultr, Apple networkQuality (speedqx default).
     All,
-    /// Diagnostic subset: Cloudflare + NDT7 only (nd300 default)
+    /// FAST: Cloudflare + NDT7 + MSAK, with per-provider empirical-Bernstein
+    /// confidence-sequence early stop (RTT-gated) and a 25 s per-provider cap.
+    Fast,
+    /// Diagnostic subset: Cloudflare + NDT7 only (nd300 default).
     Diagnostic,
 }
 
@@ -82,6 +128,11 @@ pub enum Phase {
     MsakDiscovery,
     MsakDownload,
     MsakUpload,
+    CfyLatency,
+    CfyDownload,
+    VultrDiscovery,
+    VultrLatency,
+    VultrDownload,
     AnqDiscovery,
     AnqDownload,
     AnqUpload,
@@ -93,6 +144,99 @@ pub enum Phase {
 pub struct BandwidthSamples {
     pub download: Vec<f64>,
     pub upload: Vec<f64>,
+}
+
+/// Provider availability in the v4 payload (METHODOLOGY.md §3). On the CLI a
+/// provider either `ran` or `failed`; `unavailable-platform` exists for schema
+/// parity with the browser/app producers (nothing is platform-blocked here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderAvailability {
+    Ran,
+    Failed,
+    UnavailablePlatform,
+}
+
+/// Dense idle-latency percentile block (METHODOLOGY.md §4/§9). The raw sample
+/// array is kept internally (for bufferbloat's idle P50) but not serialized —
+/// it is L3 drill-down data, absent from the headline schema.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LatencyStats {
+    #[serde(skip)]
+    pub samples: Vec<f64>,
+    pub p50: f64,
+    pub p75: f64,
+    pub p95: f64,
+    pub p99: f64,
+    pub min: f64,
+    pub max: f64,
+    pub mean: f64,
+    pub stddev: f64,
+    /// Canonical jitter: `P95 − P50`.
+    pub pdv: f64,
+    pub jitter_mad: f64,
+    /// Compatibility field only (RFC 3550 EWMA).
+    pub jitter_rfc3550: f64,
+}
+
+impl LatencyStats {
+    /// Build the percentile block from an RTT series (ms). `None` when empty.
+    pub fn from_rtts(rtts: &[f64]) -> Option<Self> {
+        if rtts.is_empty() {
+            return None;
+        }
+        let mut sorted = rtts.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Some(Self {
+            samples: rtts.to_vec(),
+            p50: statistics::percentile(&sorted, 0.50),
+            p75: statistics::percentile(&sorted, 0.75),
+            p95: statistics::percentile(&sorted, 0.95),
+            p99: statistics::percentile(&sorted, 0.99),
+            min: sorted[0],
+            max: sorted[sorted.len() - 1],
+            mean: statistics::mean(rtts),
+            stddev: statistics::stddev(rtts),
+            pdv: statistics::pdv(rtts),
+            jitter_mad: statistics::jitter_mad(rtts),
+            jitter_rfc3550: statistics::jitter_rfc3550(rtts),
+        })
+    }
+}
+
+/// Loaded-latency RTT samples captured during Cloudflare saturation (§7).
+/// Feeds the delta-ms bufferbloat grade and the RPM estimate.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LoadedLatency {
+    pub download: Vec<f64>,
+    pub upload: Vec<f64>,
+}
+
+/// A merged directional estimate with its confidence interval (METHODOLOGY.md §6/§9).
+#[derive(Debug, Clone, Serialize)]
+pub struct MergedDirection {
+    pub download: f64,
+    pub upload: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_ci: Option<statistics::CiBounds>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_ci: Option<statistics::CiBounds>,
+}
+
+/// Provider agreement summary (`I²` + band) — replaces the v3 ">30% spread" flag.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgreementInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub i2: Option<f64>,
+    pub band: statistics::AgreementBand,
+}
+
+/// Delta-ms bufferbloat summary (METHODOLOGY.md §7).
+#[derive(Debug, Clone, Serialize)]
+pub struct BufferbloatSummary {
+    pub grade: statistics::BufferbloatGrade,
+    pub delta_ms: f64,
+    pub ratio: f64,
 }
 
 /// Connection stability metrics (coefficient of variation).
@@ -160,19 +304,65 @@ pub struct ProviderResult {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bandwidth_samples: Option<BandwidthSamples>,
+    /// Availability for the v4 payload (`ran`/`failed`/`unavailable-platform`).
+    pub availability: ProviderAvailability,
+    /// Dense idle-latency percentile block (HTTP providers only; §4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_stats: Option<LatencyStats>,
+    /// Loaded-latency probes captured during saturation (Cloudflare only; §7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loaded_latency: Option<LoadedLatency>,
 }
 
-/// Aggregated speed test result (used by both speedqx and nd300)
+/// Aggregated speed test result (used by both speedqx and nd300).
+///
+/// Carries the SpeedQX Methodology v4 payload (capacity/consensus + CIs, I²
+/// agreement, RPM, delta-ms bufferbloat, PDV jitter, per-provider availability)
+/// alongside the legacy v3 headline fields kept for one release.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpeedTestResult {
+    /// Methodology version ("4.0").
+    pub methodology_version: &'static str,
+    /// Producer platform identifier ("cli").
+    pub platform: &'static str,
+    /// Test mode: "full" / "fast" / "diagnostic".
+    pub provider_set: &'static str,
+
+    /// Headline min-RTT ping across engine + kernel MinRTT (METHODOLOGY.md §4).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ping_ms: Option<f64>,
+    /// Canonical jitter — PDV (`P95 − P50`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jitter_ms: Option<f64>,
+    /// Compatibility jitter (RFC 3550 EWMA).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jitter_rfc3550: Option<f64>,
+    /// Headline download = capacity (legacy field name kept for one release).
     pub download_mbps: f64,
+    /// Headline upload = capacity (legacy field name kept for one release).
     pub upload_mbps: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub packet_loss_pct: Option<f64>,
+
+    /// CAPACITY: capability-weighted top-tier robust mean ± CI (headline).
+    pub capacity: MergedDirection,
+    /// CONSENSUS: conservative all-providers random-effects mean ± CI.
+    pub consensus: MergedDirection,
+    /// Download-direction agreement (I² + band).
+    pub agreement: AgreementInfo,
+    /// Upload-direction agreement (I² + band).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_agreement: Option<AgreementInfo>,
+    /// Responsiveness (round-trips per minute) from CF loaded latency, if present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpm: Option<f64>,
+    /// Delta-ms bufferbloat grade from CF loaded latency, if present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bufferbloat: Option<BufferbloatSummary>,
+    /// Headline latency percentile block (the §4 Cloudflare instrument).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_stats: Option<LatencyStats>,
+
     pub providers: Vec<ProviderResult>,
     pub duration_s: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -185,232 +375,146 @@ pub struct SpeedTestResult {
     pub merge_exclusions: Vec<MergeExclusion>,
 }
 
-/// Latency weight for Cloudflare (NDT7 gets 1 - this).
-/// NDT7's MinRTT from TCP kernel is structurally superior, not just lower-variance.
-const CF_LATENCY_WEIGHT: f64 = 0.4;
-
-/// Divergence threshold: flag when providers differ by more than this fraction.
-const DIVERGENCE_THRESHOLD: f64 = 0.3;
-
-fn divergence_ratio(a: f64, b: f64) -> f64 {
-    if a <= 0.0 || b <= 0.0 {
-        return 0.0;
-    }
-    (a - b).abs() / a.max(b)
-}
-
-fn divergence_spread(values: &[(f64, f64)]) -> f64 {
-    let mut min = f64::INFINITY;
-    let mut max = f64::NEG_INFINITY;
-
-    for (value, _) in values {
-        if *value <= 0.0 {
-            continue;
-        }
-        min = min.min(*value);
-        max = max.max(*value);
-    }
-
-    if !min.is_finite() || !max.is_finite() || max <= 0.0 || min == max {
-        0.0
-    } else {
-        divergence_ratio(min, max)
+/// Canonical registry rank (METHODOLOGY.md §3). The shared PCG32 block-bootstrap
+/// stream is drawn in this order (download then upload per provider) so the
+/// index streams are reproducible regardless of the order providers ran in.
+fn registry_rank(display_name: &str) -> usize {
+    match display_name {
+        "Cloudflare" => 0,
+        "M-Lab NDT7" => 1,
+        "M-Lab MSAK" => 2,
+        "LibreSpeed" => 3,
+        "fast.com" => 4,
+        "CacheFly" => 5,
+        "Vultr" => 6,
+        "Apple networkQuality" => 7,
+        _ => usize::MAX,
     }
 }
 
-fn inverse_variance_merge_many(values: &[(f64, f64)]) -> f64 {
-    let positive: Vec<(f64, f64)> = values
-        .iter()
-        .copied()
-        .filter(|(value, _)| value.is_finite() && *value > 0.0)
-        .collect();
-
-    if positive.is_empty() {
-        return 0.0;
+/// Lowercase registry key for a provider display name — drives the capability
+/// prior in [`statistics::merge_providers`] and labels merge exclusions.
+fn registry_key(display_name: &str) -> &'static str {
+    match display_name {
+        "Cloudflare" => "cloudflare",
+        "M-Lab NDT7" => "ndt7",
+        "M-Lab MSAK" => "msak",
+        "LibreSpeed" => "librespeed",
+        "fast.com" => "fastcom",
+        "CacheFly" => "cachefly",
+        "Vultr" => "vultr",
+        "Apple networkQuality" => "applenq",
+        _ => "unknown",
     }
-    if positive.len() == 1 {
-        return positive[0].0;
-    }
-
-    // A variance that is zero, negative, or non-finite means UNKNOWN
-    // precision (a 1-sample provider reports variance 0.0; a fallback value
-    // has no samples at all). Unknown precision must be treated as the LEAST
-    // trusted entry — assign it the maximum known variance. The old rule
-    // clamped unknowns to the variance floor, which handed a degenerate
-    // single-sample provider the highest possible weight.
-    let known = |v: f64| v.is_finite() && v > 0.0;
-
-    let max_known_variance = positive
-        .iter()
-        .filter_map(|(_, variance)| known(*variance).then_some(*variance))
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-    let Some(max_variance) = max_known_variance else {
-        // No provider has a known variance — plain average.
-        return positive.iter().map(|(value, _)| value).sum::<f64>() / positive.len() as f64;
-    };
-
-    let variance_floor = positive
-        .iter()
-        .filter_map(|(_, variance)| known(*variance).then_some(*variance))
-        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .unwrap_or(max_variance)
-        .max(0.000_001);
-
-    let raw_weights: Vec<f64> = positive
-        .iter()
-        .map(|(_, variance)| {
-            let effective = if known(*variance) {
-                *variance
-            } else {
-                max_variance
-            };
-            1.0 / effective.max(variance_floor)
-        })
-        .collect();
-    let raw_total = raw_weights.iter().sum::<f64>();
-    if raw_total <= 0.0 {
-        return positive.iter().map(|(value, _)| value).sum::<f64>() / positive.len() as f64;
-    }
-
-    let weights = capped_inverse_variance_weights(&raw_weights, raw_total, 0.70);
-
-    positive
-        .iter()
-        .zip(weights.iter())
-        .map(|((value, _), weight)| value * weight)
-        .sum()
 }
 
-fn capped_inverse_variance_weights(raw_weights: &[f64], raw_total: f64, cap: f64) -> Vec<f64> {
-    if raw_weights.is_empty() {
+/// Display name for a registry key (inverse of [`registry_key`]); labels merge
+/// exclusions with the human-facing provider name.
+fn display_name_for_key(key: &str) -> String {
+    match key {
+        "cloudflare" => "Cloudflare",
+        "ndt7" => "M-Lab NDT7",
+        "msak" => "M-Lab MSAK",
+        "librespeed" => "LibreSpeed",
+        "fastcom" => "fast.com",
+        "cachefly" => "CacheFly",
+        "vultr" => "Vultr",
+        "applenq" => "Apple networkQuality",
+        other => other,
+    }
+    .to_string()
+}
+
+/// Per-provider cleaning (METHODOLOGY.md §5 steps 2–4, minus bootstrap):
+/// sanitize → plateau warm-up discard → (upload only: keep fastest 50%) →
+/// IQR fences at k = 1.5. Mirrors the TS `cleanDirection`.
+fn clean_direction(raw: &[f64], is_upload: bool) -> Vec<f64> {
+    let sane = statistics::sanitize(raw);
+    if sane.is_empty() {
         return Vec::new();
     }
-    if raw_weights.len() == 1 {
-        return vec![1.0];
+    let cut = statistics::plateau_start(&sane).min(sane.len());
+    let after_plateau = &sane[cut..];
+    if is_upload {
+        // Keep the fastest ceil(n/2) post-warm-up samples before the IQR filter.
+        let mut desc = after_plateau.to_vec();
+        desc.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        let keep = ((desc.len() as f64) / 2.0).ceil() as usize;
+        let top = &desc[..keep.min(desc.len())];
+        statistics::filter_outliers_iqr(top, 1.5)
+    } else {
+        statistics::filter_outliers_iqr(after_plateau, 1.5)
     }
-    if raw_total <= 0.0 {
-        let equal = 1.0 / raw_weights.len() as f64;
-        return vec![equal; raw_weights.len()];
-    }
-
-    let cap = cap.max(1.0 / raw_weights.len() as f64);
-    let mut weights = vec![0.0; raw_weights.len()];
-    let mut remaining: Vec<usize> = (0..raw_weights.len()).collect();
-    let mut remaining_mass = 1.0;
-
-    loop {
-        if remaining.is_empty() {
-            break;
-        }
-
-        let remaining_raw_total = remaining.iter().map(|idx| raw_weights[*idx]).sum::<f64>();
-        if remaining_raw_total <= 0.0 {
-            let equal = remaining_mass / remaining.len() as f64;
-            for idx in remaining {
-                weights[idx] = equal;
-            }
-            break;
-        }
-
-        let mut capped = Vec::new();
-        for idx in &remaining {
-            let candidate = remaining_mass * raw_weights[*idx] / remaining_raw_total;
-            if candidate > cap {
-                weights[*idx] = cap;
-                remaining_mass = (remaining_mass - cap).max(0.0);
-                capped.push(*idx);
-            }
-        }
-
-        if capped.is_empty() {
-            for idx in remaining {
-                weights[idx] = remaining_mass * raw_weights[idx] / remaining_raw_total;
-            }
-            break;
-        }
-
-        remaining.retain(|idx| !capped.contains(idx));
-    }
-
-    weights
 }
 
-/// Aggregation result including new metrics.
+/// Aggregation result carrying the full v4 payload for one run.
 struct AggregateResult {
     ping: Option<f64>,
     jitter: Option<f64>,
+    jitter_rfc3550: Option<f64>,
     download: f64,
     upload: f64,
     packet_loss: Option<f64>,
+    capacity: MergedDirection,
+    consensus: MergedDirection,
+    agreement: AgreementInfo,
+    upload_agreement: AgreementInfo,
+    rpm: Option<f64>,
+    bufferbloat: Option<BufferbloatSummary>,
+    latency_stats: Option<LatencyStats>,
     stability: Option<StabilityMetrics>,
     divergence: Option<ProviderDivergence>,
     confidence: Option<ConfidenceIntervals>,
     exclusions: Vec<MergeExclusion>,
 }
 
-/// Minimum sanitized samples a provider needs in a direction before it joins
-/// the headline inverse-variance merge. Matches the statistics pipeline's own
-/// internal thresholds (slow-start discard, IQR filter, and winsorize all
-/// bail below 4) — a trimean over fewer samples is noise, and its degenerate
-/// variance used to let it dominate the merge.
-const MIN_MERGE_SAMPLES: usize = 4;
-
-/// Pooled samples needed before a bootstrap CI is computed. Below 8 the
-/// percentile method's bounds are too coarse to be honest (and below 4 they
-/// collapse to a misleading "±0").
-const MIN_CI_SAMPLES: usize = 8;
-
-/// One provider direction proposed for the merge.
-struct MergeCandidate {
-    provider: String,
-    value: f64,
-    variance: f64,
-    samples: usize,
+fn empty_direction() -> MergedDirection {
+    MergedDirection {
+        download: 0.0,
+        upload: 0.0,
+        download_ci: None,
+        upload_ci: None,
+    }
 }
 
-/// Apply the minimum-sample floor: providers with enough samples make the
-/// merge; the rest are recorded as exclusions. Degraded fallback: when NO
-/// provider reaches the floor, every positive candidate is kept (the merge
-/// must never return 0.0 while data exists).
-fn select_for_merge(
-    candidates: Vec<MergeCandidate>,
-    direction: &'static str,
-    exclusions: &mut Vec<MergeExclusion>,
-) -> Vec<(f64, f64)> {
-    let any_qualified = candidates.iter().any(|c| c.samples >= MIN_MERGE_SAMPLES);
-    if !any_qualified {
-        return candidates.iter().map(|c| (c.value, c.variance)).collect();
-    }
-
-    let mut kept = Vec::new();
-    for c in candidates {
-        if c.samples >= MIN_MERGE_SAMPLES {
-            kept.push((c.value, c.variance));
-        } else {
-            exclusions.push(MergeExclusion {
-                provider: c.provider,
-                direction,
-                samples: c.samples,
-            });
-        }
-    }
-    kept
-}
-
-/// Inverse-variance weighted aggregation across providers.
-/// Uses accurate bandwidth pipeline on raw samples, fixed latency weights,
-/// stability metrics, and divergence detection.
+/// SpeedQX v4 cross-provider aggregation (METHODOLOGY.md §5–§7).
+///
+/// Per successful provider (drawn in registry order so the shared PCG32
+/// block-bootstrap stream is reproducible), each direction is cleaned
+/// (plateau → [upload: fastest 50%] → IQR) and block-bootstrapped for its
+/// trimean point estimate + variance; the results feed
+/// [`statistics::merge_providers`] to produce capacity (headline) + consensus
+/// with HKSJ CIs and I² agreement. Headline ping is min-RTT across every
+/// provider's ping (NDT7/MSAK carry kernel MinRTT — the cross-check); headline
+/// jitter is PDV from the dense latency block; bufferbloat + RPM come from the
+/// Cloudflare loaded-latency probes when present.
 fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
-    let successful: Vec<&ProviderResult> = providers.iter().filter(|p| p.error.is_none()).collect();
+    // Successful providers in canonical registry order.
+    let mut ordered: Vec<&ProviderResult> =
+        providers.iter().filter(|p| p.error.is_none()).collect();
+    ordered.sort_by_key(|p| registry_rank(&p.provider));
 
-    if successful.is_empty() {
+    if ordered.is_empty() {
         return AggregateResult {
             ping: None,
             jitter: None,
+            jitter_rfc3550: None,
             download: 0.0,
             upload: 0.0,
             packet_loss: None,
+            capacity: empty_direction(),
+            consensus: empty_direction(),
+            agreement: AgreementInfo {
+                i2: None,
+                band: statistics::AgreementBand::Insufficient,
+            },
+            upload_agreement: AgreementInfo {
+                i2: None,
+                band: statistics::AgreementBand::Insufficient,
+            },
+            rpm: None,
+            bufferbloat: None,
+            latency_stats: None,
             stability: None,
             divergence: None,
             confidence: None,
@@ -418,177 +522,150 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
         };
     }
 
-    // ── Compute accurate bandwidth per provider from sanitized samples ──
-    let mut dl_candidates: Vec<MergeCandidate> = Vec::new();
-    let mut ul_candidates: Vec<MergeCandidate> = Vec::new();
-    let mut all_dl_samples: Vec<f64> = Vec::new();
-    let mut all_ul_samples: Vec<f64> = Vec::new();
+    // ── Per-provider cleaning + block bootstrap (ONE PCG32 stream) ──────
+    let mut rng = Pcg32::new();
+    let mut dl_inputs: Vec<MergeProviderInput> = Vec::new();
+    let mut ul_inputs: Vec<MergeProviderInput> = Vec::new();
+    let mut pooled_dl: Vec<f64> = Vec::new();
+    let mut pooled_ul: Vec<f64> = Vec::new();
+    // Per-provider cleaned point estimates, keyed by display name.
+    let mut points: HashMap<String, (Option<f64>, Option<f64>)> = HashMap::new();
 
-    for p in &successful {
-        if let Some(ref samples) = p.bandwidth_samples {
-            let download = statistics::sanitize(&samples.download);
-            if !download.is_empty() {
-                let acc = statistics::accurate_bandwidth(&download);
-                let var = statistics::variance(&download);
-                if acc > 0.0 {
-                    dl_candidates.push(MergeCandidate {
-                        provider: p.provider.clone(),
-                        value: acc,
-                        variance: var,
-                        samples: download.len(),
-                    });
-                }
-                all_dl_samples.extend_from_slice(&download);
-            }
-            let upload = statistics::sanitize(&samples.upload);
-            if !upload.is_empty() {
-                let acc = statistics::accurate_upload_bandwidth(&upload);
-                let var = statistics::variance(&upload);
-                if acc > 0.0 {
-                    ul_candidates.push(MergeCandidate {
-                        provider: p.provider.clone(),
-                        value: acc,
-                        variance: var,
-                        samples: upload.len(),
-                    });
-                }
-                all_ul_samples.extend_from_slice(&upload);
+    for p in &ordered {
+        let (dl_raw, ul_raw): (&[f64], &[f64]) = match &p.bandwidth_samples {
+            Some(bs) => (&bs.download, &bs.upload),
+            None => (&[], &[]),
+        };
+        let dl_clean = clean_direction(dl_raw, false);
+        let ul_clean = clean_direction(ul_raw, true);
+        let dl_boot = statistics::circular_block_bootstrap(&dl_clean, &mut rng, 2000);
+        let ul_boot = statistics::circular_block_bootstrap(&ul_clean, &mut rng, 2000);
+        let key = registry_key(&p.provider);
+
+        dl_inputs.push(MergeProviderInput {
+            name: key.to_string(),
+            y: dl_boot.theta_hat,
+            v: Some(dl_boot.variance),
+            samples: dl_clean.len(),
+            capability: None,
+            bca: Some(BcaInterval {
+                lower: dl_boot.ci_lower,
+                upper: dl_boot.ci_upper,
+            }),
+        });
+        ul_inputs.push(MergeProviderInput {
+            name: key.to_string(),
+            y: ul_boot.theta_hat,
+            v: Some(ul_boot.variance),
+            samples: ul_clean.len(),
+            capability: None,
+            bca: Some(BcaInterval {
+                lower: ul_boot.ci_lower,
+                upper: ul_boot.ci_upper,
+            }),
+        });
+
+        points.insert(
+            p.provider.clone(),
+            (
+                (!dl_clean.is_empty()).then_some(dl_boot.theta_hat),
+                (!ul_clean.is_empty()).then_some(ul_boot.theta_hat),
+            ),
+        );
+        pooled_dl.extend_from_slice(&dl_clean);
+        pooled_ul.extend_from_slice(&ul_clean);
+    }
+
+    let dl_merge = merge_providers(&dl_inputs);
+    let ul_merge = merge_providers(&ul_inputs);
+
+    // Headline = capacity; degrade to the max per-provider point when no
+    // provider qualified for the merge (never 0.0 while data exists).
+    let fallback_max = |download: bool| -> f64 {
+        points
+            .values()
+            .filter_map(|(dl, ul)| if download { *dl } else { *ul })
+            .fold(0.0_f64, f64::max)
+    };
+    let download = if dl_merge.capacity > 0.0 {
+        dl_merge.capacity
+    } else {
+        fallback_max(true)
+    };
+    let upload = if ul_merge.capacity > 0.0 {
+        ul_merge.capacity
+    } else {
+        fallback_max(false)
+    };
+
+    // ── Headline ping: min-RTT across engine + kernel MinRTT (§4) ───────
+    let mut ping = f64::INFINITY;
+    for p in &ordered {
+        if let Some(pg) = p.ping_ms {
+            if pg > 0.0 && pg < ping {
+                ping = pg;
             }
         }
-        // Fallback: use the provider-reported value if no raw samples. It
-        // carries zero samples and an unknown (0.0) variance, so it is
-        // excluded whenever a sampled provider qualifies, and least-trusted
-        // when it does participate.
-        if p.bandwidth_samples
-            .as_ref()
-            .is_none_or(|s| s.download.is_empty())
-        {
-            if let Some(dl) = p.download_mbps {
-                if dl.is_finite() && dl > 0.0 {
-                    dl_candidates.push(MergeCandidate {
-                        provider: p.provider.clone(),
-                        value: dl,
-                        variance: 0.0,
-                        samples: 0,
-                    });
-                }
+        if let Some(ls) = &p.latency_stats {
+            if ls.min > 0.0 && ls.min < ping {
+                ping = ls.min;
             }
         }
-        if p.bandwidth_samples
-            .as_ref()
-            .is_none_or(|s| s.upload.is_empty())
-        {
-            if let Some(ul) = p.upload_mbps {
-                if ul.is_finite() && ul > 0.0 {
-                    ul_candidates.push(MergeCandidate {
-                        provider: p.provider.clone(),
-                        value: ul,
-                        variance: 0.0,
-                        samples: 0,
-                    });
-                }
+    }
+    let ping = ping.is_finite().then_some(ping);
+
+    // Headline latency block = the §4 instrument (Cloudflare), else the first
+    // provider in registry order with a dense engine block.
+    let latency_stats = ordered.iter().find_map(|p| p.latency_stats.clone());
+
+    // Headline jitter = PDV (canonical); RFC 3550 EWMA kept as a compat field.
+    let jitter = latency_stats.as_ref().map(|ls| ls.pdv).or_else(|| {
+        let js: Vec<f64> = ordered
+            .iter()
+            .filter_map(|p| p.jitter_ms)
+            .filter(|j| *j > 0.0)
+            .collect();
+        (!js.is_empty()).then(|| statistics::mean(&js))
+    });
+    let jitter_rfc3550 = latency_stats
+        .as_ref()
+        .map(|ls| ls.jitter_rfc3550)
+        .or_else(|| ordered.iter().find_map(|p| p.jitter_ms));
+
+    // ── Bufferbloat + RPM from Cloudflare loaded-latency probes (§7) ────
+    let mut bufferbloat = None;
+    let mut rpm = None;
+    if let Some(cf) = ordered.iter().find(|p| p.provider == "Cloudflare") {
+        if let Some(loaded) = &cf.loaded_latency {
+            let mut loaded_pooled = loaded.download.clone();
+            loaded_pooled.extend_from_slice(&loaded.upload);
+            if !loaded_pooled.is_empty() {
+                let idle = cf
+                    .latency_stats
+                    .as_ref()
+                    .map(|ls| ls.samples.clone())
+                    .unwrap_or_default();
+                let bb = statistics::bufferbloat_delta(&idle, &loaded_pooled);
+                rpm = Some(statistics::rpm(&loaded_pooled));
+                bufferbloat = Some(BufferbloatSummary {
+                    grade: bb.grade,
+                    delta_ms: bb.delta_ms,
+                    ratio: bb.ratio,
+                });
             }
         }
     }
 
-    // ── Minimum-sample floor, then inverse-variance merge ──────────
-    let mut exclusions: Vec<MergeExclusion> = Vec::new();
-    let provider_dl = select_for_merge(dl_candidates, "download", &mut exclusions);
-    let provider_ul = select_for_merge(ul_candidates, "upload", &mut exclusions);
-
-    let download = inverse_variance_merge_many(&provider_dl);
-
-    let upload = inverse_variance_merge_many(&provider_ul);
-
-    // ── Bootstrap confidence intervals on the pooled sample sets ───
-    let download_ci = (all_dl_samples.len() >= MIN_CI_SAMPLES).then(|| {
-        statistics::bootstrap_ci(&all_dl_samples, statistics::accurate_bandwidth, 1000, 0.05)
-    });
-    let upload_ci = (all_ul_samples.len() >= MIN_CI_SAMPLES).then(|| {
-        statistics::bootstrap_ci(
-            &all_ul_samples,
-            statistics::accurate_upload_bandwidth,
-            1000,
-            0.05,
-        )
-    });
-    let confidence = if download_ci.is_some() || upload_ci.is_some() {
-        Some(ConfidenceIntervals {
-            download: download_ci,
-            upload: upload_ci,
-            confidence_level: 0.95,
-        })
-    } else {
-        None
-    };
-
-    // ── Latency: confidence-weighted merge (CF 0.4 / NDT7 0.6) ─────
-    let cf_ping = successful
-        .iter()
-        .find(|p| p.provider == "Cloudflare")
-        .and_then(|p| p.ping_ms);
-    let ndt_ping = successful
-        .iter()
-        .find(|p| p.provider == "M-Lab NDT7")
-        .and_then(|p| p.ping_ms);
-    let cf_jitter = successful
-        .iter()
-        .find(|p| p.provider == "Cloudflare")
-        .and_then(|p| p.jitter_ms);
-    let ndt_jitter = successful
-        .iter()
-        .find(|p| p.provider == "M-Lab NDT7")
-        .and_then(|p| p.jitter_ms);
-
-    let ping = match (cf_ping, ndt_ping) {
-        (Some(cf), Some(ndt)) => Some(statistics::weighted_merge(cf, ndt, CF_LATENCY_WEIGHT)),
-        (Some(cf), None) => Some(cf),
-        (None, Some(ndt)) => Some(ndt),
-        (None, None) => {
-            // Fallback: minimum across providers, but prefer those that also
-            // report jitter — jitter presence means the ping came from a
-            // multi-probe measurement, not a single noisy sample that could
-            // otherwise become the global minimum.
-            let min_of = |require_jitter: bool| {
-                successful
-                    .iter()
-                    .filter(|p| !require_jitter || p.jitter_ms.is_some())
-                    .filter_map(|p| p.ping_ms)
-                    .filter(|p| *p > 0.0)
-                    .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            };
-            min_of(true).or_else(|| min_of(false))
-        }
-    };
-
-    let jitter = match (cf_jitter, ndt_jitter) {
-        (Some(cf), Some(ndt)) => Some(statistics::weighted_merge(cf, ndt, CF_LATENCY_WEIGHT)),
-        (Some(cf), None) => Some(cf),
-        (None, Some(ndt)) => Some(ndt),
-        (None, None) => {
-            let jitters: Vec<f64> = successful
-                .iter()
-                .filter_map(|p| p.jitter_ms)
-                .filter(|j| *j > 0.0)
-                .collect();
-            if jitters.is_empty() {
-                None
-            } else {
-                Some(statistics::mean(&jitters))
-            }
-        }
-    };
-
-    // Packet loss from Cloudflare (only provider that measures it)
-    let packet_loss = successful
+    // Packet loss from Cloudflare (only provider that measures it).
+    let packet_loss = ordered
         .iter()
         .find(|p| p.provider == "Cloudflare")
         .and_then(|p| p.packet_loss_pct);
 
-    // ── Stability metrics ──────────────────────────────────────────
-    let stability = if all_dl_samples.len() > 2 || all_ul_samples.len() > 2 {
-        let dl_cv = statistics::coefficient_of_variation(&all_dl_samples);
-        let ul_cv = statistics::coefficient_of_variation(&all_ul_samples);
+    // ── Stability CV on pooled cleaned samples ──────────────────────────
+    let stability = if pooled_dl.len() > 2 || pooled_ul.len() > 2 {
+        let dl_cv = statistics::coefficient_of_variation(&pooled_dl);
+        let ul_cv = statistics::coefficient_of_variation(&pooled_ul);
         Some(StabilityMetrics {
             download_cv: dl_cv,
             upload_cv: ul_cv,
@@ -599,25 +676,90 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
         None
     };
 
-    // ── Provider divergence ────────────────────────────────────────
-    let divergence = if provider_dl.len() >= 2 || provider_ul.len() >= 2 {
-        let dl_div = divergence_spread(&provider_dl);
-        let ul_div = divergence_spread(&provider_ul);
-        Some(ProviderDivergence {
-            download: dl_div,
-            upload: ul_div,
-            significant: dl_div > DIVERGENCE_THRESHOLD || ul_div > DIVERGENCE_THRESHOLD,
+    // ── Agreement bands from I² (replaces the v3 >30% spread flag) ──────
+    let agreement = AgreementInfo {
+        i2: dl_merge.i2,
+        band: dl_merge.band,
+    };
+    let upload_agreement = AgreementInfo {
+        i2: ul_merge.i2,
+        band: ul_merge.band,
+    };
+    let band_low = |b: statistics::AgreementBand| {
+        matches!(
+            b,
+            statistics::AgreementBand::Low | statistics::AgreementBand::VeryLow
+        )
+    };
+    let divergence = Some(ProviderDivergence {
+        download: dl_merge.i2.unwrap_or(0.0),
+        upload: ul_merge.i2.unwrap_or(0.0),
+        significant: band_low(dl_merge.band) || band_low(ul_merge.band),
+    });
+
+    // ── Capacity / consensus with CIs ───────────────────────────────────
+    let capacity = MergedDirection {
+        download,
+        upload,
+        download_ci: (dl_merge.k > 0).then_some(dl_merge.capacity_ci),
+        upload_ci: (ul_merge.k > 0).then_some(ul_merge.capacity_ci),
+    };
+    let consensus = MergedDirection {
+        download: dl_merge.consensus,
+        upload: ul_merge.consensus,
+        download_ci: (dl_merge.k > 0).then_some(dl_merge.consensus_ci),
+        upload_ci: (ul_merge.k > 0).then_some(ul_merge.consensus_ci),
+    };
+
+    // Legacy confidence_intervals surface (capacity CI) for one release.
+    let ci_from = |value: f64, ci: statistics::CiBounds| statistics::BootstrapCI {
+        estimate: value,
+        lower: ci.lower,
+        upper: ci.upper,
+        margin: ((ci.upper - ci.lower) / 2.0).max(0.0),
+    };
+    let confidence = if (dl_merge.k > 0 && download > 0.0) || (ul_merge.k > 0 && upload > 0.0) {
+        Some(ConfidenceIntervals {
+            download: (dl_merge.k > 0 && download > 0.0)
+                .then(|| ci_from(download, dl_merge.capacity_ci)),
+            upload: (ul_merge.k > 0 && upload > 0.0).then(|| ci_from(upload, ul_merge.capacity_ci)),
+            confidence_level: 0.95,
         })
     } else {
         None
     };
 
+    // ── Merge exclusions from both directions (display-name labeled) ────
+    let mut exclusions: Vec<MergeExclusion> = Vec::new();
+    for e in &dl_merge.exclusions {
+        exclusions.push(MergeExclusion {
+            provider: display_name_for_key(&e.name),
+            direction: "download",
+            samples: e.samples,
+        });
+    }
+    for e in &ul_merge.exclusions {
+        exclusions.push(MergeExclusion {
+            provider: display_name_for_key(&e.name),
+            direction: "upload",
+            samples: e.samples,
+        });
+    }
+
     AggregateResult {
         ping,
         jitter,
+        jitter_rfc3550,
         download,
         upload,
         packet_loss,
+        capacity,
+        consensus,
+        agreement,
+        upload_agreement,
+        rpm,
+        bufferbloat,
+        latency_stats,
         stability,
         divergence,
         confidence,
@@ -627,6 +769,98 @@ fn aggregate(providers: &[ProviderResult]) -> AggregateResult {
 
 /// Callback type for provider completion notifications.
 pub type ProviderCompleteCallback = Arc<dyn Fn(&ProviderResult) + Send + Sync>;
+
+/// Synthesize a failed [`ProviderResult`] (used by the FAST hard-cap path).
+fn failed_provider(provider: &str, msg: &str) -> ProviderResult {
+    ProviderResult {
+        provider: provider.to_string(),
+        server: "unknown".to_string(),
+        location: None,
+        ping_ms: None,
+        jitter_ms: None,
+        download_mbps: None,
+        upload_mbps: None,
+        download_bytes: 0,
+        upload_bytes: 0,
+        download_duration_s: 0.0,
+        upload_duration_s: 0.0,
+        packet_loss_pct: None,
+        error: Some(msg.to_string()),
+        bandwidth_samples: None,
+        availability: ProviderAvailability::Failed,
+        latency_stats: None,
+        loaded_latency: None,
+    }
+}
+
+/// Await a provider future, applying the FAST per-provider 25 s hard cap
+/// (METHODOLOGY.md §8). Outside FAST the future runs to completion.
+/// Liveness watchdog: a provider that reports NO progress for this long is
+/// wedged on something other than the network under test (a rate limiter, a
+/// silent WebSocket, a dead service, a hung discovery call) and is failed so
+/// the rest of the run continues untouched. Every honest code path — including
+/// a badly degraded link — emits progress at seconds scale (per latency probe,
+/// per completed/deadline-bounded transfer request, per WS measurement
+/// message), so 60 s of true silence is never a slow network.
+const PROVIDER_STALL_SECS: u64 = 60;
+
+async fn run_provider_future(
+    fast: bool,
+    provider_name: &str,
+    last_activity: Arc<StdMutex<Instant>>,
+    fut: impl std::future::Future<Output = ProviderResult>,
+) -> ProviderResult {
+    let stall = Duration::from_secs(PROVIDER_STALL_SECS);
+    let watchdog = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let idle = last_activity
+                .lock()
+                .map(|t| t.elapsed())
+                .unwrap_or_default();
+            if idle >= stall {
+                break;
+            }
+        }
+    };
+    let bounded = async {
+        tokio::select! {
+            r = fut => Some(r),
+            _ = watchdog => None,
+        }
+    };
+    let outcome = if fast {
+        match tokio::time::timeout(FAST_HARD_CAP, bounded).await {
+            Ok(o) => o,
+            Err(_) => return failed_provider(provider_name, "FAST 25s hard cap reached"),
+        }
+    } else {
+        bounded.await
+    };
+    outcome.unwrap_or_else(|| {
+        failed_provider(
+            provider_name,
+            &format!("stalled — no progress for {PROVIDER_STALL_SECS}s (non-network wedge)"),
+        )
+    })
+}
+
+/// Wrap a progress callback so every event stamps the provider's liveness
+/// clock for the stall watchdog in [`run_provider_future`].
+fn stamped_progress<F>(
+    progress: Arc<F>,
+    last_activity: Arc<StdMutex<Instant>>,
+) -> impl Fn(Phase, f64) + Send + Sync
+where
+    F: Fn(Phase, f64) + Send + Sync + 'static,
+{
+    move |phase, p| {
+        if let Ok(mut t) = last_activity.lock() {
+            *t = Instant::now();
+        }
+        progress(phase, p)
+    }
+}
 
 /// Run the speed test with the given configuration and progress callback.
 /// The `on_provider_complete` callback is called after each provider finishes,
@@ -642,63 +876,117 @@ where
     let start = Instant::now();
     let mut providers = Vec::new();
     let progress = Arc::new(progress);
+    let fast = config.provider_set == ProviderSet::Fast;
 
-    // Cloudflare (always runs)
-    {
-        let pg = progress.clone();
-        let cf_result = cloudflare::run(&config, move |phase, p| pg(phase, p)).await;
-        if let Some(ref cb) = on_provider_complete {
-            cb(&cf_result);
+    // FAST providers use a short per-direction budget. Cloudflare additionally
+    // bounds its whole run against an internal soft deadline (below the 25 s
+    // hard cap) so its RTT-scaled dense-latency engine can't push it past the
+    // cap and get its completed work discarded; the empirical-Bernstein early
+    // stop (inside the providers, gated on measured min-RTT) trims the transfer
+    // phases further.
+    let provider_config = if fast {
+        SpeedTestConfig {
+            duration: TestDuration::Seconds(FAST_PER_DIR_SECS),
+            ..config.clone()
         }
-        providers.push(cf_result);
+    } else {
+        config.clone()
+    };
+
+    let record = |providers: &mut Vec<ProviderResult>, result: ProviderResult| {
+        if let Some(ref cb) = on_provider_complete {
+            cb(&result);
+        }
+        providers.push(result);
+    };
+
+    // ── Providers run sequentially in canonical registry order (§2/§3) ──
+
+    // Cloudflare (always).
+    {
+        let last = Arc::new(StdMutex::new(Instant::now()));
+        let cb = stamped_progress(progress.clone(), last.clone());
+        let r = run_provider_future(
+            fast,
+            "Cloudflare",
+            last,
+            cloudflare::run(&provider_config, cb),
+        )
+        .await;
+        record(&mut providers, r);
     }
 
-    // M-Lab NDT7 (always runs)
+    // M-Lab NDT7 (always).
     {
-        let pg = progress.clone();
-        let ndt_result = ndt7::run(&config, move |phase, p| pg(phase, p)).await;
-        if let Some(ref cb) = on_provider_complete {
-            cb(&ndt_result);
-        }
-        providers.push(ndt_result);
+        let last = Arc::new(StdMutex::new(Instant::now()));
+        let cb = stamped_progress(progress.clone(), last.clone());
+        let r =
+            run_provider_future(fast, "M-Lab NDT7", last, ndt7::run(&provider_config, cb)).await;
+        record(&mut providers, r);
     }
 
-    // LibreSpeed + fast.com + MSAK + Apple networkQuality (only in All mode)
+    // M-Lab MSAK — FAST always; FULL when enabled; never in Diagnostic.
+    let run_msak = match config.provider_set {
+        ProviderSet::Fast => true,
+        ProviderSet::All => config.msak_enabled,
+        ProviderSet::Diagnostic => false,
+    };
+    if run_msak {
+        let last = Arc::new(StdMutex::new(Instant::now()));
+        let cb = stamped_progress(progress.clone(), last.clone());
+        let r =
+            run_provider_future(fast, "M-Lab MSAK", last, msak::run(&provider_config, cb)).await;
+        record(&mut providers, r);
+    }
+
+    // FULL-only providers, in registry order: LibreSpeed, fast.com, CacheFly,
+    // Vultr, Apple networkQuality.
     if config.provider_set == ProviderSet::All {
         {
-            let pg = progress.clone();
-            let ls_result = librespeed::run(&config, move |phase, p| pg(phase, p)).await;
-            if let Some(ref cb) = on_provider_complete {
-                cb(&ls_result);
-            }
-            providers.push(ls_result);
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r = run_provider_future(
+                fast,
+                "LibreSpeed",
+                last,
+                librespeed::run(&provider_config, cb),
+            )
+            .await;
+            record(&mut providers, r);
         }
-
         {
-            let pg = progress.clone();
-            let fc_result = fastcom::run(&config, move |phase, p| pg(phase, p)).await;
-            if let Some(ref cb) = on_provider_complete {
-                cb(&fc_result);
-            }
-            providers.push(fc_result);
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r = run_provider_future(fast, "fast.com", last, fastcom::run(&provider_config, cb))
+                .await;
+            record(&mut providers, r);
         }
-
-        if config.msak_enabled {
-            let pg = progress.clone();
-            let msak_result = msak::run(&config, move |phase, p| pg(phase, p)).await;
-            if let Some(ref cb) = on_provider_complete {
-                cb(&msak_result);
-            }
-            providers.push(msak_result);
+        {
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r =
+                run_provider_future(fast, "CacheFly", last, cachefly::run(&provider_config, cb))
+                    .await;
+            record(&mut providers, r);
         }
-
+        {
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r =
+                run_provider_future(fast, "Vultr", last, vultr::run(&provider_config, cb)).await;
+            record(&mut providers, r);
+        }
         if config.apple_enabled {
-            let pg = progress.clone();
-            let anq_result = applenq::run(&config, move |phase, p| pg(phase, p)).await;
-            if let Some(ref cb) = on_provider_complete {
-                cb(&anq_result);
-            }
-            providers.push(anq_result);
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r = run_provider_future(
+                fast,
+                "Apple networkQuality",
+                last,
+                applenq::run(&provider_config, cb),
+            )
+            .await;
+            record(&mut providers, r);
         }
     }
 
@@ -707,12 +995,29 @@ where
     let agg = aggregate(&providers);
     let duration = start.elapsed().as_secs_f64();
 
+    let provider_set = match config.provider_set {
+        ProviderSet::All => "full",
+        ProviderSet::Fast => "fast",
+        ProviderSet::Diagnostic => "diagnostic",
+    };
+
     SpeedTestResult {
+        methodology_version: METHODOLOGY_VERSION,
+        platform: "cli",
+        provider_set,
         ping_ms: agg.ping,
         jitter_ms: agg.jitter,
+        jitter_rfc3550: agg.jitter_rfc3550,
         download_mbps: agg.download,
         upload_mbps: agg.upload,
         packet_loss_pct: agg.packet_loss,
+        capacity: agg.capacity,
+        consensus: agg.consensus,
+        agreement: agg.agreement,
+        upload_agreement: Some(agg.upload_agreement),
+        rpm: agg.rpm,
+        bufferbloat: agg.bufferbloat,
+        latency_stats: agg.latency_stats,
         providers,
         duration_s: duration,
         stability: agg.stability,
@@ -756,126 +1061,6 @@ pub fn format_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
 
-    fn provider(name: &str, download: f64, upload: f64, variance: f64) -> ProviderResult {
-        let delta = variance.sqrt();
-        ProviderResult {
-            provider: name.to_string(),
-            server: "test".to_string(),
-            location: None,
-            ping_ms: None,
-            jitter_ms: None,
-            download_mbps: Some(download),
-            upload_mbps: Some(upload),
-            download_bytes: 1,
-            upload_bytes: 1,
-            download_duration_s: 1.0,
-            upload_duration_s: 1.0,
-            packet_loss_pct: None,
-            error: None,
-            bandwidth_samples: Some(BandwidthSamples {
-                download: vec![download - delta, download, download + delta, download],
-                upload: vec![upload - delta, upload, upload + delta, upload],
-            }),
-        }
-    }
-
-    #[test]
-    fn aggregate_uses_more_than_first_two_providers() {
-        let first_two = vec![
-            provider("Cloudflare", 100.0, 20.0, 4.0),
-            provider("M-Lab NDT7", 100.0, 20.0, 4.0),
-        ];
-        let with_four = vec![
-            provider("Cloudflare", 100.0, 20.0, 4.0),
-            provider("M-Lab NDT7", 100.0, 20.0, 4.0),
-            provider("LibreSpeed", 900.0, 180.0, 4.0),
-            provider("fast.com", 900.0, 180.0, 4.0),
-        ];
-
-        let two = aggregate(&first_two);
-        let four = aggregate(&with_four);
-
-        assert!(
-            four.download > two.download + 100.0,
-            "third/fourth providers should materially influence aggregate: two={}, four={}",
-            two.download,
-            four.download
-        );
-        assert!(
-            four.upload > two.upload + 20.0,
-            "third/fourth providers should materially influence upload aggregate: two={}, four={}",
-            two.upload,
-            four.upload
-        );
-    }
-
-    #[test]
-    fn divergence_uses_full_provider_spread() {
-        let providers = vec![
-            provider("Cloudflare", 100.0, 20.0, 4.0),
-            provider("M-Lab NDT7", 105.0, 22.0, 4.0),
-            provider("LibreSpeed", 450.0, 90.0, 4.0),
-        ];
-
-        let agg = aggregate(&providers);
-        let div = agg.divergence.expect("divergence should be reported");
-
-        assert!(div.significant);
-        assert!(
-            div.download > 0.70,
-            "expected divergence to use 100 vs 450 spread, got {}",
-            div.download
-        );
-        assert!(
-            div.upload > 0.70,
-            "expected divergence to use 20 vs 90 spread, got {}",
-            div.upload
-        );
-    }
-
-    #[test]
-    fn inverse_variance_merge_caps_single_provider_dominance() {
-        let merged = inverse_variance_merge_many(&[(1000.0, 0.000_001), (1.0, 1000.0)]);
-
-        assert!(
-            merged < 701.0,
-            "dominant provider should be capped near 70%, got {}",
-            merged
-        );
-    }
-
-    /// A provider whose degenerate sample set yields an unknown (0.0)
-    /// variance must adopt the WORST known variance in the merge (least
-    /// trusted), not the best. With known variances {4, 25}, the unknown
-    /// 1000 Mbps entry gets 25; the old floor rule handed it 4 — tied for
-    /// the highest weight — which pulled the merge above 500.
-    #[test]
-    fn nan_variance_provider_does_not_dominate_merge() {
-        let merged = inverse_variance_merge_many(&[(100.0, 4.0), (102.0, 25.0), (1000.0, 0.0)]);
-        assert!(
-            merged < 300.0,
-            "unknown-variance provider must be least-trusted; got {}",
-            merged
-        );
-
-        // Non-finite variance is treated the same as unknown.
-        let merged_nan =
-            inverse_variance_merge_many(&[(100.0, 4.0), (102.0, 25.0), (1000.0, f64::NAN)]);
-        assert!(
-            merged_nan < 300.0,
-            "NaN-variance provider must be least-trusted; got {}",
-            merged_nan
-        );
-    }
-
-    #[test]
-    fn non_finite_values_filtered_from_merge() {
-        let merged = inverse_variance_merge_many(&[(f64::NAN, 4.0), (100.0, 4.0)]);
-        assert_eq!(merged, 100.0);
-        let merged_inf = inverse_variance_merge_many(&[(f64::INFINITY, 4.0), (100.0, 4.0)]);
-        assert_eq!(merged_inf, 100.0);
-    }
-
     fn provider_with_samples(name: &str, download: Vec<f64>, upload: Vec<f64>) -> ProviderResult {
         ProviderResult {
             provider: name.to_string(),
@@ -892,30 +1077,84 @@ mod tests {
             packet_loss_pct: None,
             error: None,
             bandwidth_samples: Some(BandwidthSamples { download, upload }),
+            availability: ProviderAvailability::Ran,
+            latency_stats: None,
+            loaded_latency: None,
         }
     }
 
-    /// A 1-sample provider at a wild value is excluded from the merge when a
-    /// well-sampled provider exists, and the exclusion is reported.
+    /// A dense, tight sample series (16 points around ~100) so both directions
+    /// survive plateau + IQR cleaning with ≥ 4 cleaned samples.
+    fn dense(center: f64) -> Vec<f64> {
+        (0..16).map(|i| center + (i % 4) as f64 - 1.5).collect()
+    }
+
     #[test]
-    fn single_sample_provider_excluded_from_merge() {
-        let clean: Vec<f64> = (0..10).map(|i| 98.0 + (i % 3) as f64).collect();
+    fn dense_probe_count_clamps() {
+        assert_eq!(dense_probe_count(15.0), 50); // round(49.5)=50
+        assert_eq!(dense_probe_count(30.0), 99); // round(99)
+        assert_eq!(dense_probe_count(60.0), 198);
+        assert_eq!(dense_probe_count(1000.0), 200); // clamp high
+        assert_eq!(dense_probe_count(1.0), 50); // clamp low
+    }
+
+    /// Headline download = capacity; well-sampled providers around ~100 Mbps
+    /// merge to a capacity near 100 with a CI attached.
+    #[test]
+    fn capacity_headline_tracks_well_sampled_providers() {
         let providers = vec![
-            provider_with_samples("Cloudflare", clean.clone(), clean.clone()),
+            provider_with_samples("Cloudflare", dense(100.0), dense(20.0)),
+            provider_with_samples("M-Lab NDT7", dense(100.0), dense(20.0)),
+        ];
+        let agg = aggregate(&providers);
+        assert!(
+            (agg.download - 100.0).abs() < 10.0,
+            "capacity should track ~100, got {}",
+            agg.download
+        );
+        assert_eq!(agg.capacity.download, agg.download);
+        assert!(agg.capacity.download_ci.is_some());
+    }
+
+    /// A download-only provider (empty upload) is surfaced as an upload
+    /// exclusion rather than silently dropped.
+    #[test]
+    fn download_only_provider_recorded_as_upload_exclusion() {
+        let providers = vec![
+            provider_with_samples("Cloudflare", dense(100.0), dense(20.0)),
+            provider_with_samples("CacheFly", dense(400.0), vec![]),
+        ];
+        let agg = aggregate(&providers);
+        assert!(
+            agg.exclusions
+                .iter()
+                .any(|e| e.provider == "CacheFly" && e.direction == "upload"),
+            "CacheFly should be an upload exclusion: {:?}",
+            agg.exclusions
+                .iter()
+                .map(|e| (&e.provider, e.direction, e.samples))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A 1-sample provider collapses to zero cleaned samples and is excluded;
+    /// the headline still tracks the well-sampled provider.
+    #[test]
+    fn low_sample_provider_excluded_from_merge() {
+        let providers = vec![
+            provider_with_samples("Cloudflare", dense(100.0), dense(20.0)),
             provider_with_samples("LibreSpeed", vec![1000.0], vec![1000.0]),
         ];
-
         let agg = aggregate(&providers);
-
         assert!(
-            (agg.download - 99.0).abs() < 5.0,
+            (agg.download - 100.0).abs() < 12.0,
             "merge should track the well-sampled provider, got {}",
             agg.download
         );
         assert!(
             agg.exclusions
                 .iter()
-                .any(|e| e.provider == "LibreSpeed" && e.direction == "download" && e.samples == 1),
+                .any(|e| e.provider == "LibreSpeed" && e.direction == "download"),
             "LibreSpeed download exclusion should be recorded: {:?}",
             agg.exclusions
                 .iter()
@@ -924,92 +1163,69 @@ mod tests {
         );
     }
 
-    /// When NO provider reaches the floor, all positive candidates still
-    /// merge — never 0.0 while data exists.
+    /// When no provider reaches the 4-sample floor, the headline degrades to
+    /// the max per-provider point estimate — never 0.0 while data exists.
     #[test]
-    fn all_sparse_providers_still_merge() {
+    fn degraded_all_sparse_still_nonzero() {
         let providers = vec![
             provider_with_samples("Cloudflare", vec![100.0, 102.0], vec![20.0, 21.0]),
             provider_with_samples("LibreSpeed", vec![110.0, 108.0], vec![22.0, 23.0]),
         ];
-
         let agg = aggregate(&providers);
-
         assert!(agg.download > 0.0, "degraded merge must not return 0.0");
-        assert!(agg.exclusions.is_empty(), "no exclusions in degraded mode");
     }
 
-    /// A no-sample fallback value participates only with least-trust
-    /// weighting (and is excluded entirely when a sampled provider exists).
+    /// Headline ping is the min-RTT across providers (NDT7 kernel MinRTT wins
+    /// here — the cross-check), not a weighted blend.
     #[test]
-    fn fallback_value_provider_excluded_when_sampled_provider_exists() {
-        let clean: Vec<f64> = (0..10).map(|i| 98.0 + (i % 3) as f64).collect();
-        let mut fallback_only = provider_with_samples("fast.com", vec![], vec![]);
-        fallback_only.download_mbps = Some(1000.0);
-        fallback_only.upload_mbps = Some(1000.0);
+    fn headline_ping_is_min_rtt() {
+        let mut cf = provider_with_samples("Cloudflare", dense(100.0), dense(20.0));
+        cf.ping_ms = Some(30.0);
+        let mut ndt = provider_with_samples("M-Lab NDT7", dense(100.0), dense(20.0));
+        ndt.ping_ms = Some(12.0);
+        let agg = aggregate(&[cf, ndt]);
+        assert_eq!(agg.ping, Some(12.0));
+    }
 
-        let providers = vec![
-            provider_with_samples("Cloudflare", clean.clone(), clean.clone()),
-            fallback_only,
-        ];
+    /// PDV is the canonical headline jitter, sourced from the dense latency block.
+    #[test]
+    fn headline_jitter_is_pdv_from_latency_block() {
+        let mut cf = provider_with_samples("Cloudflare", dense(100.0), dense(20.0));
+        cf.latency_stats =
+            LatencyStats::from_rtts(&[10.0, 11.0, 12.0, 20.0, 10.5, 30.0, 10.2, 11.5]);
+        let agg = aggregate(&[cf]);
+        let ls = agg.latency_stats.as_ref().expect("latency block present");
+        assert_eq!(agg.jitter, Some(ls.pdv));
+        assert!(agg.jitter.unwrap() >= 0.0);
+    }
 
-        let agg = aggregate(&providers);
-
+    /// Bufferbloat + RPM are computed from Cloudflare loaded-latency probes.
+    #[test]
+    fn bufferbloat_and_rpm_from_loaded_latency() {
+        let mut cf = provider_with_samples("Cloudflare", dense(100.0), dense(20.0));
+        cf.latency_stats = LatencyStats::from_rtts(&[10.0; 8]);
+        cf.loaded_latency = Some(LoadedLatency {
+            download: vec![50.0; 5],
+            upload: vec![55.0; 5],
+        });
+        let agg = aggregate(&[cf]);
+        let bb = agg.bufferbloat.expect("bufferbloat present");
         assert!(
-            (agg.download - 99.0).abs() < 5.0,
-            "fallback-only provider must not skew the merge, got {}",
-            agg.download
+            bb.delta_ms > 30.0,
+            "loaded 50-55 vs idle 10, got {}",
+            bb.delta_ms
         );
-        assert!(agg
-            .exclusions
-            .iter()
-            .any(|e| e.provider == "fast.com" && e.samples == 0));
+        assert!(agg.rpm.expect("rpm present") > 0.0);
     }
 
-    /// In the no-CF/no-NDT7 latency fallback, a single-probe (jitterless)
-    /// provider must not become the global minimum when a multi-probe
-    /// provider is available.
+    /// The empty-run path yields a zeroed headline and an insufficient band.
     #[test]
-    fn latency_fallback_ignores_jitterless_single_probe() {
-        let mut multi = provider_with_samples("LibreSpeed", vec![100.0; 5], vec![20.0; 5]);
-        multi.ping_ms = Some(15.0);
-        multi.jitter_ms = Some(1.2);
-        let mut single = provider_with_samples("fast.com", vec![100.0; 5], vec![20.0; 5]);
-        single.ping_ms = Some(2.0); // suspiciously low single sample
-        single.jitter_ms = None;
-
-        let agg = aggregate(&[multi, single]);
-
-        assert_eq!(
-            agg.ping,
-            Some(15.0),
-            "jitter-bearing provider should win the fallback"
-        );
-    }
-
-    #[test]
-    fn confidence_intervals_suppressed_below_threshold() {
-        let providers = vec![provider_with_samples(
-            "Cloudflare",
-            vec![100.0, 101.0, 99.0],
-            vec![20.0, 21.0],
-        )];
-        let agg = aggregate(&providers);
-        assert!(agg.confidence.is_none());
-    }
-
-    #[test]
-    fn confidence_intervals_present_with_sufficient_samples() {
-        let samples: Vec<f64> = (0..12).map(|i| 95.0 + (i % 5) as f64 * 2.0).collect();
-        let providers = vec![provider_with_samples(
-            "Cloudflare",
-            samples.clone(),
-            samples.clone(),
-        )];
-        let agg = aggregate(&providers);
-        let ci = agg.confidence.expect("CI should be computed");
-        let dl = ci.download.expect("download CI present");
-        assert!(dl.lower <= dl.estimate && dl.estimate <= dl.upper);
-        assert_eq!(ci.confidence_level, 0.95);
+    fn empty_run_is_zeroed() {
+        let mut failed = provider_with_samples("Cloudflare", vec![], vec![]);
+        failed.error = Some("boom".to_string());
+        let agg = aggregate(&[failed]);
+        assert_eq!(agg.download, 0.0);
+        assert_eq!(agg.agreement.band, statistics::AgreementBand::Insufficient);
+        assert!(agg.ping.is_none());
     }
 }
