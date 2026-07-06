@@ -6,6 +6,38 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 6, 2026 — one measurement method everywhere, two new speed sources, a fast mode, and honest answers when a service throttles us
+
+The speed test now runs the exact same measurement method as the SpeedQX website
+(and soon the iPhone app) — written down in one shared rulebook, with automated
+checks proving all versions compute identical numbers down to the last digit. Run
+it anywhere; the results mean the same thing.
+
+**Added**
+- Two more places to measure against — a global content-delivery network and a
+  cloud provider with eight locations around the world (we automatically pick the
+  closest one). That's eight independent sources in a full run.
+- A fast mode: the three strongest sources with a smart "stop when we're sure"
+  rule, so a quick check takes about a minute instead of several.
+- Two honest headline numbers instead of one: what your line showed it can do,
+  and the cautious average across every source — each with a range you can trust.
+  A new agreement badge says how closely the sources matched, and a
+  responsiveness score shows how usable your connection stays while it's busy.
+
+**Improved**
+- The ping measurement takes far more samples with a proper warm-up, so latency
+  numbers are steadier and more trustworthy, especially on flaky connections.
+- Download requests now size themselves to your connection instead of using one
+  fixed size — gentler on slow links, better at filling fast ones.
+
+**Fixed**
+- One of the measurement services sometimes tells heavy users to slow down for a
+  few minutes. The test used to sit there silently getting nothing (and could
+  quietly understate your speed); now it notices immediately, says so plainly in
+  the results, and the other sources carry the run.
+- The quick mode no longer throws away a source's finished measurements when its
+  time runs out mid-step on slow connections.
+
 ## June 10, 2026 — steadier results, more accurate speeds, two new speed-test providers, and a much deeper technician mode
 
 This is a big one. The whole tool was given a stability and accuracy pass: the everyday checks no longer flip-flop between runs, the speed test numbers are more trustworthy (and now come with an honesty range), two well-known speed-test services joined the lineup, and technician mode grew from 18 deep checks to 25 — including several entirely new kinds of analysis.

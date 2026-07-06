@@ -1,4 +1,7 @@
-use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::{
+    statistics, BandwidthSamples, Phase, ProviderAvailability, ProviderResult, SpeedTestConfig,
+    TestDuration,
+};
 use futures_util::{SinkExt, StreamExt};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -318,6 +321,9 @@ where
             download: all_download_mbps,
             upload: all_upload_mbps,
         }),
+        availability: ProviderAvailability::Ran,
+        latency_stats: None,
+        loaded_latency: None,
     })
 }
 
@@ -695,6 +701,9 @@ fn error_result(msg: String) -> ProviderResult {
         packet_loss_pct: None,
         error: Some(msg),
         bandwidth_samples: None,
+        availability: ProviderAvailability::Failed,
+        latency_stats: None,
+        loaded_latency: None,
     }
 }
 

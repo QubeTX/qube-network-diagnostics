@@ -1,7 +1,20 @@
 use super::adaptive::adaptive_chunk_bytes;
-use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::{
+    statistics, BandwidthSamples, LatencyStats, Phase, ProviderAvailability, ProviderResult,
+    SpeedTestConfig, TestDuration,
+};
 use reqwest::Client;
 use std::time::{Duration, Instant};
+
+/// Cache-busting variant of a URL (appends a unique nonce query param).
+fn cache_bust(url: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}nocache={nanos}")
+}
 
 /// Netflix fast.com API endpoint.
 const FAST_API_URL: &str = "https://api.fast.com/netflix/speedtest/v2";
@@ -17,11 +30,6 @@ const AUTO_DOWNLOAD_SECS: u64 = 15;
 
 /// Default auto-mode upload duration (seconds).
 const AUTO_UPLOAD_SECS: u64 = 10;
-
-/// Latency probes against the nearest OCA (first two discarded as TCP/TLS
-/// warmup — the same shape as the Cloudflare/LibreSpeed probes).
-const LATENCY_PROBES: usize = 10;
-const LATENCY_WARMUP_DISCARD: usize = 2;
 
 /// Adaptive upload sizing (see `adaptive::adaptive_chunk_bytes`).
 const TARGET_REQUEST_SECS: f64 = 2.0;
@@ -125,6 +133,42 @@ where
         TestDuration::Auto => (AUTO_DOWNLOAD_SECS, AUTO_UPLOAD_SECS),
     };
 
+    // ── Dense idle-latency engine (before the download clock starts) ─
+    let mut ping_ms: Option<f64> = None;
+    let mut jitter_ms: Option<f64> = None;
+    let mut latency_stats: Option<LatencyStats> = None;
+    if let Some(first_url) = urls.first() {
+        let base_ping_url = format!("{}&bytes=1", first_url);
+        let n_probes = super::dense_probe_count(dl_secs as f64);
+        let mut rtts: Vec<f64> = Vec::with_capacity(n_probes as usize);
+        for i in 0..n_probes {
+            let ping_start = Instant::now();
+            if client
+                .head(cache_bust(&base_ping_url))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .is_ok()
+            {
+                rtts.push(ping_start.elapsed().as_secs_f64() * 1000.0);
+            }
+            if i + 1 < n_probes {
+                tokio::time::sleep(super::DENSE_PROBE_INTERVAL).await;
+            }
+        }
+        let measured: Vec<f64> = if rtts.len() > super::DENSE_PROBE_WARMUP {
+            rtts[super::DENSE_PROBE_WARMUP..].to_vec()
+        } else {
+            rtts.clone()
+        };
+        latency_stats = LatencyStats::from_rtts(&measured);
+        ping_ms = measured
+            .iter()
+            .copied()
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        jitter_ms = latency_stats.as_ref().map(|ls| ls.pdv);
+    }
+
     // ── Download phase ───────────────────────────────────────────────
     progress(Phase::FcDownload, 0.0);
 
@@ -133,38 +177,6 @@ where
     let dl_start = Instant::now();
     let mut dl_mbps_samples: Vec<f64> = Vec::new();
     let mut url_idx = 0;
-
-    // Measure latency with a burst of tiny range requests (warmup discarded,
-    // min of the rest), matching the Cloudflare/LibreSpeed probe shape — the
-    // old single probe was so noisy it could distort the aggregate latency
-    // fallback, and jitter was never measured at all.
-    let mut ping_ms: Option<f64> = None;
-    let mut jitter_ms: Option<f64> = None;
-    if let Some(first_url) = urls.first() {
-        let ping_url = format!("{}&bytes=1", first_url);
-        let mut rtts: Vec<f64> = Vec::with_capacity(LATENCY_PROBES);
-        for _ in 0..LATENCY_PROBES {
-            let ping_start = Instant::now();
-            if client
-                .head(&ping_url)
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await
-                .is_ok()
-            {
-                rtts.push(ping_start.elapsed().as_secs_f64() * 1000.0);
-            }
-        }
-        let warmup_skip = LATENCY_WARMUP_DISCARD.min(rtts.len());
-        let trimmed = &rtts[warmup_skip..];
-        ping_ms = trimmed
-            .iter()
-            .copied()
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        if trimmed.len() >= 2 {
-            jitter_ms = Some(statistics::jitter_rfc3550(trimmed));
-        }
-    }
 
     while Instant::now() < dl_deadline {
         let url = &urls[url_idx % urls.len()];
@@ -291,6 +303,11 @@ where
     } else {
         None
     };
+    let availability = if error.is_some() {
+        ProviderAvailability::Failed
+    } else {
+        ProviderAvailability::Ran
+    };
 
     Ok(ProviderResult {
         provider: "fast.com".to_string(),
@@ -313,6 +330,9 @@ where
             download: dl_mbps_samples,
             upload: ul_mbps_samples,
         }),
+        availability,
+        latency_stats,
+        loaded_latency: None,
     })
 }
 
@@ -404,5 +424,8 @@ fn error_result(msg: String) -> ProviderResult {
         packet_loss_pct: None,
         error: Some(msg),
         bandwidth_samples: None,
+        availability: ProviderAvailability::Failed,
+        latency_stats: None,
+        loaded_latency: None,
     }
 }

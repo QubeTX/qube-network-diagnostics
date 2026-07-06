@@ -15,7 +15,10 @@
 //! at 25000 by the server.
 
 use super::ndt7::{should_grow_frame, INITIAL_UPLOAD_FRAME_SIZE};
-use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::{
+    statistics, BandwidthSamples, Phase, ProviderAvailability, ProviderResult, SpeedTestConfig,
+    TestDuration,
+};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -200,6 +203,9 @@ where
             download: dl.samples,
             upload: ul.samples,
         }),
+        availability: ProviderAvailability::Ran,
+        latency_stats: None,
+        loaded_latency: None,
     })
 }
 
@@ -494,6 +500,9 @@ fn error_result(msg: String) -> ProviderResult {
         packet_loss_pct: None,
         error: Some(msg),
         bandwidth_samples: None,
+        availability: ProviderAvailability::Failed,
+        latency_stats: None,
+        loaded_latency: None,
     }
 }
 

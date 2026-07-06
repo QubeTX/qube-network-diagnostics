@@ -191,8 +191,9 @@ pub struct MigrateArgs {
 
 /// SpeedQX Internet Speed Test - QubeTX Developer Tools
 ///
-/// Six-provider speed test using Cloudflare, M-Lab NDT7, LibreSpeed, fast.com,
-/// M-Lab MSAK, and Apple networkQuality.
+/// Eight-provider speed test (SpeedQX Methodology v4) using Cloudflare, M-Lab
+/// NDT7, M-Lab MSAK, LibreSpeed, fast.com, CacheFly, Vultr, and Apple
+/// networkQuality.
 #[derive(Parser)]
 #[command(
     name = "speedqx",
@@ -201,14 +202,17 @@ pub struct MigrateArgs {
     disable_version_flag = true,
     about = "SpeedQX Internet Speed Test - QubeTX Developer Tools",
     long_about = "SpeedQX Internet Speed Test - QubeTX Developer Tools\n\n\
-        Six-provider speed test using Cloudflare, M-Lab NDT7, LibreSpeed, fast.com (Netflix),\n\
-        M-Lab MSAK (multi-stream), and Apple networkQuality.\n\
-        All providers run sequentially and results are aggregated for maximum accuracy.",
+        Eight-provider speed test (SpeedQX Methodology v4) using Cloudflare, M-Lab NDT7,\n\
+        M-Lab MSAK (multi-stream), LibreSpeed, fast.com (Netflix), CacheFly, Vultr, and\n\
+        Apple networkQuality. Providers run sequentially and are merged (capacity +\n\
+        consensus with confidence intervals) for maximum accuracy. --fast runs a quick\n\
+        three-provider subset with early stopping.",
     after_long_help = "EXAMPLES:\n\
-        \x20 speedqx                     Run full speed test (all 6 providers)\n\
-        \x20 speedqx --duration 60       60s per direction for CF/NDT7/LS/MSAK/Apple\n\
+        \x20 speedqx                     Run the full 8-provider test\n\
+        \x20 speedqx --fast              Quick run (Cloudflare + NDT7 + MSAK, early-stop)\n\
+        \x20 speedqx --duration 60       60s per direction for the fixed-duration providers\n\
         \x20 speedqx --fastcom-duration 30  Override fast.com to 30s/dir\n\
-        \x20 speedqx --skip-msak --skip-apple  Classic 4-provider run\n\
+        \x20 speedqx --skip-msak --skip-apple  Drop MSAK + Apple from the full run\n\
         \x20 speedqx update              Check for updates and install\n\
         \x20 speedqx --update            Same as 'speedqx update' (legacy flag form)\n\
         \x20 speedqx --json              Output results as JSON\n\n\
@@ -245,9 +249,14 @@ pub struct SpeedQXCli {
     )]
     pub fastcom_duration: TestDuration,
 
-    /// Number of latency probes
+    /// Number of latency probes (advisory; the dense engine is duration-scaled)
     #[arg(long, default_value = "20", help_heading = "Speed Test")]
     pub latency_probes: u32,
+
+    /// FAST mode: Cloudflare + NDT7 + MSAK with early-stop (default is the full
+    /// 8-provider run)
+    #[arg(long = "fast", help_heading = "Speed Test")]
+    pub fast: bool,
 
     /// Skip the M-Lab MSAK multi-stream provider
     #[arg(long = "skip-msak", help_heading = "Speed Test")]

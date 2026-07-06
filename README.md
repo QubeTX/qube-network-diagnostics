@@ -3,7 +3,7 @@
 [![Build Status](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml/badge.svg)](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 
-Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes **SpeedQX**, a standalone six-provider speed test.
+Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes **SpeedQX**, a standalone eight-provider speed test (SpeedQX Methodology v4).
 
 ## Features
 
@@ -13,7 +13,7 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
 - **Six-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) + M-Lab MSAK (multi-stream) + Apple networkQuality, with bounded N-provider inverse-variance aggregation, minimum-sample floors, modified trimean (Ookla-style), RFC 3550 jitter, and bootstrap confidence intervals ("941 Mbps ±12 Mbps") for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
 - **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and runs a probe-and-retry chain: cargo first when available, cargo-dist installer as universal fallback (curl → wget on macOS/Linux, PowerShell → pwsh on Windows). On Windows it can also upgrade in place via the matching first-class installer (MSI/EXE × Global/Corporate), chosen from an install marker, with SHA-256 verification of the download (refuse-on-mismatch). It cleans up shadowing non-Cargo ND300 installs when migrating to `cargo install nd300`, verifies the new version actually landed, and surfaces per-strategy failures with specific reasons.
-- **SpeedQX** standalone speed test binary — all 6 providers with per-provider breakdown and real-time progress (full run ~5.5 minutes at defaults; `--skip-msak`/`--skip-apple` for the classic 4-provider run)
+- **SpeedQX** standalone speed test binary — all 8 providers (Methodology v4: capacity + consensus merge, I² agreement, PDV jitter, RPM) with per-provider breakdown and real-time progress; `--fast` for the quick 3-provider early-stopping run, `--skip-msak`/`--skip-apple` to trim the full run
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
 - **Unicode box-drawing** table rendering with ASCII fallback
@@ -156,7 +156,7 @@ nd300 fix --help    # subcommand-specific help
 ### speedqx — Standalone Speed Test
 
 ```sh
-# Full six-provider speed test (Cloudflare + NDT7 + LibreSpeed + fast.com + MSAK + Apple)
+# Full eight-provider speed test (Cloudflare + NDT7 + MSAK + LibreSpeed + fast.com + CacheFly + Vultr + Apple)
 speedqx
 
 # Custom duration per direction (60s download + 60s upload per provider)
@@ -256,7 +256,7 @@ speedqx --duration 10 --latency-probes 5
 4. DNS Resolution
 5. Public IP
 6. Latency
-7. Speed Test (Cloudflare + M-Lab NDT7 in nd300; all 6 providers in SpeedQX)
+7. Speed Test (Cloudflare + M-Lab NDT7 in nd300; all 8 providers in SpeedQX)
 8. Port Connectivity
 
 ### Deep Diagnostics (technician mode only)
