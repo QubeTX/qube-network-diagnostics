@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.2] - 2026-07-06
+
+### Fixed
+- **k=2 agreement self-contradiction** — `display.rs` printed
+  "Insufficient (I² X%)": an explicit "not enough sources to grade agreement"
+  label paired with a concrete I² percentage, on every FAST run where only two
+  sources qualified. The number is now withheld when the band is Insufficient
+  (the `--json` payload keeps the raw `i2` for machine consumers). Found by the
+  iOS app's pre-submission robustness sweep; the same fix ships in the website
+  (3.0.11) and the app (2.1.0).
+
 ## [3.5.1] - 2026-07-06
 
 ### Fixed

@@ -6,6 +6,16 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 6, 2026 (late evening) — no more contradictory agreement line
+
+**Fixed**
+- When only two measurement sources took part, the results said agreement
+  couldn't be graded — and then showed an agreement percentage right beside
+  that statement. If there isn't enough data to grade, the tool now simply
+  says so, without a contradictory number.
+
+---
+
 ## July 6, 2026 (evening) — clearer answers when M-Lab says "slow down"
 
 **Fixed**
