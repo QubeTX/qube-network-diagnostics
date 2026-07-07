@@ -1,6 +1,6 @@
 [package]
 name = "nd300"
-version = "3.5.0"
+version = "3.5.1"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
