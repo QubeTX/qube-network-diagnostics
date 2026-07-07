@@ -120,8 +120,13 @@ fn agreement_label(a: &super::AgreementInfo) -> String {
         super::statistics::AgreementBand::Insufficient => "Insufficient",
     };
     match a.i2 {
-        Some(i2) => format!("{} (I\u{b2} {:.0}%)", band, i2 * 100.0),
-        None => band.to_string(),
+        // 'Insufficient' means the merge declined to grade agreement (< 3
+        // qualifying sources) — pairing the label with a concrete I² number
+        // would contradict that call, so the percentage is withheld too.
+        Some(i2) if !matches!(a.band, super::statistics::AgreementBand::Insufficient) => {
+            format!("{} (I\u{b2} {:.0}%)", band, i2 * 100.0)
+        }
+        _ => band.to_string(),
     }
 }
 
