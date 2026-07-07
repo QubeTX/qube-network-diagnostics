@@ -917,13 +917,18 @@ where
     }
 
     // M-Lab NDT7 (always).
-    {
+    let ndt7_locate_rate_limited = {
         let last = Arc::new(StdMutex::new(Instant::now()));
         let cb = stamped_progress(progress.clone(), last.clone());
         let r =
             run_provider_future(fast, "M-Lab NDT7", last, ndt7::run(&provider_config, cb)).await;
+        let rate_limited = r
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("discovery rate-limited"));
         record(&mut providers, r);
-    }
+        rate_limited
+    };
 
     // M-Lab MSAK — FAST always; FULL when enabled; never in Diagnostic.
     let run_msak = match config.provider_set {
@@ -932,11 +937,25 @@ where
         ProviderSet::Diagnostic => false,
     };
     if run_msak {
-        let last = Arc::new(StdMutex::new(Instant::now()));
-        let cb = stamped_progress(progress.clone(), last.clone());
-        let r =
-            run_provider_future(fast, "M-Lab MSAK", last, msak::run(&provider_config, cb)).await;
-        record(&mut providers, r);
+        // Both M-Lab providers are assigned servers by the same Locate API.
+        // If NDT7's discovery was just refused with a rate limit, MSAK's
+        // would be too — skip the request instead of feeding another call
+        // into an already-tripped per-IP limiter.
+        if ndt7_locate_rate_limited {
+            record(
+                &mut providers,
+                msak::error_result(
+                    "skipped: M-Lab Locate is rate-limiting this network (NDT7 discovery was refused) — try again later"
+                        .to_string(),
+                ),
+            );
+        } else {
+            let last = Arc::new(StdMutex::new(Instant::now()));
+            let cb = stamped_progress(progress.clone(), last.clone());
+            let r = run_provider_future(fast, "M-Lab MSAK", last, msak::run(&provider_config, cb))
+                .await;
+            record(&mut providers, r);
+        }
     }
 
     // FULL-only providers, in registry order: LibreSpeed, fast.com, CacheFly,

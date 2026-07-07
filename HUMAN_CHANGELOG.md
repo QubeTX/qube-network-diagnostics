@@ -6,6 +6,19 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 6, 2026 (evening) — clearer answers when M-Lab says "slow down"
+
+**Fixed**
+- When M-Lab's server-finder turns us away for making too many requests, the
+  test now says exactly that — instead of a confusing technical error that
+  looked like something was broken. It also tells you the fix: wait a while
+  and try again.
+- When that happens, the test no longer knocks on the same closed door twice —
+  the second M-Lab source is skipped with the same plain explanation instead of
+  sending another request into a limit that's already tripped.
+
+---
+
 ## July 6, 2026 — one measurement method everywhere, two new speed sources, a fast mode, and honest answers when a service throttles us
 
 The speed test now runs the exact same measurement method as the SpeedQX website

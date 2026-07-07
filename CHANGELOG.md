@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-07-06
+
+### Fixed
+- **M-Lab Locate 429s named honestly** — `ndt7.rs`/`msak.rs` discovery never
+  checked the HTTP status, so a Locate rate limit surfaced as a misleading
+  "missing results array" / parse error. A 429 now reads
+  "discovery rate-limited: M-Lab Locate refused this network (too many
+  requests) — try again later", matching the Cloudflare provider's existing
+  rate-limit disclosure. Found by the three-repo M-Lab integration audit.
+- **Cross-provider Locate short-circuit** — when NDT7's discovery is refused
+  with a rate limit, MSAK no longer fires its own request into the same
+  tripped per-IP limiter in the same run; it is recorded as skipped with the
+  same honest reason.
+
 ## [3.5.0] - 2026-07-06
 
 SpeedQX Methodology v4 — the unified cross-product measurement spec (see the new

@@ -68,6 +68,19 @@ where
         .await
         .map_err(|e| format!("MSAK discovery failed: {e}"))?;
 
+    // Locate refusals (429 in particular) would otherwise surface as a
+    // misleading "missing results array" shape error — name the condition.
+    let status = resp.status();
+    if status.as_u16() == 429 {
+        return Err(
+            "MSAK discovery rate-limited: M-Lab Locate refused this network (too many requests) — try again later"
+                .to_string(),
+        );
+    }
+    if !status.is_success() {
+        return Err(format!("MSAK discovery failed: HTTP {}", status.as_u16()));
+    }
+
     let body: serde_json::Value = resp
         .json()
         .await
@@ -484,7 +497,7 @@ fn parse_app_bytes_received(text: &str) -> Option<u64> {
         .as_u64()
 }
 
-fn error_result(msg: String) -> ProviderResult {
+pub(crate) fn error_result(msg: String) -> ProviderResult {
     ProviderResult {
         provider: "M-Lab MSAK".to_string(),
         server: "unknown".to_string(),
