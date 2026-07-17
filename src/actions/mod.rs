@@ -1,7 +1,9 @@
 pub mod clear_dns;
 pub mod dns;
 pub mod fix;
+pub mod maintenance;
 pub mod migrate;
+pub mod takeover;
 pub mod uninstall;
 #[cfg(unix)]
 pub(crate) mod unix_install;

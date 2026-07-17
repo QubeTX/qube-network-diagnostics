@@ -397,6 +397,12 @@ jobs:
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
+      - name: Harden Windows PowerShell installer for in-place updates
+        shell: pwsh
+        run: |
+          ./scripts/harden-cargo-dist-windows-installer.ps1 `
+            -Path artifacts/nd300-installer.ps1 `
+            -ExpectedVersion '${{ needs.plan.outputs.version }}'
       - name: Add legacy installer aliases
         shell: bash
         run: |

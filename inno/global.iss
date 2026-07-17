@@ -54,7 +54,11 @@ PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
+#ifdef ND300_ROLLBACK_TEST
+OutputBaseFilename=nd300-x86_64-pc-windows-msvc-setup-rollback-test
+#else
 OutputBaseFilename=nd300-x86_64-pc-windows-msvc-setup
+#endif
 OutputDir=Output
 Compression=lzma
 SolidCompression=yes
@@ -69,14 +73,11 @@ UninstallDisplayName={#MyAppName}
 ; (consistent with TR-300; the LICENSE file is committed at the repo root).
 LicenseFile=..\LICENSE
 SetupLogging=yes
-; Cross-method consolidation (v3.2.0+): close any running nd300/speedqx before we
-; replace files so the in-place upgrade isn't blocked, and so the post-install
-; `migrate-cleanup` can actually delete a shadowing copy that is in use. AppMutex
-; lets Setup detect a running instance; CloseApplications=yes asks Windows'
-; Restart Manager to close them. (nd300/speedqx are short-lived CLI tools, so this
-; is almost always a no-op.)
+; Never ask Restart Manager to terminate the updater that launched Setup. The
+; PrepareToInstall hook below transactionally retires the running image first.
 AppMutex=ND300_Running
-CloseApplications=yes
+CloseApplications=no
+RestartApplications=no
 
 [Tasks]
 ; Consolidation tasks — BOTH default-checked (Operator policy: one install at a
@@ -93,8 +94,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 ; Bundles both nd300.exe and speedqx.exe from target/release/. The CI workflow
 ; runs cargo build --release before invoking iscc so these paths are populated.
+; A temp-only copy runs the hidden registered-channel takeover before files move.
+Source: "..\target\release\{#MyAppExeName}"; DestName: "nd300-install-takeover.exe"; Flags: dontcopy
 Source: "..\target\release\{#MyAppExeName}"; DestDir: "{app}\bin"; Flags: ignoreversion
+#ifdef ND300_ROLLBACK_TEST
+Source: "..\target\release\{#MySecondExeName}"; DestDir: "{app}\bin"; Flags: ignoreversion; BeforeInstall: FailAfterFirstBinary
+#else
 Source: "..\target\release\{#MySecondExeName}"; DestDir: "{app}\bin"; Flags: ignoreversion
+#endif
 
 [Registry]
 ; Install-source marker. `nd300 update` reads HKCU\Software\ND300\InstallSource
@@ -104,6 +111,10 @@ Root: HKCU; Subkey: "Software\ND300"; ValueType: string; ValueName: "InstallSour
 Root: HKCU; Subkey: "Software\ND300"; Flags: uninsdeletekeyifempty
 
 [Run]
+; Always clean versioned images retired by PrepareToInstall. The new binary's
+; allowlisted helper deletes immediately or schedules deletion after the old
+; updater exits.
+Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --retired-update"; Flags: runhidden waituntilterminated; StatusMsg: "Finalizing the in-place update..."
 ; Post-install consolidation. The deletion LOGIC lives in the binary
 ; (`nd300 migrate-cleanup`), which only ever removes nd300.exe/speedqx.exe, never
 ; cargo/rustup, never the .cargo\bin PATH entry, never the running install, and
@@ -133,6 +144,101 @@ Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --in
 }
 const
   EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+
+var
+  RetiredNd300: Boolean;
+  RetiredSpeedqx: Boolean;
+  InstallSucceeded: Boolean;
+
+#ifdef ND300_ROLLBACK_TEST
+procedure FailAfterFirstBinary;
+begin
+  RaiseException('ND300 installer rollback test after first binary');
+end;
+#endif
+
+function RetireBinary(CurrentPath, RetiredPath: string; var Retired: Boolean): Boolean;
+begin
+  Result := True;
+  Retired := False;
+  if not FileExists(CurrentPath) then exit;
+  if FileExists(RetiredPath) and (not DeleteFile(RetiredPath)) then
+  begin
+    Result := False;
+    exit;
+  end;
+  Retired := RenameFile(CurrentPath, RetiredPath);
+  Result := Retired;
+end;
+
+procedure RestoreRetiredBinary(CurrentPath, RetiredPath: string; Retired: Boolean);
+begin
+  if Retired and FileExists(RetiredPath) then
+  begin
+    if FileExists(CurrentPath) then
+      DeleteFile(CurrentPath);
+    RenameFile(RetiredPath, CurrentPath);
+  end;
+end;
+
+function RunChannelTakeover(Target: string): string;
+var
+  HelperPath: string;
+  ExitCode: Integer;
+begin
+  Result := '';
+  ExtractTemporaryFile('nd300-install-takeover.exe');
+  HelperPath := ExpandConstant('{tmp}\nd300-install-takeover.exe');
+  if not Exec(
+    HelperPath,
+    'install-takeover --target ' + Target + ' --scope all',
+    '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then
+  begin
+    Result := 'Could not start the ND-300 channel takeover helper.';
+    exit;
+  end;
+  if ExitCode <> 0 then
+    Result := 'Could not safely replace the previously registered ND-300 install. See https://reports.qubetx.com/nd300#install';
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Nd300Path, Nd300Retired, SpeedqxPath, SpeedqxRetired: string;
+begin
+  Result := RunChannelTakeover('exe-global');
+  if Result <> '' then exit;
+  Nd300Path := ExpandConstant('{app}\bin\{#MyAppExeName}');
+  Nd300Retired := ExpandConstant('{app}\bin\nd300.update-old-{#MyAppVersion}.exe');
+  SpeedqxPath := ExpandConstant('{app}\bin\{#MySecondExeName}');
+  SpeedqxRetired := ExpandConstant('{app}\bin\speedqx.update-old-{#MyAppVersion}.exe');
+
+  if not RetireBinary(Nd300Path, Nd300Retired, RetiredNd300) then
+  begin
+    Result := 'Could not prepare nd300.exe for an in-place update.';
+    exit;
+  end;
+  if not RetireBinary(SpeedqxPath, SpeedqxRetired, RetiredSpeedqx) then
+  begin
+    RestoreRetiredBinary(Nd300Path, Nd300Retired, RetiredNd300);
+    RetiredNd300 := False;
+    Result := 'Could not prepare speedqx.exe for an in-place update.';
+  end;
+end;
+
+procedure DeinitializeSetup;
+begin
+  if not InstallSucceeded then
+  begin
+    RestoreRetiredBinary(
+      ExpandConstant('{app}\bin\{#MyAppExeName}'),
+      ExpandConstant('{app}\bin\nd300.update-old-{#MyAppVersion}.exe'),
+      RetiredNd300);
+    RestoreRetiredBinary(
+      ExpandConstant('{app}\bin\{#MySecondExeName}'),
+      ExpandConstant('{app}\bin\speedqx.update-old-{#MyAppVersion}.exe'),
+      RetiredSpeedqx);
+  end;
+end;
 
 procedure EnvAddPath(Path: string);
 var
@@ -184,7 +290,9 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
-    EnvAddPath(ExpandConstant('{app}') + '\bin');
+    EnvAddPath(ExpandConstant('{app}') + '\bin')
+  else if CurStep = ssDone then
+    InstallSucceeded := True;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

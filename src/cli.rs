@@ -140,6 +140,15 @@ pub enum Nd300Command {
     /// nd300/speedqx allowlist, and it always exits 0 (cleanup is advisory).
     #[command(name = "migrate-cleanup", hide = true)]
     MigrateCleanup(MigrateArgs),
+
+    /// Remove registered Windows installer channels that conflict with a
+    /// deliberate fresh install. Hidden installer-only contract.
+    #[command(name = "install-takeover", hide = true)]
+    InstallTakeover(InstallTakeoverArgs),
+
+    /// Transaction-bound installer bookkeeping. Hidden installer-only contract.
+    #[command(name = "install-maintenance", hide = true)]
+    InstallMaintenance(InstallMaintenanceArgs),
 }
 
 /// Per-subcommand arguments for `fix`. Currently a placeholder — the `--yes`
@@ -192,6 +201,11 @@ pub struct MigrateArgs {
     /// This is an internal installer contract, not a user-facing option.
     #[arg(long = "install-origin", value_enum, hide = true)]
     pub install_origin: Option<MigrateInstallOrigin>,
+
+    /// Remove versioned images retired while a running Windows binary was
+    /// upgraded in place. This is an internal installer contract.
+    #[arg(long = "retired-update", hide = true)]
+    pub retired_update: bool,
 }
 
 /// Valid installer origins accepted by the hidden migration helper.
@@ -204,6 +218,59 @@ pub enum MigrateInstallOrigin {
     MsiCorporate,
     ExeGlobal,
     ExeCorporate,
+}
+
+/// Arguments for the hidden pre-install channel-takeover helper.
+#[derive(Args, Debug, Clone)]
+pub struct InstallTakeoverArgs {
+    /// Channel that the fresh installer intends to make authoritative.
+    #[arg(long, value_enum, hide = true)]
+    pub target: InstallTakeoverTarget,
+
+    /// Registry scope visible to this installer phase.
+    #[arg(long, value_enum, default_value = "all", hide = true)]
+    pub scope: InstallTakeoverScope,
+}
+
+/// Fresh-install channels understood by the Windows takeover helper.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallTakeoverTarget {
+    MsiGlobal,
+    MsiCorporate,
+    ExeGlobal,
+    ExeCorporate,
+    Standalone,
+}
+
+/// Registry scope processed by one takeover-helper invocation.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallTakeoverScope {
+    All,
+    User,
+    Machine,
+}
+
+/// Arguments for hidden post-install/uninstall bookkeeping.
+#[derive(Args, Debug, Clone)]
+pub struct InstallMaintenanceArgs {
+    #[arg(long, value_enum, hide = true)]
+    pub action: InstallMaintenanceAction,
+
+    #[arg(long, value_enum, hide = true)]
+    pub origin: MigrateInstallOrigin,
+
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub current_path: Option<String>,
+
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub legacy_path: Option<String>,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallMaintenanceAction {
+    SetMarker,
+    ClearMarker,
+    RepairGlobalPath,
 }
 
 /// SpeedQX Internet Speed Test - QubeTX Developer Tools

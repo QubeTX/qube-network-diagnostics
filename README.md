@@ -12,7 +12,7 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **25 deep diagnostics** (technician mode): ARP (+ gateway health), routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy (+ PAC/WPAD), VPN, firewall, DNS cache, IPv6 (+ real v6 fetch), MTU (+ path-MTU probe), connection states, real bufferbloat (loaded latency during saturation), reverse DNS, TLS inspection, traffic counters, route path (traceroute analysis), sustained packet loss, NAT/CGNAT analysis, Wi-Fi link quality, DNS resolver benchmark (+ hijack/DNSSEC checks), captive portal detection, clock sync (NTP)
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
 - **Eight-source SpeedQX engine** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) + M-Lab MSAK + Apple networkQuality + CacheFly + Vultr, using Methodology v4 capacity/consensus merging, agreement, confidence intervals, PDV jitter, and RPM. ND300's core diagnostic keeps the shorter Cloudflare + NDT7 run; standalone `speedqx` uses all eight.
-- **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and tries bounded Cargo installation first. On macOS/Linux, the fallback downloads the exact target archive and required SHA-256 sidecar, verifies and allowlist-extracts only `nd300` and `speedqx`, checks both versions and (on macOS) Apple trust, then replaces the pair transactionally with rollback. Windows keeps its four installer-aware paths (MSI/EXE × Global/Corporate), selected from proven installer registration with a marker/path fallback and SHA-256 verification.
+- **Channel-preserving self-update** — `nd300 update` / `speedqx update` proves how the running copy was installed and updates through that same channel: Cargo stays Cargo, a managed macOS/Linux archive stays a managed archive, and each Windows MSI/EXE edition downloads its exact matching installer. Unknown, conflicted, local-build, and package-manager ownership is refused instead of guessed. Downloads are pinned to one exact release and verified before the two-binary transaction; a failure restores the old pair and points to the install page.
 - **SpeedQX** standalone speed test binary — all 8 providers (Methodology v4: capacity + consensus merge, I² agreement, PDV jitter, RPM) with per-provider breakdown and real-time progress; `--fast` for the quick 3-provider early-stopping run, `--skip-msak`/`--skip-apple` to trim the full run
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
@@ -36,7 +36,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/QubeTX/qube-networ
 
 ### Windows installers (MSI + EXE, Global + Corporate)
 
-Four first-class Windows installers are attached to every [release](https://github.com/QubeTX/qube-network-diagnostics/releases/latest). All four install **both** `nd300.exe` and `speedqx.exe` and add the install dir to your `PATH`. Pick **one format per edition** (installing two formats of the same edition leaves duplicate Add/Remove Programs entries).
+Four first-class Windows installers are attached to every [release](https://github.com/QubeTX/qube-network-diagnostics/releases/latest). All four install **both** `nd300.exe` and `speedqx.exe` and add the install dir to your `PATH`. A fresh official installer represents your latest choice within the same Windows install scope: it removes a proven conflicting ND300 format before claiming ownership, or fails without claiming success when Windows permissions or scope make that unsafe.
 
 | Edition | Scope | Admin (UAC)? | Installs to | Download |
 |---|---|---|---|---|
@@ -46,30 +46,33 @@ Four first-class Windows installers are attached to every [release](https://gith
 | **Corporate** EXE | Per-user | No | `%LocalAppData%\Programs\nd300\bin\` | `nd300-x86_64-pc-windows-msvc-corporate-setup.exe` |
 
 - **Corporate** editions install per-user with **no admin prompt** — ideal for locked-down corporate machines where you can't elevate.
-- Each installer writes a small `HKCU\Software\ND300\InstallSource` marker to help `nd300 update` choose its matching in-place installer. ND300 also proves ownership against the normalized Add/Remove Programs record; a Cargo-path binary or proven registered owner overrides a contradictory stale marker (see [Self-Update](#self-update)).
+- Each installer writes a small `HKCU\Software\ND300\InstallSource` marker only after setup commits successfully, and removes it on uninstall only when it still names that installer. The marker helps `nd300 update` choose its matching in-place installer, but ND300 also proves ownership against the normalized Add/Remove Programs record; a Cargo-path binary or proven registered owner overrides a contradictory stale marker (see [Self-Update](#self-update)).
 - Each installer has a `.sha256` sidecar; `nd300 update` verifies it before running the downloaded installer (refuse-on-mismatch).
 - The cargo-dist PowerShell installer above remains available and installs into Cargo's bin directory.
 
-**One install at a time — automatic consolidation.** Each installer offers two
-clean-up checkboxes, **both checked by default**:
+**One install at a time — automatic, scope-safe consolidation.** A fresh MSI/EXE
+proves and uninstalls a conflicting registered ND300 format in the same per-user
+or per-machine scope without shell-expanding registry commands. Windows Installer
+cannot safely major-upgrade across those two scopes, so an opposite-scope owner is
+refused before any mutation; uninstall it first or choose the current installer
+in the same scope. Each installer also offers two clean-up checkboxes, **both
+checked by default**:
 
 - **Remove an older Cargo-installed copy** — deletes a shadowing `nd300`/`speedqx`
   in your `~\.cargo\bin` (a prior `cargo install` copy usually wins on `PATH`
   otherwise). Your Rust toolchain is never touched — `cargo.exe`, `rustup.exe`,
   and the `.cargo\bin` `PATH` entry are left exactly as they were.
-- **Also remove the other edition** — deletes the other Windows edition
-  (Global ↔ Corporate) so only one edition remains.
+- **Also remove the other edition** — performs advisory, file-only cleanup of an
+  unregistered stale Global/Corporate binary pair after ownership preflight.
 
-The clean-up only ever removes `nd300.exe`/`speedqx.exe`, never the copy you're
-running, and never anything in your Downloads folder. If removing the other
-edition needs admin rights the installer doesn't have (e.g. a per-user install
-trying to remove a per-machine one), it simply skips that step and reports it —
-it never blocks or fails the install. **This consolidation also runs on a silent
-self-update.** Because it runs inside an active installer transaction, it is
-intentionally file-only: it does not claim to remove the old edition's separate
-Add/Remove Programs record or PATH entry. Use that edition's normal uninstaller
-for full removal. (Under the hood this is the hidden `nd300 migrate-cleanup`
-command, invoked by the installers; you never need to run it by hand.)
+The fallback clean-up only ever removes `nd300.exe`/`speedqx.exe`, never Cargo,
+Rustup, the Cargo `PATH` entry, the running replacement, or anything in Downloads.
+Supported registered takeover removes the prior binary pair, Add/Remove Programs
+entry, its correct user/system `PATH` entry, and stale marker together. MSI product
+codes are accepted only after Windows Installer itself proves that they belong to
+ND300's canonical UpgradeCode. If scope or permissions make takeover unsafe, setup
+stops with guidance rather than leaving two channels and pretending consolidation
+succeeded. These helpers are installer-only; you never need to run them by hand.
 
 ### Cargo
 
@@ -79,7 +82,7 @@ cargo install nd300
 
 Older installed copies that still request `nd-300-installer.sh` or `nd-300-installer.ps1` are supported by compatibility aliases on every new GitHub release, so the legacy updater path can still reach the current installers.
 
-Cargo itself cannot run ND300-specific uninstall hooks for unrelated old install locations. If an older installer-managed `nd300` appears before Cargo's bin directory on your `PATH`, run `nd300 update` first, or run `nd300 uninstall` before `cargo install nd300`; the updater knows how to remove the old ND300 layout and complete the Cargo install.
+Cargo itself cannot run ND300-specific post-install hooks for unrelated old install locations. A Cargo-managed `nd300 update` stays on Cargo and safely retires its running executable, but a deliberate switch *to* bare `cargo install` should be preceded by `nd300 uninstall` if a Windows installer currently owns the command. The official MSI/EXE and PowerShell entrypoints can perform their own scope-safe fresh-channel takeover automatically.
 
 ### From Source
 
@@ -494,21 +497,22 @@ speedqx update
 speedqx --update
 ```
 
-The updater runs a **probe-and-retry chain** so a missing optional tool does not
-block a safe fallback:
+The updater follows a **prove, pin, verify, replace** contract:
 
 1. Checks the latest release on GitHub. If you're already on it, exits 0 with no action.
-2. Tries a time-bounded `cargo install nd300 --force` when Cargo is available,
-   running it as the validated invoking user when `sudo` was used. It does **not**
-   run `rustup update` or otherwise change the Rust toolchain.
-3. Verifies the explicit user's `~/.cargo/bin/nd300` and `speedqx` both report the
-   exact requested version before considering Cargo successful or cleaning a
-   validated legacy origin.
-4. On macOS/Linux, a Cargo failure falls through to the native archive strategy:
-   fetch the exact release tag and compile-target `.tar.xz` plus its required
-   `.sha256` sidecar with time and size limits; verify SHA-256 in ND300 itself;
-   and allowlist-extract only the two expected regular files. Absolute paths,
-   traversal, symlinks, hardlinks, duplicate entries, and unexpected layouts are
+2. Proves the running installation channel. Cargo registry metadata selects only
+   bounded `cargo install nd300 --version =<resolved> --force --locked` as the
+   validated invoking user. A valid Unix receipt selects only the native archive
+   transaction. Windows registry,
+   path, marker, and Cargo evidence select exactly one of Cargo, standalone, or
+   MSI/EXE × Global/Corporate. A conflict or unknown owner changes nothing.
+3. Public commands and download links use `releases/latest`; after the latest tag
+   is resolved, every archive, installer, checksum, and verification step is
+   pinned to that one immutable tag. No transaction mixes moving “latest” bytes.
+4. A managed macOS/Linux archive fetches the exact compile-target `.tar.xz` plus
+   required `.sha256` sidecar with time and size limits; verifies SHA-256 in
+   ND300; and allowlist-extracts only the two expected regular files. Absolute
+   paths, traversal, symlinks, hardlinks, duplicates, and unexpected layouts are
    rejected.
 5. Executes both staged programs with `--version`. On macOS it additionally
    requires the pinned Developer ID certificate, Team ID `M9D5379H93`, identifiers
@@ -518,9 +522,14 @@ block a safe fallback:
 7. On Windows, a Cargo-bin path wins over any stale installer marker. Otherwise
    ND300 proves a matching MSI/Inno owner from Add/Remove Programs and its
    normalized install location before selecting one of the four installer-aware
-   update paths. The marker is used only as a compatible fallback.
-8. If every strategy fails, pretty and `--json` output show what was tried and
-   why each attempt failed.
+   update paths. MSI identity is accepted only when Windows Installer enumerates
+   the product under ND300's canonical UpgradeCode; the marker is only a compatible
+   fallback. The two running-image files are renamed to versioned, allowlisted
+   siblings before
+   replacement, restored on failure, and removed after the old process exits.
+8. There is no cross-channel fallback after a failed update. The old installation
+   remains authoritative, pretty and `--json` output explain the failure, and
+   `https://reports.qubetx.com/nd300#install` is provided for a fresh download.
 
 Unix uninstall is origin-aware too. Cargo-managed installs use
 `cargo uninstall nd300`; invocation through an ordinary symlink removes only the
@@ -532,9 +541,17 @@ locations and prints manual guidance instead.
 
 If you installed via one of the four first-class Windows installers (MSI/EXE × Global/Corporate — see [Installation](#windows-installers-msi--exe-global--corporate)), `nd300 update` matches the running executable to its normalized HKCU/HKLM Add/Remove Programs record and downloads the **matching** installer for an in-place upgrade — rather than switching you to a different installer/format. The `HKCU\Software\ND300\InstallSource` marker and known install path are fallbacks, not unconditional authority. A binary in `.cargo\bin`, or a single proven registered owner, overrides a contradictory stale marker.
 
-Before running a downloaded MSI/EXE, the updater fetches the asset's `.sha256` sidecar and verifies the download against it (refuse-on-mismatch) — defending against a corrupted download or a network MITM (corporate TLS-interception proxies, hostile WiFi). After the installer exits, it re-runs `--version` to confirm the file replacement actually took effect (and surfaces the reboot-required case honestly if Windows scheduled a deferred replace).
+Windows locks a running executable against overwrite but permits an in-place
+rename. Before replacement, the updater/installer moves only `nd300.exe` and
+`speedqx.exe` to versioned `*.update-old-*` siblings. MSI performs that move in
+its rollback-aware transaction; Inno and the hardened cargo-dist script restore
+the pair if their copy phase fails. The new allowlisted helper removes the
+retired images immediately or after the old updater exits, so no reboot is
+required merely to replace the running command.
 
-**Consolidation runs on a silent self-update too.** The Windows installers re-run by `nd300 update` carry the same two clean-up options (remove an older Cargo copy, remove the other edition) — both **default on**, and the silent self-update path (`msiexec /passive`, Inno `/SILENT`) keeps them on. This removes the old runnable binary pair when permissions allow; because the cleanup is intentionally file-only inside the active installer transaction, the old edition's separate Add/Remove Programs or PATH metadata can remain until that edition's normal uninstaller is used. Anything that needs admin rights the update doesn't have is skipped and reported, never failing the update.
+Before running a downloaded MSI/EXE, the updater pins both the installer and its `.sha256` sidecar to the already-resolved release tag and verifies the download against it (refuse-on-mismatch) — defending against a corrupted download or a network MITM (corporate TLS-interception proxies, hostile WiFi). After the installer exits, it re-runs `--version` to confirm the file replacement actually took effect (and surfaces the reboot-required case honestly if Windows scheduled a deferred replace).
+
+**Updates preserve channel; fresh installs may change format within one scope.** An MSI update stays the same MSI edition, an Inno update stays the same EXE edition, Cargo stays Cargo, and standalone stays standalone. A deliberate fresh official Windows install treats the selected package as the latest user intent and may replace a proven MSI/EXE owner in the same per-machine or per-user scope. A raw per-user ↔ per-machine switch is refused before mutation because Windows Installer cannot major-upgrade across contexts and an elevated installer must never execute a user-writable uninstaller. Uninstall the old scope first, or choose the desired format in that same scope. The Global MSI also repairs the pre-v3.1 `C:\Program Files\nd-300\bin` system-PATH entry after a successful migration while preserving every unrelated entry and registry value type. Default Cargo-copy cleanup remains narrowly file-only and never removes the Rust toolchain.
 
 Windows uninstall is ownership-aware as well. For a proven MSI/Inno install,
 `nd300 uninstall` starts that registered uninstaller directly from a validated

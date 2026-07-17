@@ -97,6 +97,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test-release-checksums.ps1
+      - name: Test cargo-dist Windows installer hardening
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-harden-cargo-dist-windows-installer.ps1
 
   build:
     name: Release Build (${{ matrix.name }})

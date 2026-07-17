@@ -79,8 +79,18 @@
             />
 
         <MajorUpgrade
-            Schedule='afterInstallInitialize'
+            Schedule='afterInstallExecute'
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <!-- Windows Installer cannot major-upgrade across per-user/per-machine
+             contexts. The preflight takeover helper therefore refuses an
+             opposite-scope registered owner before InstallInitialize instead
+             of authoring a cross-context Upgrade row that cannot be honored. -->
+
+        <!-- The package retires a running canonical binary through MoveFiles before
+             InstallFiles. Keep Restart Manager from terminating the updater before
+             that transactional rename can release the canonical path. -->
+        <Property Id='MSIRESTARTMANAGERCONTROL' Value='Disable'/>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='nd300 Installation'/>
@@ -129,26 +139,6 @@
                     </Component>
                     -->
 
-                    <!-- Install-source marker (v3.1.0+). `nd300 update` reads this
-                         from HKCU and picks the matching installer to download for
-                         in-place upgrades. HKCU even on a perMachine install: the
-                         user running this MSI is the user who'll later invoke
-                         `nd300 update`. The path-based fallback in
-                         src/actions/update.rs::detect_install_origin() catches the
-                         rare "admin pushed via Intune, end-user is different" case.
-                         Value must match the `msi-global` arm in
-                         src/actions/update.rs::read_install_source_marker().
-                         See wix-corporate/corporate.wxs for the perUser sibling. -->
-                    <Component Id='InstallSourceMarker' Guid='913CB3D9-B0E4-4821-963B-9127F93D7FE2'>
-                        <RegistryValue
-                            Root='HKCU'
-                            Key='Software\ND300'
-                            Name='InstallSource'
-                            Type='string'
-                            Value='msi-global'
-                            KeyPath='yes'/>
-                    </Component>
-
                     <Directory Id='Bin' Name='bin'>
                         <Component Id='Path' Guid='D131558E-5659-455C-A5C7-3E7943C3B005' KeyPath='yes'>
                             <Environment
@@ -161,6 +151,23 @@
                                 System='yes'/>
                         </Component>
                         <Component Id='binary0' Guid='*'>
+                            <!-- MoveFiles is sequenced before RemoveExistingProducts
+                                 on a major upgrade. Renaming the running image releases
+                                 its canonical filename without terminating the updater. -->
+                            <CopyFile
+                                Id='RetireRunningNd300'
+                                Delete='yes'
+                                SourceDirectory='Bin'
+                                SourceName='nd300.exe'
+                                DestinationDirectory='Bin'
+                                DestinationName='nd300.update-old-$(var.Version).exe'/>
+                            <CopyFile
+                                Id='RetireLegacyRunningNd300'
+                                Delete='yes'
+                                SourceDirectory='LegacyBin'
+                                SourceName='nd300.exe'
+                                DestinationDirectory='LegacyBin'
+                                DestinationName='nd300.update-old-$(var.Version).exe'/>
                             <File
                                 Id='exe0'
                                 Name='nd300.exe'
@@ -169,6 +176,20 @@
                                 KeyPath='yes'/>
                         </Component>
                         <Component Id='binary1' Guid='*'>
+                            <CopyFile
+                                Id='RetireRunningSpeedqx'
+                                Delete='yes'
+                                SourceDirectory='Bin'
+                                SourceName='speedqx.exe'
+                                DestinationDirectory='Bin'
+                                DestinationName='speedqx.update-old-$(var.Version).exe'/>
+                            <CopyFile
+                                Id='RetireLegacyRunningSpeedqx'
+                                Delete='yes'
+                                SourceDirectory='LegacyBin'
+                                SourceName='speedqx.exe'
+                                DestinationDirectory='LegacyBin'
+                                DestinationName='speedqx.update-old-$(var.Version).exe'/>
                             <File
                                 Id='exe1'
                                 Name='speedqx.exe'
@@ -177,6 +198,15 @@
                                 KeyPath='yes'/>
                         </Component>
                     </Directory>
+                </Directory>
+                <!-- Pre-v3.1 Global MSI releases used Program Files\nd-300.
+                     This must remain a sibling of APPLICATIONFOLDER so LegacyBin
+                     resolves to Program Files\nd-300\bin, not a child of the
+                     current Program Files\nd300 tree. MoveFiles can then retire
+                     a running legacy updater before the shared UpgradeCode
+                     removes that older product. -->
+                <Directory Id='LegacyApplicationFolder' Name='nd-300'>
+                    <Directory Id='LegacyBin' Name='bin'/>
                 </Directory>
             </Directory>
         </Directory>
@@ -199,8 +229,6 @@
 
             <ComponentRef Id='binary0'/>
             <ComponentRef Id='binary1'/>
-            <ComponentRef Id='InstallSourceMarker'/>
-
             <Feature
                 Id='Environment'
                 Title='PATH Environment Variable'
@@ -245,6 +273,57 @@
             Execute='deferred'
             Impersonate='yes'
             Return='ignore'/>
+        <Binary Id='InstallTakeoverHelper'
+            SourceFile='$(var.CargoTargetBinDir)\nd300.exe'/>
+        <CustomAction Id='TakeOverRegisteredChannels'
+            BinaryKey='InstallTakeoverHelper'
+            ExeCommand='install-takeover --target msi-global --scope all'
+            Execute='immediate'
+            Return='check'/>
+        <CustomAction Id='CleanRetiredUpdate'
+            FileKey='exe0'
+            ExeCommand='migrate-cleanup --quiet --retired-update'
+            Execute='commit'
+            Impersonate='no'
+            Return='ignore'/>
+        <!-- Marker writes are commit actions, after the old product removal, so
+             an upgrading product cannot delete the newly selected value. The
+             matching uninstall action deletes it only when it still names this
+             channel. This avoids authoring one shared registry resource under
+             incompatible component GUIDs across the two MSI products. -->
+        <CustomAction Id='WriteInstallSourceMarker'
+            FileKey='exe0'
+            ExeCommand='install-maintenance --action set-marker --origin msi-global'
+            Execute='commit'
+            Impersonate='yes'
+            Return='check'/>
+        <CustomAction Id='ClearInstallSourceMarker'
+            FileKey='exe0'
+            ExeCommand='install-maintenance --action clear-marker --origin msi-global'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='ignore'/>
+        <!-- v2.9 and current MSI releases share the historical PATH component
+             GUID even though its directory moved. Repair the exact legacy/current
+             machine PATH entries after commit rather than rotating the GUID and
+             breaking already-shipped v3.1+ ownership. -->
+        <CustomAction Id='RepairLegacyGlobalPath'
+            FileKey='exe0'
+            ExeCommand='install-maintenance --action repair-global-path --origin msi-global --current-path &quot;[Bin]&quot; --legacy-path &quot;[LegacyBin]&quot;'
+            Execute='commit'
+            Impersonate='no'
+            Return='check'/>
+        <?ifdef ND300_ROLLBACK_TEST?>
+        <!-- Candidate-matrix-only fault injection. Because this deferred action
+             follows InstallFiles in the execution script, its failure proves
+             that MoveFiles and both binary replacements roll back together. -->
+        <CustomAction Id='ForceRunningImageRollbackTest'
+            Directory='TARGETDIR'
+            ExeCommand='&quot;[SystemFolder]cmd.exe&quot; /d /c exit 86'
+            Execute='deferred'
+            Impersonate='no'
+            Return='check'/>
+        <?endif?>
         <CustomAction Id='CleanOtherEdition'
             FileKey='exe0'
             ExeCommand='migrate-cleanup --quiet --install-origin msi-global --other-edition'
@@ -254,11 +333,34 @@
 
         <InstallExecuteSequence>
             <!-- After InstallFiles (so exe0 is on disk), before InstallFinalize. -->
+            <Custom Action='TakeOverRegisteredChannels' Before='InstallInitialize'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <?ifdef ND300_ROLLBACK_TEST?>
+            <Custom Action='ForceRunningImageRollbackTest' After='InstallFiles'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <?endif?>
             <Custom Action='CleanCargoCopy' Before='InstallFinalize'>
                 <![CDATA[NOT Installed AND CLEANCARGO="1"]]>
             </Custom>
             <Custom Action='CleanOtherEdition' After='CleanCargoCopy'>
                 <![CDATA[NOT Installed AND CLEANOTHEREDITION="1"]]>
+            </Custom>
+            <Custom Action='ClearInstallSourceMarker' Before='RemoveFiles'>
+                <![CDATA[REMOVE="ALL"]]>
+            </Custom>
+            <!-- Commit actions are authored inside the execution sequence but run
+                 only after InstallFinalize succeeds. Retired images therefore stay
+                 available as rollback material for the entire transaction. -->
+            <Custom Action='CleanRetiredUpdate' Before='RepairLegacyGlobalPath'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <Custom Action='RepairLegacyGlobalPath' Before='WriteInstallSourceMarker'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <Custom Action='WriteInstallSourceMarker' Before='CleanCargoCopy'>
+                <![CDATA[NOT Installed]]>
             </Custom>
         </InstallExecuteSequence>
 

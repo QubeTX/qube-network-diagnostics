@@ -57,6 +57,10 @@ async fn main() {
                     Nd300Command::MigrateCleanup(args) => {
                         nd_300::actions::migrate::run(&config, args).await
                     }
+                    Nd300Command::InstallTakeover(args) => nd_300::actions::takeover::run(args),
+                    Nd300Command::InstallMaintenance(args) => {
+                        nd_300::actions::maintenance::run(args)
+                    }
                     // `Dns` is handled above (semi-exit-early), never reaches here.
                     Nd300Command::Dns => unreachable!(),
                 };

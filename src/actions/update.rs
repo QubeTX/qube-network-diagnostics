@@ -34,37 +34,28 @@ use super::{fail_icon, success_icon};
 const RELEASES_URL: &str =
     "https://api.github.com/repos/QubeTX/qube-network-diagnostics/releases/latest";
 
-/// PowerShell installer URL (Windows). Same `releases/latest` redirect.
+/// Users invoke versionless `latest` URLs, but after the API resolves one
+/// release every internal download is pinned to that immutable tag.
+const RELEASE_DOWNLOAD_BASE: &str =
+    "https://github.com/QubeTX/qube-network-diagnostics/releases/download";
 #[cfg(windows)]
-const PS_INSTALLER: &str =
-    "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.ps1";
+const PS_INSTALLER_ASSET: &str = "nd300-installer.ps1";
+const MSI_GLOBAL_ASSET: &str = "nd300-x86_64-pc-windows-msvc.msi";
+const MSI_CORPORATE_ASSET: &str = "nd300-x86_64-pc-windows-msvc-corporate.msi";
+const EXE_GLOBAL_ASSET: &str = "nd300-x86_64-pc-windows-msvc-setup.exe";
+const EXE_CORPORATE_ASSET: &str = "nd300-x86_64-pc-windows-msvc-corporate-setup.exe";
 
-/// Global (perMachine) MSI installer URL.
-#[cfg(windows)]
-const MSI_GLOBAL_URL: &str = "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-x86_64-pc-windows-msvc.msi";
-
-/// Corporate (perUser) MSI installer URL.
-#[cfg(windows)]
-const MSI_CORPORATE_URL: &str = "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-x86_64-pc-windows-msvc-corporate.msi";
-
-/// Global (perMachine) EXE installer URL (Inno Setup).
-#[cfg(windows)]
-const EXE_GLOBAL_URL: &str = "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-x86_64-pc-windows-msvc-setup.exe";
-
-/// Corporate (perUser) EXE installer URL (Inno Setup).
-#[cfg(windows)]
-const EXE_CORPORATE_URL: &str = "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-x86_64-pc-windows-msvc-corporate-setup.exe";
-
-const MANUAL_INSTALL_URL: &str = "https://github.com/QubeTX/qube-network-diagnostics#install";
+const MANUAL_INSTALL_URL: &str = "https://reports.qubetx.com/nd300#install";
 
 // ─── Strategy types ──────────────────────────────────────────────────────────
 
 /// Ordered candidate strategies for updating the binary.
 ///
-/// For Cargo/native-archive users, the runner tries each in order
-/// and falls through on any failure (preflight or runtime) until one succeeds.
-/// Cargo-first when available, then a verified exact-tag archive with an
-/// allowlisted two-binary transaction on Unix.
+/// A proven installation owner gets only strategies that preserve that owner:
+/// Cargo stays Cargo, a receipt-proven Unix archive stays a verified archive,
+/// and the Windows MSI/EXE variants stay the same format, edition, and scope.
+/// The only multi-entry plan is the legacy Windows standalone installer, where
+/// Windows PowerShell and pwsh execute the same signed installer script.
 ///
 /// For first-class Windows installs (v3.1.0+), `build_strategy_list` returns a
 /// *single* matching MSI/EXE strategy (no cross-fall-back between installer
@@ -74,12 +65,13 @@ const MANUAL_INSTALL_URL: &str = "https://github.com/QubeTX/qube-network-diagnos
 // block of build_strategy_list(), so on non-Windows targets the dead_code lint
 // flags them as never-constructed. The variants still need to exist on every
 // platform so the label()/json_id()/json_method() match arms stay exhaustive and
-// the try_strategy() dispatch arms compile. cfg_attr keeps Windows clippy strict
-// (missing wiring on Windows still trips the lint) while silencing it elsewhere.
+// the try_strategy() dispatch arms compile. UnixArchive is absent on Windows so
+// the Windows build keeps dead-code linting strict for every reachable route.
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpdateStrategy {
     Cargo,
+    #[cfg(unix)]
     UnixArchive,
     InstallerPowerShell,
     InstallerPwsh,
@@ -97,6 +89,7 @@ impl UpdateStrategy {
     fn label(self) -> &'static str {
         match self {
             UpdateStrategy::Cargo => "cargo install",
+            #[cfg(unix)]
             UpdateStrategy::UnixArchive => "verified release archive",
             UpdateStrategy::InstallerPowerShell => "PowerShell installer",
             UpdateStrategy::InstallerPwsh => "pwsh installer",
@@ -110,6 +103,7 @@ impl UpdateStrategy {
     fn json_id(self) -> &'static str {
         match self {
             UpdateStrategy::Cargo => "cargo",
+            #[cfg(unix)]
             UpdateStrategy::UnixArchive => "unix_archive",
             UpdateStrategy::InstallerPowerShell => "installer_powershell",
             UpdateStrategy::InstallerPwsh => "installer_pwsh",
@@ -153,11 +147,12 @@ pub(crate) enum InstallOrigin {
     ExeGlobal,
     /// `%LocalAppData%\Programs\nd300\bin\nd300.exe`, from inno/corporate.iss.
     ExeCorporate,
-    /// `~\.cargo\bin\nd300.exe` — installed via `cargo install` or the
-    /// cargo-dist PowerShell installer. Uses the legacy strategy chain.
+    /// `~\.cargo\bin\nd300.exe` — either Cargo-registered or installed by the
+    /// versionless cargo-dist PowerShell installer. Registry metadata selects
+    /// exactly one of those two same-channel routes.
     CargoOrInstaller,
     /// Couldn't determine origin (custom install location, portable use, etc.).
-    /// Treated like `CargoOrInstaller` so the legacy chain runs.
+    /// Updates stop safely rather than guessing an owner or changing channels.
     Unknown,
 }
 
@@ -205,12 +200,7 @@ pub(crate) struct RegisteredInstallOwner {
     pub(crate) origin: InstallOrigin,
     pub(crate) install_location: PathBuf,
     pub(crate) uninstall: RegisteredUninstall,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TargetOs {
-    Unix,
-    Windows,
+    pub(crate) machine_hive: bool,
 }
 
 #[derive(Debug)]
@@ -244,6 +234,145 @@ struct AttemptRecord {
 #[derive(Debug)]
 struct UpdateFailure {
     attempts: Vec<AttemptRecord>,
+}
+
+/// Windows keeps an executing image locked against replacement, but it permits
+/// an in-directory rename. A Cargo update writes back into the running binary's
+/// own directory, so retire the two package binaries to versioned siblings
+/// before invoking Cargo, then either delete them after success or restore them
+/// if every strategy fails. MSI/Inno packages perform the equivalent operation
+/// inside their elevated installer transaction; portable installs write to a
+/// different Cargo directory and retain their existing scheduled-cleanup path.
+#[cfg(windows)]
+#[derive(Debug)]
+struct RunningImageRetirement {
+    files: Vec<(PathBuf, PathBuf)>,
+}
+
+#[cfg(windows)]
+impl RunningImageRetirement {
+    fn prepare(latest: &str) -> Result<Self, String> {
+        let empty = || Self { files: Vec::new() };
+        let Some(current) = current_exe_real_path() else {
+            return Ok(empty());
+        };
+        let Some(dir) = current.parent() else {
+            return Ok(empty());
+        };
+        let Some(cargo_bin) = cargo_bin_dir() else {
+            return Ok(empty());
+        };
+        if !same_path(dir, &cargo_bin) {
+            return Ok(empty());
+        }
+        let current_name = current
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if current_name != "nd300.exe" && current_name != "speedqx.exe" {
+            return Ok(empty());
+        }
+
+        Self::prepare_in_dir(dir, latest)
+    }
+
+    fn prepare_in_dir(dir: &Path, latest: &str) -> Result<Self, String> {
+        let mut files = Vec::new();
+        for binary in super::uninstall::OUR_BINARIES {
+            let original = dir.join(format!("{binary}.exe"));
+            if !original.is_file() {
+                continue;
+            }
+            let retired_name = retired_update_filename(binary, latest);
+            if !crate::actions::migrate::is_retired_update_image(Path::new(&retired_name)) {
+                return Err(format!(
+                    "refusing unsafe retired-image version from release tag: {latest}"
+                ));
+            }
+            let retired = dir.join(retired_name);
+            if retired.exists() && std::fs::remove_file(&retired).is_err() {
+                return abandon_retirement(
+                    files,
+                    format!("could not replace {}", retired.display()),
+                );
+            }
+            if std::fs::rename(&original, &retired).is_err() {
+                return abandon_retirement(
+                    files,
+                    format!("could not retire {}", original.display()),
+                );
+            }
+            files.push((original, retired));
+        }
+        Ok(Self { files })
+    }
+
+    fn finish(self, success: bool) -> Result<(), String> {
+        if success {
+            for (_, retired) in self.files {
+                if std::fs::remove_file(&retired).is_err() && retired.exists() {
+                    if let Err(error) = super::uninstall::spawn_delayed_delete(&retired) {
+                        eprintln!(
+                            "  · WARNING: could not schedule retired update image {} for removal: {}",
+                            retired.display(),
+                            error
+                        );
+                    }
+                }
+            }
+            Ok(())
+        } else {
+            restore_retired_images(&self.files)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn abandon_retirement(
+    files: Vec<(PathBuf, PathBuf)>,
+    reason: String,
+) -> Result<RunningImageRetirement, String> {
+    match restore_retired_images(&files) {
+        Ok(()) => Err(format!("{reason}; original images restored")),
+        Err(recovery) => Err(format!("{reason}; rollback also failed: {recovery}")),
+    }
+}
+
+#[cfg(windows)]
+fn restore_retired_images(files: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for (original, retired) in files.iter().rev() {
+        if original.exists() {
+            if let Err(error) = std::fs::remove_file(original) {
+                failures.push(format!("could not remove {}: {error}", original.display()));
+                continue;
+            }
+        }
+        if retired.exists() {
+            if let Err(error) = std::fs::rename(retired, original) {
+                failures.push(format!(
+                    "could not restore {} to {}: {error}",
+                    retired.display(),
+                    original.display()
+                ));
+            }
+        } else if !original.exists() {
+            failures.push(format!(
+                "retired image {} disappeared before it could be restored",
+                retired.display()
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+#[cfg(any(windows, test))]
+fn retired_update_filename(binary: &str, version: &str) -> String {
+    format!("{binary}.update-old-{version}.exe")
 }
 
 // ─── Public entry point ──────────────────────────────────────────────────────
@@ -290,7 +419,18 @@ pub async fn run(config: &Config) -> i32 {
         latest,
     );
 
-    let strategies = build_strategy_list().await;
+    let strategies = match build_strategy_list().await {
+        Ok(strategies) => strategies,
+        Err(error) => {
+            println!(
+                "  {} {}",
+                color::red(fail_icon(config), config),
+                color::red(&format!("Update stopped safely: {error}"), config)
+            );
+            println!("  Reinstall through the same method: {MANUAL_INSTALL_URL}");
+            return 2;
+        }
+    };
     let primary = strategies.first().copied();
     if let Some(s) = primary {
         println!(
@@ -301,7 +441,35 @@ pub async fn run(config: &Config) -> i32 {
     }
     println!();
 
-    match execute_update(&latest, &strategies).await {
+    #[cfg(windows)]
+    let retirement = match RunningImageRetirement::prepare(&latest) {
+        Ok(retirement) => retirement,
+        Err(error) => {
+            println!(
+                "  {} {}",
+                color::red(fail_icon(config), config),
+                color::red(&format!("Update preflight failed safely: {error}"), config)
+            );
+            println!("  Reinstall through the same method: {MANUAL_INSTALL_URL}");
+            return 2;
+        }
+    };
+    let mut result = execute_update(&latest, &strategies).await;
+    #[cfg(windows)]
+    if let Err(error) = retirement.finish(result.is_ok()) {
+        if let Err(failure) = &mut result {
+            failure.attempts.push(AttemptRecord {
+                strategy: strategies
+                    .first()
+                    .copied()
+                    .unwrap_or(UpdateStrategy::InstallerPowerShell),
+                kind: AttemptKind::Failed,
+                message: format!("running-image rollback failed: {error}"),
+            });
+        }
+    }
+
+    match result {
         Ok(used) => {
             println!();
             println!(
@@ -334,7 +502,7 @@ pub async fn run(config: &Config) -> i32 {
                 );
             }
             println!();
-            println!("  To update manually, see: {}", MANUAL_INSTALL_URL);
+            println!("  Reinstall through the same method: {MANUAL_INSTALL_URL}");
             2
         }
     }
@@ -379,8 +547,65 @@ async fn run_json(_config: &Config) -> i32 {
         return 0;
     }
 
-    let strategies = build_strategy_list().await;
-    match execute_update(&latest, &strategies).await {
+    let strategies = match build_strategy_list().await {
+        Ok(strategies) => strategies,
+        Err(error) => {
+            let mut output = serde_json::json!({
+                "action": "update",
+                "success": false,
+                "message": format!("Update stopped safely: {error}"),
+                "current_version": current,
+                "latest_version": latest,
+                "update_available": true,
+                "attempts": [],
+                "manual_install_url": MANUAL_INSTALL_URL,
+            });
+            inject_install_origin(&mut output);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
+            );
+            return 2;
+        }
+    };
+    #[cfg(windows)]
+    let retirement = match RunningImageRetirement::prepare(&latest) {
+        Ok(retirement) => retirement,
+        Err(error) => {
+            let mut output = serde_json::json!({
+                "action": "update",
+                "success": false,
+                "message": format!("Update preflight failed safely: {error}"),
+                "current_version": current,
+                "latest_version": latest,
+                "update_available": true,
+                "attempts": [],
+                "manual_install_url": MANUAL_INSTALL_URL,
+            });
+            inject_install_origin(&mut output);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
+            );
+            return 2;
+        }
+    };
+    let mut result = execute_update(&latest, &strategies).await;
+    #[cfg(windows)]
+    if let Err(error) = retirement.finish(result.is_ok()) {
+        if let Err(failure) = &mut result {
+            failure.attempts.push(AttemptRecord {
+                strategy: strategies
+                    .first()
+                    .copied()
+                    .unwrap_or(UpdateStrategy::InstallerPowerShell),
+                kind: AttemptKind::Failed,
+                message: format!("running-image rollback failed: {error}"),
+            });
+        }
+    }
+
+    match result {
         Ok(used) => {
             let mut output = serde_json::json!({
                 "action": "update",
@@ -422,6 +647,7 @@ async fn run_json(_config: &Config) -> i32 {
                 "latest_version": latest,
                 "update_available": true,
                 "attempts": attempts,
+                "manual_install_url": MANUAL_INSTALL_URL,
             });
             inject_install_origin(&mut output);
             println!(
@@ -504,8 +730,33 @@ async fn fetch_latest_version() -> Result<String, String> {
         .as_str()
         .ok_or("Missing tag_name in response")?;
 
-    // Strip leading 'v' if present.
-    Ok(tag.strip_prefix('v').unwrap_or(tag).to_string())
+    // `/releases/latest` excludes prereleases. Validate the stable numeric tag
+    // before interpolating it into immutable artifact URLs or Cargo arguments.
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    validate_release_version(version)?;
+    Ok(version.to_string())
+}
+
+fn validate_release_version(version: &str) -> Result<(), String> {
+    if version.len() > 32 {
+        return Err("release version is unreasonably long".to_string());
+    }
+    let mut parts = version.split('.');
+    let valid = (0..3).all(|_| {
+        parts
+            .next()
+            .is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    }) && parts.next().is_none();
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("invalid stable release version {version:?}"))
+    }
+}
+
+fn exact_release_asset_url(version: &str, asset: &str) -> Result<String, StrategyError> {
+    validate_release_version(version).map_err(StrategyError::Preflight)?;
+    Ok(format!("{RELEASE_DOWNLOAD_BASE}/v{version}/{asset}"))
 }
 
 /// Strip any prerelease (`-rc.1`) or build-metadata (`+nightly.42`) suffix from a
@@ -561,46 +812,30 @@ fn is_newer(current: &str, latest: &str) -> bool {
     current_has_suffix && !latest_has_suffix
 }
 
-// ─── Strategy ordering (pure, testable) ──────────────────────────────────────
+// ─── Origin-preserving strategy planning ─────────────────────────────────────
 
-fn order_strategies(cargo_invokable: bool, os: TargetOs) -> Vec<UpdateStrategy> {
-    let mut list = Vec::new();
-    if cargo_invokable {
-        list.push(UpdateStrategy::Cargo);
+#[cfg(any(windows, test))]
+fn windows_cargo_or_installer_plan(
+    cargo_registered: bool,
+    cargo_invokable: bool,
+) -> Result<Vec<UpdateStrategy>, String> {
+    if cargo_registered {
+        return cargo_invokable
+            .then_some(vec![UpdateStrategy::Cargo])
+            .ok_or_else(|| {
+                "this copy is registered to Cargo, but the owning Cargo executable is unavailable"
+                    .to_string()
+            });
     }
-    match os {
-        TargetOs::Unix => {
-            list.push(UpdateStrategy::UnixArchive);
-        }
-        TargetOs::Windows => {
-            list.push(UpdateStrategy::InstallerPowerShell);
-            list.push(UpdateStrategy::InstallerPwsh);
-        }
-    }
-    list
+    Ok(vec![
+        UpdateStrategy::InstallerPowerShell,
+        UpdateStrategy::InstallerPwsh,
+    ])
 }
 
-fn current_target_os() -> TargetOs {
-    if cfg!(windows) {
-        TargetOs::Windows
-    } else {
-        TargetOs::Unix
-    }
-}
-
+#[cfg(windows)]
 async fn cargo_invokable() -> bool {
-    #[cfg(unix)]
-    {
-        let Ok(user) = crate::platform::invoking_user::InvokingUser::detect() else {
-            return false;
-        };
-        return super::unix_install::cargo_is_invokable(&user).await;
-    }
-
-    #[cfg(windows)]
-    {
-        tool_exists("cargo")
-    }
+    tool_exists("cargo")
 }
 
 #[cfg(windows)]
@@ -614,7 +849,7 @@ fn tool_exists(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn build_strategy_list() -> Vec<UpdateStrategy> {
+async fn build_strategy_list() -> Result<Vec<UpdateStrategy>, String> {
     #[cfg(windows)]
     {
         // For first-class Windows installs, dispatch to a single matching
@@ -622,16 +857,56 @@ async fn build_strategy_list() -> Vec<UpdateStrategy> {
         // — running a different product would create coexistence problems (two
         // ARP entries, PATH ordering wins).
         match detect_install_origin() {
-            InstallOrigin::MsiGlobal => return vec![UpdateStrategy::MsiGlobal],
-            InstallOrigin::MsiCorporate => return vec![UpdateStrategy::MsiCorporate],
-            InstallOrigin::ExeGlobal => return vec![UpdateStrategy::ExeGlobal],
-            InstallOrigin::ExeCorporate => return vec![UpdateStrategy::ExeCorporate],
-            InstallOrigin::CargoOrInstaller | InstallOrigin::Unknown => {
-                // Fall through to the legacy cargo/PS chain.
-            }
+            InstallOrigin::MsiGlobal => Ok(vec![UpdateStrategy::MsiGlobal]),
+            InstallOrigin::MsiCorporate => Ok(vec![UpdateStrategy::MsiCorporate]),
+            InstallOrigin::ExeGlobal => Ok(vec![UpdateStrategy::ExeGlobal]),
+            InstallOrigin::ExeCorporate => Ok(vec![UpdateStrategy::ExeCorporate]),
+            InstallOrigin::CargoOrInstaller => windows_cargo_or_installer_plan(
+                windows_cargo_package_registered(),
+                cargo_invokable().await,
+            ),
+            InstallOrigin::Unknown => Err(
+                "the running executable is not owned by a supported installer; no files were changed"
+                    .to_string(),
+            ),
         }
     }
-    order_strategies(cargo_invokable().await, current_target_os())
+
+    #[cfg(unix)]
+    {
+        use super::unix_install::UnixOriginKind;
+
+        let user = crate::platform::invoking_user::InvokingUser::detect()
+            .map_err(|error| format!("could not identify the invoking user: {error}"))?;
+        let origin = super::unix_install::detect_origin(&user)
+            .map_err(|error| format!("could not identify the install owner: {error}"))?;
+        let kind = super::unix_install::effective_update_kind_for(&origin, &user);
+        match kind {
+            UnixOriginKind::Cargo => {
+                if super::unix_install::cargo_is_invokable(&user).await {
+                    Ok(vec![UpdateStrategy::Cargo])
+                } else {
+                    Err(
+                        "this copy is registered to Cargo, but the owning Cargo executable is unavailable"
+                            .to_string(),
+                    )
+                }
+            }
+            UnixOriginKind::ManagedArchive => Ok(vec![UpdateStrategy::UnixArchive]),
+            UnixOriginKind::PackageManager => Err(format!(
+                "the running executable at {} is package-manager-owned; update it through that package manager",
+                origin.executable.display()
+            )),
+            UnixOriginKind::LocalBuild => Err(format!(
+                "the running executable at {} is a local build; rebuild it from source",
+                origin.executable.display()
+            )),
+            UnixOriginKind::Symlink | UnixOriginKind::Unknown => Err(format!(
+                "the install owner of {} could not be proven; no files were changed",
+                origin.executable.display()
+            )),
+        }
+    }
 }
 
 // ─── Strategy execution ──────────────────────────────────────────────────────
@@ -677,50 +952,25 @@ async fn execute_update(
 async fn try_strategy(strategy: UpdateStrategy, latest: &str) -> Result<(), StrategyError> {
     match strategy {
         UpdateStrategy::Cargo => try_cargo_install(latest).await,
+        #[cfg(unix)]
         UpdateStrategy::UnixArchive => try_unix_archive(latest).await,
-        UpdateStrategy::InstallerPowerShell => try_installer_powershell("powershell"),
-        UpdateStrategy::InstallerPwsh => try_installer_powershell("pwsh"),
-        UpdateStrategy::MsiGlobal => try_msi_install(msi_global_url(), latest),
-        UpdateStrategy::MsiCorporate => try_msi_install(msi_corporate_url(), latest),
-        UpdateStrategy::ExeGlobal => try_exe_install(exe_global_url(), latest),
-        UpdateStrategy::ExeCorporate => try_exe_install(exe_corporate_url(), latest),
+        UpdateStrategy::InstallerPowerShell => try_installer_powershell("powershell", latest),
+        UpdateStrategy::InstallerPwsh => try_installer_powershell("pwsh", latest),
+        UpdateStrategy::MsiGlobal => {
+            try_msi_install(&exact_release_asset_url(latest, MSI_GLOBAL_ASSET)?, latest)
+        }
+        UpdateStrategy::MsiCorporate => try_msi_install(
+            &exact_release_asset_url(latest, MSI_CORPORATE_ASSET)?,
+            latest,
+        ),
+        UpdateStrategy::ExeGlobal => {
+            try_exe_install(&exact_release_asset_url(latest, EXE_GLOBAL_ASSET)?, latest)
+        }
+        UpdateStrategy::ExeCorporate => try_exe_install(
+            &exact_release_asset_url(latest, EXE_CORPORATE_ASSET)?,
+            latest,
+        ),
     }
-}
-
-// URL accessors are #[cfg(windows)] under the hood but exposed uniformly so the
-// dispatch arms above don't need their own #[cfg] gates — keeps the match
-// exhaustive on all platforms.
-#[cfg(windows)]
-fn msi_global_url() -> &'static str {
-    MSI_GLOBAL_URL
-}
-#[cfg(windows)]
-fn msi_corporate_url() -> &'static str {
-    MSI_CORPORATE_URL
-}
-#[cfg(windows)]
-fn exe_global_url() -> &'static str {
-    EXE_GLOBAL_URL
-}
-#[cfg(windows)]
-fn exe_corporate_url() -> &'static str {
-    EXE_CORPORATE_URL
-}
-#[cfg(not(windows))]
-fn msi_global_url() -> &'static str {
-    ""
-}
-#[cfg(not(windows))]
-fn msi_corporate_url() -> &'static str {
-    ""
-}
-#[cfg(not(windows))]
-fn exe_global_url() -> &'static str {
-    ""
-}
-#[cfg(not(windows))]
-fn exe_corporate_url() -> &'static str {
-    ""
 }
 
 async fn try_cargo_install(latest: &str) -> Result<(), StrategyError> {
@@ -734,29 +984,38 @@ async fn try_cargo_install(latest: &str) -> Result<(), StrategyError> {
             .await
             .map_err(StrategyError::Runtime)?;
         cleanup_shadowing_current_install_after_cargo_success(&preinstall_origin, &user)?;
-        Ok(())
+        return Ok(());
     }
 
     #[cfg(windows)]
-    match run_command_capture("cargo", &["install", "nd300", "--force"]) {
-        Ok(()) => {
-            // Clean up any shadowing non-cargo install first (ND-300's existing
-            // machinery), THEN confirm the running binary actually changed. cargo
-            // exit 0 doesn't guarantee that: crates.io may still serve the OLD
-            // version (publish lag right after a GitHub release), or a different
-            // nd300 may be earlier on PATH. Verify, and fall through to the
-            // prebuilt installer on mismatch so we don't loop "update available".
-            cleanup_shadowing_current_install_after_cargo_success()?;
-            verify_cargo_post_install(latest)
+    {
+        let args = [
+            "install",
+            "nd300",
+            "--version",
+            latest,
+            "--force",
+            "--locked",
+        ];
+        match run_command_capture("cargo", &args) {
+            Ok(()) => {
+                // Clean up any shadowing non-cargo install first (ND-300's existing
+                // machinery), THEN confirm the running binary actually changed.
+                // Cargo exit 0 doesn't guarantee that the canonical pair now
+                // reports the exact pinned release, so verify before committing
+                // the running-image retirement.
+                cleanup_shadowing_current_install_after_cargo_success()?;
+                verify_cargo_post_install(latest)
+            }
+            Err(StrategyError::Runtime(msg))
+                if cargo_failure_suggests_existing_binary_collision(&msg) =>
+            {
+                cleanup_current_install_for_cargo_retry()?;
+                run_command_capture("cargo", &args)?;
+                verify_cargo_post_install(latest)
+            }
+            other => other,
         }
-        Err(StrategyError::Runtime(msg))
-            if cargo_failure_suggests_existing_binary_collision(&msg) =>
-        {
-            cleanup_current_install_for_cargo_retry()?;
-            run_command_capture("cargo", &["install", "nd300", "--force"])?;
-            verify_cargo_post_install(latest)
-        }
-        other => other,
     }
 }
 
@@ -767,13 +1026,6 @@ async fn try_unix_archive(latest: &str) -> Result<(), StrategyError> {
     super::unix_install::update_from_archive(latest, &user)
         .await
         .map_err(StrategyError::Fatal)
-}
-
-#[cfg(not(unix))]
-async fn try_unix_archive(_latest: &str) -> Result<(), StrategyError> {
-    Err(StrategyError::Preflight(
-        "verified Unix archive updater is Unix-only".to_string(),
-    ))
 }
 
 /// The three outcomes of a shadow-cleanup attempt, as a function of the cleanup
@@ -945,6 +1197,56 @@ pub(crate) fn cargo_bin_dir() -> Option<PathBuf> {
     }
 }
 
+#[cfg(windows)]
+fn windows_cargo_package_registered() -> bool {
+    cargo_bin_dir()
+        .and_then(|bin| bin.parent().map(Path::to_path_buf))
+        .is_some_and(|home| windows_cargo_package_registered_at(&home))
+}
+
+#[cfg(any(windows, test))]
+fn windows_cargo_package_registered_at(cargo_home: &Path) -> bool {
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    let read_regular = |path: &Path| -> Option<Vec<u8>> {
+        let metadata = std::fs::symlink_metadata(path).ok()?;
+        if !metadata.file_type().is_file() || metadata.len() > LIMIT {
+            return None;
+        }
+        std::fs::read(path)
+            .ok()
+            .filter(|bytes| bytes.len() as u64 <= LIMIT)
+    };
+
+    if let Some(bytes) = read_regular(&cargo_home.join(".crates2.json")) {
+        if serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("installs")
+                    .and_then(serde_json::Value::as_object)
+                    .cloned()
+            })
+            .is_some_and(|installs| installs.keys().any(|key| cargo_registry_key_is_nd300(key)))
+        {
+            return true;
+        }
+    }
+
+    read_regular(&cargo_home.join(".crates.toml"))
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .is_some_and(|text| {
+            text.lines()
+                .any(|line| cargo_registry_key_is_nd300(line.trim()))
+        })
+}
+
+#[cfg(any(windows, test))]
+fn cargo_registry_key_is_nd300(key: &str) -> bool {
+    key.trim_start_matches(['"', '\''])
+        .strip_prefix("nd300 ")
+        .is_some_and(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit()))
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn current_install_shadows_cargo_install(
     current_exe: &Path,
@@ -1005,20 +1307,21 @@ fn cargo_failure_suggests_existing_binary_collision(message: &str) -> bool {
 /// - non-zero exit → `Runtime` (ran but failed).
 /// - zero exit → `Ok`.
 #[cfg(windows)]
-fn run_command_status(launcher: &str, args: &[&str]) -> Result<(), StrategyError> {
+fn run_command_status(launcher: &Path, args: &[&str]) -> Result<(), StrategyError> {
     let res = Command::new(launcher).args(args).status();
     match res {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(StrategyError::Preflight(
-            format!("{} not on PATH", launcher),
+            format!("{} was not found", launcher.display()),
         )),
         Err(e) => Err(StrategyError::Preflight(format!(
             "Failed to spawn {}: {}",
-            launcher, e
+            launcher.display(),
+            e
         ))),
         Ok(s) if s.success() => Ok(()),
         Ok(s) => Err(StrategyError::Runtime(format!(
             "{} exited with code {}",
-            launcher,
+            launcher.display(),
             s.code().unwrap_or(-1)
         ))),
     }
@@ -1064,13 +1367,19 @@ fn summarize_output(output: &Output) -> String {
 }
 
 #[cfg(windows)]
-fn try_installer_powershell(launcher: &str) -> Result<(), StrategyError> {
+fn try_installer_powershell(launcher: &str, latest: &str) -> Result<(), StrategyError> {
     // `$ErrorActionPreference='Stop'` so an `irm` failure aborts the pipeline
     // rather than feeding nothing into iex (which would exit 0 and look like a
     // successful update).
-    let script = format!("$ErrorActionPreference='Stop'; irm {} | iex", PS_INSTALLER);
+    let installer = exact_release_asset_url(latest, PS_INSTALLER_ASSET)?;
+    let script = format!("$ErrorActionPreference='Stop'; irm {installer} | iex");
+    let launcher = if launcher.eq_ignore_ascii_case("powershell") {
+        super::uninstall::system_powershell_path().map_err(StrategyError::Preflight)?
+    } else {
+        PathBuf::from(launcher)
+    };
     run_command_status(
-        launcher,
+        &launcher,
         &[
             "-NoProfile",
             "-NonInteractive",
@@ -1083,7 +1392,7 @@ fn try_installer_powershell(launcher: &str) -> Result<(), StrategyError> {
 }
 
 #[cfg(not(windows))]
-fn try_installer_powershell(_launcher: &str) -> Result<(), StrategyError> {
+fn try_installer_powershell(_launcher: &str, _latest: &str) -> Result<(), StrategyError> {
     Err(StrategyError::Preflight(
         "PowerShell installer is Windows-only".into(),
     ))
@@ -1092,9 +1401,9 @@ fn try_installer_powershell(_launcher: &str) -> Result<(), StrategyError> {
 // ─── Windows MSI / EXE installer strategies (v3.1.0+) ─────────────────────────
 
 /// msiexec exit code returned when the install completed successfully but a
-/// reboot is required to finalize a file replacement (Windows Installer's Restart
-/// Manager couldn't replace a locked file in-place and scheduled a delete-on-
-/// reboot instead).
+/// reboot is required to finalize a file replacement. The ND-300 MSI normally
+/// retires both running images through its transactional MoveFiles actions, but
+/// this remains a valid Windows Installer success code that needs disclosure.
 #[cfg(windows)]
 const MSI_EXIT_REBOOT_REQUIRED: i32 = 3010;
 
@@ -1265,13 +1574,34 @@ fn post_install_version_ok(installed: &str, expected: &str) -> bool {
     !installed_stripped.is_empty() && installed_stripped == expected_stripped
 }
 
-/// Re-exec the running binary with `--version` and return the parsed version (the
-/// last whitespace token of `nd300 X.Y.Z` / `speedqx X.Y.Z`). `None` if the spawn
-/// fails, the process errors, or the output doesn't parse. Cross-platform — used
-/// by both the Windows installer verify and the cargo-path verify.
+/// Resolve a process image that has been retired for an in-place update back to
+/// its canonical package filename. `GetModuleFileName` normally preserves the
+/// name used to launch the process, but this makes post-install verification
+/// independent of that Windows implementation detail.
+#[cfg(any(windows, test))]
+fn canonical_update_executable(exe: &Path) -> PathBuf {
+    let name = exe
+        .file_name()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let canonical = if name.starts_with("nd300.update-old-") && name.ends_with(".exe") {
+        Some("nd300.exe")
+    } else if name.starts_with("speedqx.update-old-") && name.ends_with(".exe") {
+        Some("speedqx.exe")
+    } else {
+        None
+    };
+    canonical
+        .and_then(|filename| exe.parent().map(|dir| dir.join(filename)))
+        .unwrap_or_else(|| exe.to_path_buf())
+}
+
+/// Re-exec the newly installed canonical binary with `--version` and return the
+/// parsed version (the last whitespace token of `nd300 X.Y.Z` / `speedqx X.Y.Z`).
+/// `None` if the spawn fails, the process errors, or the output doesn't parse.
 #[cfg(windows)]
 fn reexec_installed_version() -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
+    let exe = canonical_update_executable(&std::env::current_exe().ok()?);
     let output = Command::new(&exe).arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
@@ -1289,31 +1619,29 @@ fn reexec_installed_version() -> Option<String> {
     }
 }
 
-/// Confirm a `cargo install nd300 --force` update actually landed.
+/// Confirm an exact-version `cargo install nd300` update actually landed.
 ///
-/// `cargo install` reports success (exit 0) even when crates.io still serves the
-/// OLD version — a publish lag right after a GitHub release, or a failed publish
-/// run. Without this check, the updater would print "Updated to vX" while
-/// `nd300 --version` is unchanged, then loop forever. Re-exec `--version`; on
-/// mismatch return a `Runtime` error so `execute_update` falls through to the
-/// prebuilt GitHub-release installer, which always carries `latest`.
+/// `cargo install` can report success (exit 0) while a shadowing or incomplete
+/// replacement still leaves the canonical command at the old version. Re-exec
+/// `--version`; a mismatch fails this Cargo-only route and restores the retired
+/// images rather than crossing to a different installation channel.
 #[cfg(windows)]
 fn verify_cargo_post_install(expected: &str) -> Result<(), StrategyError> {
     match reexec_installed_version() {
         Some(installed) if post_install_version_ok(&installed, expected) => Ok(()),
         Some(installed) => Err(StrategyError::Runtime(format!(
-            "cargo install reported success but `nd300 --version` still reports v{installed} (expected v{expected}). crates.io may not have v{expected} yet, or another nd300 is earlier on your PATH — falling through to the prebuilt installer."
+            "cargo install reported success but `nd300 --version` still reports v{installed} (expected v{expected}); the Cargo update was not committed and no other installation channel was attempted."
         ))),
         None => Err(StrategyError::Runtime(
-            "cargo install reported success but `nd300 --version` could not be run to confirm the new version — falling through to the prebuilt installer.".to_string(),
+            "cargo install reported success but `nd300 --version` could not be run to confirm the new version; the Cargo update was not committed and no other installation channel was attempted.".to_string(),
         )),
     }
 }
 
 /// After the installer reports success, re-exec `<current_exe> --version` and
 /// confirm the on-disk binary has been updated. Catches the case where the
-/// installer exits 0 but the file replacement didn't take effect (Restart
-/// Manager edge cases, MSI re-running the SAME version, etc.).
+/// installer exits 0 but the file replacement didn't take effect (a deferred
+/// replacement, MSI re-running the same version, etc.).
 #[cfg(windows)]
 fn verify_post_install(expected: &str) -> Result<(), String> {
     let installed = reexec_installed_version()
@@ -1333,11 +1661,10 @@ fn verify_post_install(expected: &str) -> Result<(), String> {
 /// confirm the file replacement actually took effect.
 ///
 /// WiX `MajorUpgrade` in wix/main.wxs and wix-corporate/corporate.wxs handles the
-/// uninstall-old-then-install-new step atomically. Windows Installer's Restart
-/// Manager handles the "binary in use" case by renaming the locked file (the
-/// running nd300 process keeps its open file handle to the OLD inode); if RM
-/// falls back to delete-on-reboot, msiexec returns 3010 and we surface that
-/// without claiming success.
+/// uninstall-old-then-install-new step atomically. The packages disable Restart
+/// Manager and use transactional MoveFiles actions to retire the locked pair
+/// before replacement. If Windows Installer still returns 3010, we surface it
+/// without claiming a fully finalized update.
 #[cfg(windows)]
 fn try_msi_install(url: &str, latest: &str) -> Result<(), StrategyError> {
     let temp_path = std::env::temp_dir().join(format!("nd300-update-{}.msi", latest));
@@ -1354,7 +1681,8 @@ fn try_msi_install(url: &str, latest: &str) -> Result<(), StrategyError> {
         // suppresses any reboot prompt. For the Global perMachine MSI, msiexec
         // triggers UAC; for the Corporate perUser MSI, it installs silently into
         // LocalAppData with no elevation prompt.
-        let status = Command::new("msiexec")
+        let msiexec = super::uninstall::system_msiexec_path().map_err(StrategyError::Preflight)?;
+        let status = Command::new(&msiexec)
             .args(["/i", &temp_path.to_string_lossy(), "/passive", "/norestart"])
             .status()
             .map_err(|e| StrategyError::Preflight(format!("Failed to spawn msiexec: {}", e)))?;
@@ -1517,14 +1845,17 @@ fn resolve_install_origin(
 /// case-insensitivity. Order matters: check more-specific paths first.
 ///
 /// LOCKSTEP: these substrings must match the install dirs in wix/main.wxs
-/// (Program Files\nd300), wix-corporate/corporate.wxs + inno/corporate.iss
+/// (Program Files\nd300, plus the pre-v3.1 Program Files\nd-300 location),
+/// wix-corporate/corporate.wxs + inno/corporate.iss
 /// (LocalAppData\Programs\nd300), and the cargo bin (`.cargo\bin`).
 #[cfg(windows)]
 pub(crate) fn classify_install_path(exe_path: &str) -> InstallOrigin {
     let lower = exe_path.to_lowercase();
     if lower.contains("\\.cargo\\bin\\") {
         InstallOrigin::CargoOrInstaller
-    } else if lower.contains("\\program files\\nd300\\") {
+    } else if lower.contains("\\program files\\nd300\\")
+        || lower.contains("\\program files\\nd-300\\")
+    {
         InstallOrigin::MsiGlobal
     } else if lower.contains("\\appdata\\local\\programs\\nd300\\") {
         InstallOrigin::MsiCorporate
@@ -1540,6 +1871,76 @@ pub(crate) fn classify_install_path(exe_path: &str) -> InstallOrigin {
 /// guess.
 #[cfg(windows)]
 pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInstallOwner> {
+    let mut candidates: Vec<_> = registered_install_owners()
+        .into_iter()
+        .filter(|owner| install_location_owns_executable(&owner.install_location, exe_path))
+        .collect();
+
+    if candidates.len() == 1 {
+        return candidates.pop();
+    }
+    let marker = read_install_source_marker()?;
+    let mut matching = candidates
+        .into_iter()
+        .filter(|candidate| candidate.origin == marker);
+    let selected = matching.next()?;
+    if matching.next().is_none() {
+        Some(selected)
+    } else {
+        None
+    }
+}
+
+/// Enumerate every registry-proven ND-300 installer owner. This is broader than
+/// `registered_install_owner`: a deliberate fresh installer uses it to remove
+/// conflicting channels before claiming ownership. Exact display names,
+/// installer identities, product codes/uninstaller paths, and an on-disk ND-300
+/// binary under InstallLocation are all required.
+#[cfg(windows)]
+pub(crate) fn registered_install_owners() -> Vec<RegisteredInstallOwner> {
+    registered_install_owners_impl(false).unwrap_or_default()
+}
+
+/// Strict owner inventory for fresh-installer takeover. Unlike ordinary origin
+/// classification, this path may execute uninstallers, so registry enumeration
+/// errors fail closed and MSI product codes must be enumerated from the
+/// canonical UpgradeCode by Windows Installer itself.
+#[cfg(windows)]
+pub(crate) fn registered_install_owners_for_takeover() -> Result<Vec<RegisteredInstallOwner>, String>
+{
+    let owners = registered_install_owners_impl(true)?;
+    let global_products = msi_related_product_codes("{7208E6EA-ABAE-4AF6-A69C-7C7E4DA3DDF5}")?;
+    let corporate_products = msi_related_product_codes("{B2490B7E-3CBE-47AC-8090-79BB3EB555E0}")?;
+
+    for owner in &owners {
+        let RegisteredUninstall::Msi { product_code } = &owner.uninstall else {
+            continue;
+        };
+        let related = match owner.origin {
+            InstallOrigin::MsiGlobal => &global_products,
+            InstallOrigin::MsiCorporate => &corporate_products,
+            _ => {
+                return Err(format!(
+                    "internal installer identity mismatch for {}",
+                    owner.origin.json_id()
+                ))
+            }
+        };
+        if !related.contains(product_code) {
+            return Err(format!(
+                "refusing unproven MSI product {} for {}",
+                product_code,
+                owner.origin.json_id()
+            ));
+        }
+    }
+    Ok(owners)
+}
+
+#[cfg(windows)]
+fn registered_install_owners_impl(
+    strict_enumeration: bool,
+) -> Result<Vec<RegisteredInstallOwner>, String> {
     use winreg::enums::{
         HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
     };
@@ -1555,12 +1956,34 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
 
     for (root, machine_hive) in roots {
         for flags in views {
-            let Ok(uninstall_root) = root.open_subkey_with_flags(UNINSTALL_KEY, flags) else {
-                continue;
+            let uninstall_root = match root.open_subkey_with_flags(UNINSTALL_KEY, flags) {
+                Ok(key) => key,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) if !strict_enumeration => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "could not enumerate a Windows uninstall registry view: {error}"
+                    ))
+                }
             };
-            for key_name in uninstall_root.enum_keys().filter_map(Result::ok) {
-                let Ok(key) = uninstall_root.open_subkey_with_flags(&key_name, flags) else {
-                    continue;
+            for key_name in uninstall_root.enum_keys() {
+                let key_name = match key_name {
+                    Ok(name) => name,
+                    Err(_) if !strict_enumeration => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "could not enumerate a Windows uninstall registry key: {error}"
+                        ))
+                    }
+                };
+                let key = match uninstall_root.open_subkey_with_flags(&key_name, flags) {
+                    Ok(key) => key,
+                    Err(_) if !strict_enumeration => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "could not inspect Windows uninstall key {key_name}: {error}"
+                        ))
+                    }
                 };
                 let Ok(display_name) = key.get_value::<String, _>("DisplayName") else {
                     continue;
@@ -1576,7 +1999,7 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
                 };
                 let install_location = PathBuf::from(location_text.trim());
                 if install_location.as_os_str().is_empty()
-                    || !install_location_owns_executable(&install_location, exe_path)
+                    || !nd300_binary_exists(&install_location)
                 {
                     continue;
                 }
@@ -1605,6 +2028,7 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
                         origin,
                         install_location,
                         uninstall: RegisteredUninstall::Inno { executable },
+                        machine_hive,
                     }
                 } else {
                     let windows_installer = key
@@ -1621,6 +2045,7 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
                         origin: msi_origin,
                         install_location,
                         uninstall: RegisteredUninstall::Msi { product_code },
+                        machine_hive,
                     }
                 };
 
@@ -1630,20 +2055,73 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
             }
         }
     }
+    Ok(candidates)
+}
 
-    if candidates.len() == 1 {
-        return candidates.pop();
+#[cfg(windows)]
+fn msi_related_product_codes(
+    upgrade_code: &str,
+) -> Result<std::collections::HashSet<String>, String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    #[link(name = "msi")]
+    unsafe extern "system" {
+        fn MsiEnumRelatedProductsW(
+            upgrade_code: *const u16,
+            reserved: u32,
+            product_index: u32,
+            product_code: *mut u16,
+        ) -> u32;
     }
-    let marker = read_install_source_marker()?;
-    let mut matching = candidates
-        .into_iter()
-        .filter(|candidate| candidate.origin == marker);
-    let selected = matching.next()?;
-    if matching.next().is_none() {
-        Some(selected)
-    } else {
-        None
+
+    const ERROR_SUCCESS: u32 = 0;
+    const ERROR_NO_MORE_ITEMS: u32 = 259;
+    const PRODUCT_CODE_CHARS: usize = 39;
+    const ENUMERATION_LIMIT: u32 = 1024;
+
+    let wide: Vec<u16> = std::ffi::OsStr::new(upgrade_code)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut products = std::collections::HashSet::new();
+    for index in 0..ENUMERATION_LIMIT {
+        let mut buffer = [0_u16; PRODUCT_CODE_CHARS];
+        // SAFETY: `wide` is NUL-terminated and `buffer` is the documented
+        // 39-WCHAR product-code output buffer for the duration of the call.
+        let result =
+            unsafe { MsiEnumRelatedProductsW(wide.as_ptr(), 0, index, buffer.as_mut_ptr()) };
+        match result {
+            ERROR_SUCCESS => {
+                let length = buffer.iter().position(|value| *value == 0).unwrap_or(buffer.len());
+                let raw = std::ffi::OsString::from_wide(&buffer[..length])
+                    .to_string_lossy()
+                    .into_owned();
+                let normalized = normalize_product_code(&raw).ok_or_else(|| {
+                    format!("Windows Installer returned an invalid product code {raw:?}")
+                })?;
+                products.insert(normalized);
+            }
+            ERROR_NO_MORE_ITEMS => return Ok(products),
+            error => {
+                return Err(format!(
+                    "Windows Installer could not enumerate products related to {upgrade_code}: error {error}"
+                ))
+            }
+        }
     }
+    Err(format!(
+        "Windows Installer returned too many products related to {upgrade_code}"
+    ))
+}
+
+#[cfg(windows)]
+fn nd300_binary_exists(install_location: &Path) -> bool {
+    [
+        install_location.join("nd300.exe"),
+        install_location.join("bin").join("nd300.exe"),
+    ]
+    .into_iter()
+    .any(|candidate| candidate.is_file())
 }
 
 /// Determine the MSI edition represented by an exact ARP display name and
@@ -1658,7 +2136,10 @@ fn msi_origin_for_registered_record(
     machine_hive: bool,
 ) -> Option<InstallOrigin> {
     let display_name = display_name.trim();
-    if machine_hive && display_name.eq_ignore_ascii_case("nd300") {
+    if machine_hive
+        && (display_name.eq_ignore_ascii_case("nd300")
+            || display_name.eq_ignore_ascii_case("nd-300"))
+    {
         Some(InstallOrigin::MsiGlobal)
     } else if display_name.eq_ignore_ascii_case("nd300 (Corporate Edition)") {
         Some(InstallOrigin::MsiCorporate)
@@ -1744,27 +2225,138 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unix_with_cargo_orders_cargo_first() {
-        assert_eq!(
-            order_strategies(true, TargetOs::Unix),
-            vec![UpdateStrategy::Cargo, UpdateStrategy::UnixArchive,]
-        );
+    fn retired_update_names_match_the_migration_allowlist() {
+        for binary in ["nd300", "speedqx"] {
+            let name = retired_update_filename(binary, "3.6.3");
+            assert!(crate::actions::migrate::is_retired_update_image(Path::new(
+                &name
+            )));
+        }
     }
 
     #[test]
-    fn unix_without_cargo_prunes_cargo() {
+    fn post_install_reexec_uses_canonical_name_after_retirement() {
+        let dir = PathBuf::from("install-bin");
         assert_eq!(
-            order_strategies(false, TargetOs::Unix),
-            vec![UpdateStrategy::UnixArchive]
+            canonical_update_executable(&dir.join("nd300.update-old-3.6.3.exe")),
+            dir.join("nd300.exe")
+        );
+        assert_eq!(
+            canonical_update_executable(&dir.join("SPEEDQX.UPDATE-OLD-3.6.3-RC.1.EXE")),
+            dir.join("speedqx.exe")
+        );
+        assert_eq!(
+            canonical_update_executable(&dir.join("nd300.exe")),
+            dir.join("nd300.exe")
+        );
+        assert_eq!(
+            canonical_update_executable(&dir.join("unrelated.update-old-3.6.3.exe")),
+            dir.join("unrelated.update-old-3.6.3.exe")
         );
     }
 
+    #[cfg(windows)]
     #[test]
-    fn windows_with_cargo_orders_cargo_first() {
+    fn running_cargo_image_can_be_retired_and_restored_without_termination() {
+        use std::process::{Child, Command, Stdio};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        struct ChildGuard(Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "nd300-running-image-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create running-image fixture directory");
+
+        let system_root = std::env::var_os("SystemRoot").expect("SystemRoot is set");
+        let system32 = PathBuf::from(system_root).join("System32");
+        let old_image = system32.join("ping.exe");
+        let new_nd300 = system32.join("where.exe");
+        let new_speedqx = system32.join("whoami.exe");
+        let nd300 = dir.join("nd300.exe");
+        let speedqx = dir.join("speedqx.exe");
+        std::fs::copy(&old_image, &nd300).expect("copy live nd300 fixture");
+        std::fs::copy(&old_image, &speedqx).expect("copy speedqx fixture");
+        let old_bytes = std::fs::read(&old_image).expect("read old fixture image");
+
+        let child = Command::new(&nd300)
+            .args(["-t", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start live nd300 fixture");
+        let mut child = ChildGuard(child);
+
+        let retirement =
+            RunningImageRetirement::prepare_in_dir(&dir, "9.8.7").expect("retire live binary pair");
+        assert!(
+            child.0.try_wait().expect("query live fixture").is_none(),
+            "retirement terminated the running image"
+        );
+        assert!(!nd300.exists(), "canonical nd300 path was not released");
+        assert!(
+            dir.join("nd300.update-old-9.8.7.exe").exists(),
+            "running image was not preserved"
+        );
+
+        std::fs::copy(&new_nd300, &nd300).expect("install replacement nd300 fixture");
+        std::fs::copy(&new_speedqx, &speedqx).expect("install replacement speedqx fixture");
+        retirement.finish(false).expect("restore the original pair");
+
+        assert!(
+            child
+                .0
+                .try_wait()
+                .expect("query restored fixture")
+                .is_none(),
+            "rollback terminated the running image"
+        );
         assert_eq!(
-            order_strategies(true, TargetOs::Windows),
+            std::fs::read(&nd300).expect("read restored nd300"),
+            old_bytes,
+            "rollback did not restore nd300.exe exactly"
+        );
+        assert_eq!(
+            std::fs::read(&speedqx).expect("read restored speedqx"),
+            old_bytes,
+            "rollback did not restore speedqx.exe exactly"
+        );
+        assert!(
+            !dir.join("nd300.update-old-9.8.7.exe").exists()
+                && !dir.join("speedqx.update-old-9.8.7.exe").exists(),
+            "rollback left a retired image behind"
+        );
+
+        drop(child);
+        std::fs::remove_dir_all(&dir).expect("remove running-image fixture directory");
+    }
+
+    #[test]
+    fn windows_cargo_route_never_falls_back_to_the_standalone_installer() {
+        assert_eq!(
+            windows_cargo_or_installer_plan(true, true).expect("Cargo route"),
+            vec![UpdateStrategy::Cargo]
+        );
+        assert!(windows_cargo_or_installer_plan(true, false).is_err());
+    }
+
+    #[test]
+    fn windows_standalone_route_never_migrates_to_cargo() {
+        assert_eq!(
+            windows_cargo_or_installer_plan(false, true).expect("standalone route"),
             vec![
-                UpdateStrategy::Cargo,
                 UpdateStrategy::InstallerPowerShell,
                 UpdateStrategy::InstallerPwsh,
             ]
@@ -1772,19 +2364,48 @@ mod tests {
     }
 
     #[test]
-    fn windows_without_cargo_prunes_cargo() {
-        assert_eq!(
-            order_strategies(false, TargetOs::Windows),
-            vec![
-                UpdateStrategy::InstallerPowerShell,
-                UpdateStrategy::InstallerPwsh,
-            ]
-        );
+    fn windows_cargo_registration_requires_an_exact_nd300_registry_key() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!(
+            "nd300-cargo-registration-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&home).expect("create Cargo registry fixture");
+
+        std::fs::write(
+            home.join(".crates2.json"),
+            r#"{"installs":{"unrelated 1.0.0 (registry+https://example.invalid)":{}}}"#,
+        )
+        .expect("write unrelated Cargo registry");
+        assert!(!windows_cargo_package_registered_at(&home));
+
+        std::fs::write(
+            home.join(".crates2.json"),
+            r#"{"installs":{"nd300 3.6.3 (registry+https://github.com/rust-lang/crates.io-index)":{}}}"#,
+        )
+        .expect("write ND300 Cargo registry");
+        assert!(windows_cargo_package_registered_at(&home));
+
+        std::fs::remove_file(home.join(".crates2.json")).expect("remove JSON registry fixture");
+        std::fs::write(
+            home.join(".crates.toml"),
+            "[v1]\n\"nd300 3.5.2 (registry+https://github.com/rust-lang/crates.io-index)\" = [\"nd300.exe\", \"speedqx.exe\"]\n",
+        )
+        .expect("write legacy Cargo registry");
+        assert!(windows_cargo_package_registered_at(&home));
+
+        std::fs::remove_dir_all(&home).expect("remove Cargo registry fixture");
     }
 
     #[test]
     fn json_method_maps_to_legacy_taxonomy() {
         assert_eq!(UpdateStrategy::Cargo.json_method(), "cargo");
+        #[cfg(unix)]
         assert_eq!(UpdateStrategy::UnixArchive.json_method(), "installer");
         assert_eq!(
             UpdateStrategy::InstallerPowerShell.json_method(),
@@ -1816,6 +2437,17 @@ mod tests {
         // Labels feed into the text-mode "Updating via X..." line. Verify each is
         // distinct (otherwise users can't tell which installer is downloading
         // from text output alone).
+        #[cfg(not(unix))]
+        let labels = [
+            UpdateStrategy::MsiGlobal.label(),
+            UpdateStrategy::MsiCorporate.label(),
+            UpdateStrategy::ExeGlobal.label(),
+            UpdateStrategy::ExeCorporate.label(),
+            UpdateStrategy::Cargo.label(),
+            UpdateStrategy::InstallerPowerShell.label(),
+            UpdateStrategy::InstallerPwsh.label(),
+        ];
+        #[cfg(unix)]
         let labels = [
             UpdateStrategy::MsiGlobal.label(),
             UpdateStrategy::MsiCorporate.label(),
@@ -1841,6 +2473,17 @@ mod tests {
         assert!(!is_newer("3.0.1", "3.0.0"));
         assert!(!is_newer("3.0.1", "3.0.1"));
         assert!(is_newer("3.0", "3.0.1"));
+    }
+
+    #[test]
+    fn exact_release_assets_are_tag_pinned_and_reject_moving_or_unsafe_versions() {
+        assert_eq!(
+            exact_release_asset_url("3.6.3", MSI_GLOBAL_ASSET).expect("valid exact URL"),
+            "https://github.com/QubeTX/qube-network-diagnostics/releases/download/v3.6.3/nd300-x86_64-pc-windows-msvc.msi"
+        );
+        for invalid in ["latest", "v3.6.3", "3.6.3/other", "3.6", "3.6.3-rc.1"] {
+            assert!(exact_release_asset_url(invalid, MSI_GLOBAL_ASSET).is_err());
+        }
     }
 
     #[test]
@@ -2084,6 +2727,11 @@ mod tests {
             classify_install_path(r"c:\PROGRAM FILES\nd300\BIN\nd300.exe"),
             InstallOrigin::MsiGlobal,
         );
+        assert_eq!(
+            classify_install_path(r"C:\Program Files\nd-300\bin\nd300.exe"),
+            InstallOrigin::MsiGlobal,
+            "pre-v3.1 Global MSI installs remain classifiable",
+        );
     }
 
     #[cfg(windows)]
@@ -2175,7 +2823,13 @@ mod tests {
             msi_origin_for_registered_record("nd300", true),
             Some(InstallOrigin::MsiGlobal),
         );
+        assert_eq!(
+            msi_origin_for_registered_record("nd-300", true),
+            Some(InstallOrigin::MsiGlobal),
+            "pre-v3.1 Global MSI display name remains recognized",
+        );
         assert_eq!(msi_origin_for_registered_record("nd300", false), None);
+        assert_eq!(msi_origin_for_registered_record("nd-300", false), None);
     }
 
     #[cfg(windows)]
@@ -2228,6 +2882,7 @@ mod tests {
                 uninstall: RegisteredUninstall::Msi {
                     product_code: PRODUCT_CODE.to_string(),
                 },
+                machine_hive: false,
             })
         );
     }

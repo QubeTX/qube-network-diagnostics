@@ -106,12 +106,12 @@ pub(crate) fn classify_origin_path(
         .parent()
         .is_some_and(|parent| same_path(parent, cargo_bin))
     {
-        return if cargo_registered {
-            UnixOriginKind::Cargo
-        } else if cargo_dist_receipt_valid {
-            UnixOriginKind::ManagedArchive
-        } else {
-            UnixOriginKind::Unknown
+        return match (cargo_registered, cargo_dist_receipt_valid) {
+            (true, false) => UnixOriginKind::Cargo,
+            (false, true) => UnixOriginKind::ManagedArchive,
+            // Two conflicting owners are not evidence for either one. Refuse
+            // automatic mutation and direct the user to the install page.
+            (true, true) | (false, false) => UnixOriginKind::Unknown,
         };
     }
     UnixOriginKind::Unknown
@@ -668,16 +668,10 @@ pub(crate) async fn update_from_archive(latest: &str, user: &InvokingUser) -> Re
     // turn an unknown target into an updateable installation. Re-classify the
     // canonical target and require the same Cargo metadata or exact cargo-dist
     // receipt that a direct invocation would require.
-    let update_kind = effective_update_kind(
-        origin.kind,
-        &origin.executable,
-        &user.cargo_home().join("bin"),
-        cargo_package_registered(&user.cargo_home()),
-        cargo_dist_receipt_valid(user),
-    );
+    let update_kind = effective_update_kind_for(&origin, user);
     let managed_archive = update_kind == UnixOriginKind::ManagedArchive;
     let install_dir = match update_kind {
-        UnixOriginKind::Cargo | UnixOriginKind::ManagedArchive => {
+        UnixOriginKind::ManagedArchive => {
             let parent = origin
                 .executable
                 .parent()
@@ -689,6 +683,12 @@ pub(crate) async fn update_from_archive(latest: &str, user: &InvokingUser) -> Re
                 ));
             }
             parent.to_path_buf()
+        }
+        UnixOriginKind::Cargo => {
+            return Err(format!(
+                "refusing to replace Cargo-owned installation at {} through the standalone archive updater",
+                origin.executable.display()
+            ));
         }
         UnixOriginKind::PackageManager => {
             return Err(format!(
@@ -787,6 +787,19 @@ fn effective_update_kind(
     } else {
         detected
     }
+}
+
+pub(crate) fn effective_update_kind_for(
+    origin: &UnixInstallOrigin,
+    user: &InvokingUser,
+) -> UnixOriginKind {
+    effective_update_kind(
+        origin.kind,
+        &origin.executable,
+        &user.cargo_home().join("bin"),
+        cargo_package_registered(&user.cargo_home()),
+        cargo_dist_receipt_valid(user),
+    )
 }
 
 fn update_receipt_version(user: &InvokingUser, version: &str) -> Result<(), String> {
@@ -2080,6 +2093,15 @@ mod tests {
                 true,
             ),
             UnixOriginKind::ManagedArchive
+        );
+        assert_eq!(
+            classify_origin_path(
+                Path::new("/Users/alice/.cargo/bin/nd300"),
+                cargo,
+                true,
+                true,
+            ),
+            UnixOriginKind::Unknown
         );
         assert_eq!(
             classify_origin_path(Path::new("/opt/homebrew/bin/nd300"), cargo, false, true),
