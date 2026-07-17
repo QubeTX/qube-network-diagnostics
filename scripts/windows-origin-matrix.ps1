@@ -106,6 +106,7 @@ function Invoke-Captured {
     $stderr = $stderrTask.GetAwaiter().GetResult().Trim()
     if ($stdout) { Write-Host $stdout }
     if ($stderr) { Write-Host $stderr }
+    Write-Host "$Label exit=$($process.ExitCode) stdout_chars=$($stdout.Length) stderr_chars=$($stderr.Length)"
 
     return [pscustomobject]@{
         ExitCode = $process.ExitCode
@@ -389,7 +390,13 @@ if ($Mode -eq 'candidate') {
     }
 } else {
     $result = Invoke-Captured $installedNd300 @('update', '--json') 'Run public nd300 update'
-    if ($result.ExitCode -ne 0) { throw "Public nd300 update failed with exit $($result.ExitCode)" }
+    $result | ConvertTo-Json | Set-Content `
+        -LiteralPath (Join-Path $EvidenceDir "$Origin-public-update-process.json") `
+        -Encoding utf8NoBOM
+    if ($result.ExitCode -ne 0) {
+        Write-Host "::error::Public nd300 update failed with exit $($result.ExitCode)"
+        throw "Public nd300 update failed with exit $($result.ExitCode)"
+    }
 }
 
 Assert-InstallState $ExpectedVersion
