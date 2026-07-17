@@ -14,14 +14,14 @@ All five board subtasks complete; actionlint and ShellCheck pass; current Window
 
 ## Verification
 - [x] `cargo +1.97.0 fmt --all -- --check` passes
-- [ ] Windows and Linux Clippy/test/release-build CI jobs pass on the exact PR head
-- [ ] ShellCheck release-scripts job passes
-- [ ] Linux ARM GNU and x86_64 musl release compile gates pass
+- [x] Windows and Linux Clippy/test/release-build CI jobs pass on the exact PR head
+- [x] ShellCheck release-scripts job passes
+- [x] Linux ARM GNU and x86_64 musl release compile gates pass
 - [x] `actionlint` and cargo-dist plan pass with the reusable workflow
 - [x] Exact-source and same-repository-signer attestation verification remains enabled
 
 ## Status
-Implementation is complete locally. Rust 1.97.0 is selected; strict Windows Clippy, targeted tests, PowerShell parsing, `git diff --check`, and actionlint pass. Exact-head hosted CI, ShellCheck, both cross targets, and cargo-dist plan remain the acceptance evidence.
+Done. Final reviewed head `4b2c623` passed exact-head CI run `29601781847`, including Windows, both Macs, Linux GNU, Linux musl, Linux ARM, ShellCheck, audit, cargo-dist plan, and tests. Both specialist reviews reported no blocker.
 
 ## Activity
 - 2026-07-17 10:18 — moved to Active; imported CI logs and provenance finding from planning audits (agent: codex)
@@ -31,3 +31,4 @@ Implementation is complete locally. Rust 1.97.0 is selected; strict Windows Clip
 - 2026-07-17 12:21 — required cfg reviewer found no current-tree findings; final 28-asset verification now constrains both exact tag digest and repository signer (agent: codex)
 - 2026-07-17 12:31 — required installer reviewer returned `LOCKSTEP OK`; exact pushed-head CI remains the only merge gate (agent: installer-lockstep-reviewer)
 - 2026-07-17 12:38 — first exact-head Linux ARM gate exposed missing cross-libc headers because `--no-install-recommends` omitted them; added explicit `libc6-dev-arm64-cross` rather than weakening the new gate (agent: codex)
+- 2026-07-17 13:02 — final reviewed head `4b2c623` passed exact-head CI run `29601781847`; required cfg and installer reviews were green (agent: codex)

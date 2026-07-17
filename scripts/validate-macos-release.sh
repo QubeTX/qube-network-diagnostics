@@ -7,6 +7,13 @@
 
 set -euo pipefail
 
+script_dir=$(
+    unset CDPATH
+    cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
+)
+# shellcheck source=scripts/macos-release-lib.sh
+. "${script_dir}/macos-release-lib.sh"
+
 if [[ $# -lt 3 || $# -gt 4 ]]; then
     echo "usage: $0 <archive.tar.xz> <apple-target> <version> [--require-trust]" >&2
     exit 64
@@ -97,7 +104,7 @@ for name in nd300 speedqx; do
         exit 1
     fi
     build_info=$(vtool -show-build "$binary" 2>&1)
-    if ! printf '%s\n' "$build_info" | grep -Eq "^[[:space:]]*minos ${expected_minos}([[:space:]]|$)"; then
+    if ! printf '%s\n' "$build_info" | macos_build_info_has_deployment_floor "$expected_minos"; then
         echo "deployment floor mismatch for ${name}; expected macOS ${expected_minos}" >&2
         printf '%s\n' "$build_info" >&2
         exit 1

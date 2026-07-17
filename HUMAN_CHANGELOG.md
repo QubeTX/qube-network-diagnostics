@@ -6,6 +6,15 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 17, 2026 — Intel Mac release checks understand older deployment metadata
+
+**Fixed — a valid Intel Mac build no longer stops at the final release check**
+- Apple accepted and Gatekeeper approved the Intel build, but its older-format
+  minimum-system field was mistaken for a missing field. The release stopped
+  safely before hosting an incomplete set of downloads. The checker now
+  understands both Apple metadata formats, still enforces the intended minimum
+  system, and tests good and bad examples before a release can begin.
+
 ## July 17, 2026 — Mac diagnostics users can trust, repairs that fail safely, and releases Apple can verify
 
 This release is centered on one promise: a diagnostic or repair tool must never

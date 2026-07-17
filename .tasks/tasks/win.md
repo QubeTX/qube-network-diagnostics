@@ -14,13 +14,13 @@ Unit tests cover marker/path/registered-owner precedence, stale marker plus Carg
 
 ## Verification
 - [x] Windows origin-resolution unit tests pass on Rust 1.97.0
-- [ ] Top-level MSI and Inno uninstall integration tests remove ARP, correct PATH hive, marker, and both binaries
-- [ ] Cargo survives installer uninstall and remains classified as Cargo despite a stale-marker fixture
+- [x] Top-level MSI and Inno uninstall integration tests remove ARP, correct PATH hive, marker, and both binaries
+- [x] Cargo survives installer uninstall and remains classified as Cargo despite a stale-marker fixture
 - [x] All four installers pass explicit origin values and the LOCKSTEP reviewer reports no drift
-- [ ] `migrate-cleanup --dry-run --json` remains advisory and fail-closed
+- [x] `migrate-cleanup --dry-run --json` remains advisory and fail-closed
 
 ## Status
-Implementation is complete and passes local Windows compile/Clippy plus origin-precedence tests. A permanent candidate/public five-origin workflow and evidence script are added; its fresh-VM results remain required before merge.
+Done for candidate acceptance. Exact-head hosted run `29601781683` passed Global MSI, Corporate MSI, Global EXE, Corporate EXE, and Cargo lifecycle cases, including migration dry-run, uninstall cleanup, and surviving-Cargo stale-marker behavior. Public-artifact repetition remains #wup.
 
 ## Activity
 - 2026-07-17 10:18 — created from installer lifecycle audit and operator-approved hardening plan (agent: codex)
@@ -34,3 +34,4 @@ Implementation is complete and passes local Windows compile/Clippy plus origin-p
 - 2026-07-17 13:24 — exact-head matrix run `29598506341` completed and isolated two product defects plus one harness race: Cargo self-delete was corrupted by `cmd /C` argv quoting, Corporate MSI ownership was not recognized in its hosted registration context, and Corporate EXE PATH removal completed just after the narrower poll; replaced shell text with a trusted retrying System32 PowerShell helper, hardened corporate ARP scope handling, and expanded polling/evidence (agent: codex)
 - 2026-07-17 13:37 — new locked-delete and live HKCU 32-bit-view ownership regressions passed inside the full Windows suite, all four rebuilt installers exited 0, and an independent cfg review found no visibility, dependency, dead-code, or warning risks (agent: codex)
 - 2026-07-17 13:43 — fresh installer/security review returned `LOCKSTEP OK`: trusted delayed-delete transport/retries, Corporate-vs-Global scope protections, MSI/Inno proof, teardown polling, and all four installer path/marker/binary/GUID contracts are consistent; hosted rerun is the only residual verification (agent: installer-lockstep-reviewer)
+- 2026-07-17 13:02 — final candidate matrix run `29601781683` passed all five origins and retained complete lifecycle evidence artifacts (agent: codex)

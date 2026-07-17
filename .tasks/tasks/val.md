@@ -16,11 +16,11 @@ Every local gate passes, all four installer builds exit zero, disposable upgrade
 - [x] Rust 1.97.0 format, Clippy, tests, release build, audit, package, and publish-dry-run pass
 - [x] actionlint, ShellCheck, Mac parser/fault scripts, and cargo-dist plan pass
 - [x] Global MSI, Corporate MSI, Global EXE, and Corporate EXE build with exit 0
-- [ ] Five-origin disposable candidate-upgrade matrix passes
+- [x] Five-origin disposable candidate-upgrade matrix passes
 - [x] Alienware core JSON, technician JSON, ASCII, and version smokes pass without mutation or sensitive output
 
 ## Status
-Local Alienware and installer validation is complete. Waiting only for the five-origin disposable candidate-upgrade matrix on the exact pushed PR head.
+Done. Local Alienware/installer validation and final exact-head disposable candidate matrix run `29601781683` all passed without physical network mutation.
 
 ## Activity
 - 2026-07-17 10:18 — imported ND36-002 and pre-tag portions of ND36-003 (agent: codex)
@@ -32,3 +32,4 @@ Local Alienware and installer validation is complete. Waiting only for the five-
 - 2026-07-17 12:51 — exact head `cffd19f` passed all ordinary CI including Linux ARM; the first disposable jobs exposed GUI-process waiting and strict-mode registry enumeration defects in the harness before lifecycle evidence collection, so no product lifecycle verdict was inferred from those five failures (agent: codex)
 - 2026-07-17 13:24 — exact head `f606ffa` passed all ordinary CI; hosted matrix `29598506341` validated all four baseline installs and candidate upgrades, then exposed Cargo delayed-delete quoting and Corporate MSI ownership defects during uninstall plus a Corporate EXE PATH polling race; remediation and regression tests are in progress before the next additive head (agent: codex)
 - 2026-07-17 13:37 — remediation validation passed: format, all-target/all-feature Clippy with `-D warnings`, 307 library + 5 binary tests (including a real canonical-path locked-delete regression), release build, audit, 102-file package inventory, publish dry-run, actionlint, LF-normalized ShellCheck, PowerShell parser, and all four installer builds with exit 0 (agent: codex)
+- 2026-07-17 13:02 — final exact-head five-origin candidate matrix run `29601781683` passed Global MSI, Corporate MSI, Global EXE, Corporate EXE, and Cargo (agent: codex)
