@@ -25,6 +25,7 @@ use crate::render::color;
 use crate::VERSION;
 
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::{Command, Output, Stdio};
 
 use super::{fail_icon, success_icon};
@@ -32,12 +33,6 @@ use super::{fail_icon, success_icon};
 /// GitHub API endpoint for the latest release.
 const RELEASES_URL: &str =
     "https://api.github.com/repos/QubeTX/qube-network-diagnostics/releases/latest";
-
-/// Shell installer URL (macOS/Linux). The `releases/latest` redirect always
-/// resolves to the newest published release, so this URL is permanently stable.
-#[cfg(not(windows))]
-const SHELL_INSTALLER: &str =
-    "https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.sh";
 
 /// PowerShell installer URL (Windows). Same `releases/latest` redirect.
 #[cfg(windows)]
@@ -66,9 +61,10 @@ const MANUAL_INSTALL_URL: &str = "https://github.com/QubeTX/qube-network-diagnos
 
 /// Ordered candidate strategies for updating the binary.
 ///
-/// For cargo install / shell installer users, the runner tries each in order
+/// For Cargo/native-archive users, the runner tries each in order
 /// and falls through on any failure (preflight or runtime) until one succeeds.
-/// Cargo-first when available, cargo-dist installer as universal fallback.
+/// Cargo-first when available, then a verified exact-tag archive with an
+/// allowlisted two-binary transaction on Unix.
 ///
 /// For first-class Windows installs (v3.1.0+), `build_strategy_list` returns a
 /// *single* matching MSI/EXE strategy (no cross-fall-back between installer
@@ -84,8 +80,7 @@ const MANUAL_INSTALL_URL: &str = "https://github.com/QubeTX/qube-network-diagnos
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpdateStrategy {
     Cargo,
-    InstallerCurl,
-    InstallerWget,
+    UnixArchive,
     InstallerPowerShell,
     InstallerPwsh,
     /// Re-runs the Global perMachine MSI (UAC required).
@@ -102,8 +97,7 @@ impl UpdateStrategy {
     fn label(self) -> &'static str {
         match self {
             UpdateStrategy::Cargo => "cargo install",
-            UpdateStrategy::InstallerCurl => "curl shell installer",
-            UpdateStrategy::InstallerWget => "wget shell installer",
+            UpdateStrategy::UnixArchive => "verified release archive",
             UpdateStrategy::InstallerPowerShell => "PowerShell installer",
             UpdateStrategy::InstallerPwsh => "pwsh installer",
             UpdateStrategy::MsiGlobal => "Global MSI installer",
@@ -116,8 +110,7 @@ impl UpdateStrategy {
     fn json_id(self) -> &'static str {
         match self {
             UpdateStrategy::Cargo => "cargo",
-            UpdateStrategy::InstallerCurl => "installer_curl",
-            UpdateStrategy::InstallerWget => "installer_wget",
+            UpdateStrategy::UnixArchive => "unix_archive",
             UpdateStrategy::InstallerPowerShell => "installer_powershell",
             UpdateStrategy::InstallerPwsh => "installer_pwsh",
             UpdateStrategy::MsiGlobal => "msi_global",
@@ -197,8 +190,8 @@ enum StrategyError {
     /// Safe to fall through — nothing was written.
     Preflight(String),
     /// The strategy ran end-to-end but reported a non-zero exit (or a verify
-    /// mismatch). cargo and cargo-dist installers are both atomic (write-to-temp,
-    /// move-into-place), so it's still safe to fall through to the next strategy.
+    /// mismatch). Cargo failures happen before origin cleanup; Unix archive
+    /// replacement has an on-disk transaction marker and rollback.
     Runtime(String),
     /// The strategy reached a state where falling through would hide an
     /// incomplete install, such as a successful cargo install shadowed by an
@@ -268,7 +261,7 @@ pub async fn run(config: &Config) -> i32 {
         latest,
     );
 
-    let strategies = build_strategy_list();
+    let strategies = build_strategy_list().await;
     let primary = strategies.first().copied();
     if let Some(s) = primary {
         println!(
@@ -279,7 +272,7 @@ pub async fn run(config: &Config) -> i32 {
     }
     println!();
 
-    match execute_update(&latest, &strategies) {
+    match execute_update(&latest, &strategies).await {
         Ok(used) => {
             println!();
             println!(
@@ -357,8 +350,8 @@ async fn run_json(_config: &Config) -> i32 {
         return 0;
     }
 
-    let strategies = build_strategy_list();
-    match execute_update(&latest, &strategies) {
+    let strategies = build_strategy_list().await;
+    match execute_update(&latest, &strategies).await {
         Ok(used) => {
             let mut output = serde_json::json!({
                 "action": "update",
@@ -548,8 +541,7 @@ fn order_strategies(cargo_invokable: bool, os: TargetOs) -> Vec<UpdateStrategy> 
     }
     match os {
         TargetOs::Unix => {
-            list.push(UpdateStrategy::InstallerCurl);
-            list.push(UpdateStrategy::InstallerWget);
+            list.push(UpdateStrategy::UnixArchive);
         }
         TargetOs::Windows => {
             list.push(UpdateStrategy::InstallerPowerShell);
@@ -567,10 +559,22 @@ fn current_target_os() -> TargetOs {
     }
 }
 
-fn cargo_invokable() -> bool {
-    tool_exists("cargo")
+async fn cargo_invokable() -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(user) = crate::platform::invoking_user::InvokingUser::detect() else {
+            return false;
+        };
+        return super::unix_install::cargo_is_invokable(&user).await;
+    }
+
+    #[cfg(windows)]
+    {
+        tool_exists("cargo")
+    }
 }
 
+#[cfg(windows)]
 fn tool_exists(tool: &str) -> bool {
     Command::new(tool)
         .arg("--version")
@@ -581,7 +585,7 @@ fn tool_exists(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn build_strategy_list() -> Vec<UpdateStrategy> {
+async fn build_strategy_list() -> Vec<UpdateStrategy> {
     #[cfg(windows)]
     {
         // For first-class Windows installs, dispatch to a single matching
@@ -598,18 +602,18 @@ fn build_strategy_list() -> Vec<UpdateStrategy> {
             }
         }
     }
-    order_strategies(cargo_invokable(), current_target_os())
+    order_strategies(cargo_invokable().await, current_target_os())
 }
 
 // ─── Strategy execution ──────────────────────────────────────────────────────
 
-fn execute_update(
+async fn execute_update(
     latest: &str,
     strategies: &[UpdateStrategy],
 ) -> Result<UpdateStrategy, UpdateFailure> {
     let mut attempts = Vec::new();
     for &strategy in strategies {
-        match try_strategy(strategy, latest) {
+        match try_strategy(strategy, latest).await {
             Ok(()) => return Ok(strategy),
             Err(StrategyError::Preflight(msg)) => {
                 eprintln!("  · skipped {}: {}", strategy.label(), msg);
@@ -641,11 +645,10 @@ fn execute_update(
     Err(UpdateFailure { attempts })
 }
 
-fn try_strategy(strategy: UpdateStrategy, latest: &str) -> Result<(), StrategyError> {
+async fn try_strategy(strategy: UpdateStrategy, latest: &str) -> Result<(), StrategyError> {
     match strategy {
-        UpdateStrategy::Cargo => try_cargo_install(latest),
-        UpdateStrategy::InstallerCurl => try_installer_curl(),
-        UpdateStrategy::InstallerWget => try_installer_wget(),
+        UpdateStrategy::Cargo => try_cargo_install(latest).await,
+        UpdateStrategy::UnixArchive => try_unix_archive(latest).await,
         UpdateStrategy::InstallerPowerShell => try_installer_powershell("powershell"),
         UpdateStrategy::InstallerPwsh => try_installer_powershell("pwsh"),
         UpdateStrategy::MsiGlobal => try_msi_install(msi_global_url(), latest),
@@ -691,8 +694,21 @@ fn exe_corporate_url() -> &'static str {
     ""
 }
 
-fn try_cargo_install(latest: &str) -> Result<(), StrategyError> {
-    rustup_update_stable_best_effort();
+async fn try_cargo_install(latest: &str) -> Result<(), StrategyError> {
+    #[cfg(unix)]
+    {
+        let user = crate::platform::invoking_user::InvokingUser::detect()
+            .map_err(|error| StrategyError::Preflight(format!("invoking user: {error}")))?;
+        let preinstall_origin = super::unix_install::detect_origin(&user)
+            .map_err(|error| StrategyError::Preflight(format!("install origin: {error}")))?;
+        super::unix_install::cargo_install(latest, &user)
+            .await
+            .map_err(StrategyError::Runtime)?;
+        cleanup_shadowing_current_install_after_cargo_success(&preinstall_origin, &user)?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
     match run_command_capture("cargo", &["install", "nd300", "--force"]) {
         Ok(()) => {
             // Clean up any shadowing non-cargo install first (ND-300's existing
@@ -715,11 +731,28 @@ fn try_cargo_install(latest: &str) -> Result<(), StrategyError> {
     }
 }
 
+#[cfg(unix)]
+async fn try_unix_archive(latest: &str) -> Result<(), StrategyError> {
+    let user = crate::platform::invoking_user::InvokingUser::detect()
+        .map_err(|error| StrategyError::Preflight(format!("invoking user: {error}")))?;
+    super::unix_install::update_from_archive(latest, &user)
+        .await
+        .map_err(StrategyError::Fatal)
+}
+
+#[cfg(not(unix))]
+async fn try_unix_archive(_latest: &str) -> Result<(), StrategyError> {
+    Err(StrategyError::Preflight(
+        "verified Unix archive updater is Unix-only".to_string(),
+    ))
+}
+
 /// The three outcomes of a shadow-cleanup attempt, as a function of the cleanup
 /// report. Pure so it can be unit-tested without touching the filesystem.
 /// Shared with `migrate-cleanup` (src/actions/migrate.rs) so both the updater and
 /// the installer-driven consolidation map a `CleanupReport` the same way.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) enum ShadowCleanupDecision {
     /// The old shadowing binary is gone now — clean success.
     Removed,
@@ -735,6 +768,7 @@ pub(crate) enum ShadowCleanupDecision {
 /// Map a cleanup report to a shadow-cleanup decision. `binary_removed` wins;
 /// otherwise a Windows scheduled-on-exit removal is an honest warning; otherwise
 /// it's a hard failure.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn classify_shadow_cleanup(
     report: &super::uninstall::CleanupReport,
 ) -> ShadowCleanupDecision {
@@ -747,6 +781,7 @@ pub(crate) fn classify_shadow_cleanup(
     }
 }
 
+#[cfg(windows)]
 fn cleanup_shadowing_current_install_after_cargo_success() -> Result<(), StrategyError> {
     let Some(current_exe) = current_exe_real_path() else {
         return Ok(());
@@ -795,6 +830,28 @@ fn cleanup_shadowing_current_install_after_cargo_success() -> Result<(), Strateg
     }
 }
 
+#[cfg(unix)]
+fn cleanup_shadowing_current_install_after_cargo_success(
+    origin: &super::unix_install::UnixInstallOrigin,
+    user: &crate::platform::invoking_user::InvokingUser,
+) -> Result<(), StrategyError> {
+    let cargo_bin = user.cargo_home().join("bin");
+    if origin
+        .executable
+        .parent()
+        .is_some_and(|parent| same_path(parent, &cargo_bin))
+    {
+        return Ok(());
+    }
+    Err(StrategyError::Fatal(format!(
+        "cargo installed and verified the requested release in {}, but the running copy at {} has an unknown or externally managed origin and was not deleted. Start a new shell with {} first on PATH, then remove the old copy through its original installer.",
+        cargo_bin.display(),
+        origin.executable.display(),
+        cargo_bin.display()
+    )))
+}
+
+#[cfg(windows)]
 fn cleanup_current_install_for_cargo_retry() -> Result<(), StrategyError> {
     let Some(current_exe) = current_exe_real_path() else {
         return Ok(());
@@ -825,6 +882,7 @@ fn cleanup_current_install_for_cargo_retry() -> Result<(), StrategyError> {
     }
 }
 
+#[cfg(windows)]
 fn cleanup_notes(report: &super::uninstall::CleanupReport) -> String {
     if report.notes.is_empty() {
         "no additional details".to_string()
@@ -833,11 +891,13 @@ fn cleanup_notes(report: &super::uninstall::CleanupReport) -> String {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn current_exe_real_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     Some(exe.canonicalize().unwrap_or(exe))
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn cargo_bin_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("CARGO_HOME") {
         return Some(PathBuf::from(home).join("bin"));
@@ -848,12 +908,15 @@ pub(crate) fn cargo_bin_dir() -> Option<PathBuf> {
         std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".cargo").join("bin"))
     }
 
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo").join("bin"))
+        crate::platform::invoking_user::InvokingUser::detect()
+            .ok()
+            .map(|user| user.cargo_home().join("bin"))
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn current_install_shadows_cargo_install(
     current_exe: &Path,
     cargo_bin_dir: &Path,
@@ -868,6 +931,7 @@ pub(crate) fn current_install_shadows_cargo_install(
     !same_path(current_dir, cargo_bin_dir)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn current_exe_looks_like_local_build(current_exe: &Path) -> bool {
     current_exe
         .parent()
@@ -899,21 +963,10 @@ pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
+#[cfg(any(windows, test))]
 fn cargo_failure_suggests_existing_binary_collision(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("already exists") && (lower.contains("nd300") || lower.contains("speedqx"))
-}
-
-/// Run `rustup update stable` if rustup is on PATH. Best-effort: any failure is
-/// non-fatal (we let the subsequent `cargo install` surface the real error).
-/// Keeps the toolchain in lock-step with whatever Rust version nd300's MSRV
-/// currently requires.
-fn rustup_update_stable_best_effort() {
-    if !tool_exists("rustup") {
-        return;
-    }
-    println!("  Updating Rust toolchain (rustup update stable)…");
-    let _ = Command::new("rustup").args(["update", "stable"]).status();
 }
 
 /// Spawn `launcher` with `args`, classify the outcome.
@@ -922,6 +975,7 @@ fn rustup_update_stable_best_effort() {
 /// - `Err(other)` → `Preflight` (couldn't even spawn).
 /// - non-zero exit → `Runtime` (ran but failed).
 /// - zero exit → `Ok`.
+#[cfg(windows)]
 fn run_command_status(launcher: &str, args: &[&str]) -> Result<(), StrategyError> {
     let res = Command::new(launcher).args(args).status();
     match res {
@@ -941,6 +995,7 @@ fn run_command_status(launcher: &str, args: &[&str]) -> Result<(), StrategyError
     }
 }
 
+#[cfg(windows)]
 fn run_command_capture(launcher: &str, args: &[&str]) -> Result<(), StrategyError> {
     let res = Command::new(launcher).args(args).output();
     match res {
@@ -961,6 +1016,7 @@ fn run_command_capture(launcher: &str, args: &[&str]) -> Result<(), StrategyErro
     }
 }
 
+#[cfg(windows)]
 fn summarize_output(output: &Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -976,47 +1032,6 @@ fn summarize_output(output: &Output) -> String {
     } else {
         chars[chars.len() - MAX_CHARS..].iter().collect()
     }
-}
-
-#[cfg(unix)]
-fn try_installer_curl() -> Result<(), StrategyError> {
-    if !tool_exists("curl") {
-        return Err(StrategyError::Preflight("curl not on PATH".into()));
-    }
-    // `set -e -o pipefail` so a curl HTTP/DNS/TLS error isn't silently swallowed
-    // by `sh` exiting 0 on empty stdin. `-f` (--fail) makes curl exit non-zero on
-    // HTTP >=400 instead of piping a 404 HTML body into sh.
-    let script = format!(
-        "set -e; set -o pipefail; curl --proto '=https' --tlsv1.2 -fLsS {} | sh",
-        SHELL_INSTALLER
-    );
-    run_command_status("sh", &["-c", &script])
-}
-
-#[cfg(not(unix))]
-fn try_installer_curl() -> Result<(), StrategyError> {
-    Err(StrategyError::Preflight(
-        "curl installer is Unix-only".into(),
-    ))
-}
-
-#[cfg(unix)]
-fn try_installer_wget() -> Result<(), StrategyError> {
-    if !tool_exists("wget") {
-        return Err(StrategyError::Preflight("wget not on PATH".into()));
-    }
-    let script = format!(
-        "set -e; set -o pipefail; wget -qO- {} | sh",
-        SHELL_INSTALLER
-    );
-    run_command_status("sh", &["-c", &script])
-}
-
-#[cfg(not(unix))]
-fn try_installer_wget() -> Result<(), StrategyError> {
-    Err(StrategyError::Preflight(
-        "wget installer is Unix-only".into(),
-    ))
 }
 
 #[cfg(windows)]
@@ -1091,7 +1106,8 @@ where
 /// the MSI/EXE strategies to fetch the matching installer to `%TEMP%` before
 /// launching it. TLS validation is enforced by reqwest's rustls backend; the
 /// caller then re-fetches the `.sha256` sidecar and runs `verify_checksum` for
-/// defense against a corporate-proxy interception or a tampered release asset.
+/// corruption detection before execution. Authenticity is enforced separately
+/// by the signed installer/release trust chain.
 #[cfg(windows)]
 fn download_to_file(url: &str, path: &std::path::Path) -> Result<(), String> {
     block_on(async move {
@@ -1176,11 +1192,10 @@ fn compute_sha256(path: &std::path::Path) -> Result<String, String> {
 /// Fetch the `.sha256` sidecar, compute the SHA-256 of the downloaded installer,
 /// refuse to proceed on mismatch.
 ///
-/// Defends against a network MITM that replaces the installer bytes in flight
-/// (corporate TLS-interception proxies with a trusted root CA, hostile WiFi,
-/// captive portals). The sidecar is fetched in a separate request — an attacker
-/// would have to corrupt both the installer and the sidecar in a way that yields
-/// a matching hash, which is preimage-hard.
+/// The same-origin sidecar detects truncation and accidental/cached corruption.
+/// It is not an authenticity proof against an attacker who can replace both the
+/// installer and sidecar; platform signing and release attestations provide that
+/// separate trust layer.
 #[cfg(windows)]
 fn verify_checksum(installer_path: &std::path::Path, installer_url: &str) -> Result<(), String> {
     println!("  Verifying SHA256 checksum...");
@@ -1204,7 +1219,7 @@ fn checksum_verdict(actual: &str, expected: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "SHA256 mismatch — refusing to run installer.\n         Expected: {}\n         Got:      {}\n         This usually indicates a corrupted download or a network MITM.",
+            "SHA256 mismatch — refusing to run installer.\n         Expected: {}\n         Got:      {}\n         The download may be corrupted or tampered with.",
             expected, actual
         ))
     }
@@ -1214,6 +1229,7 @@ fn checksum_verdict(actual: &str, expected: &str) -> Result<(), String> {
 /// tag. Both sides are stripped of any prerelease/build-metadata suffix before
 /// comparison, and an empty `installed` never matches (covers `--version`
 /// failing to parse). Pure + platform-independent.
+#[cfg(any(windows, test))]
 fn post_install_version_ok(installed: &str, expected: &str) -> bool {
     let installed_stripped = strip_prerelease_metadata(installed);
     let expected_stripped = strip_prerelease_metadata(expected);
@@ -1224,6 +1240,7 @@ fn post_install_version_ok(installed: &str, expected: &str) -> bool {
 /// last whitespace token of `nd300 X.Y.Z` / `speedqx X.Y.Z`). `None` if the spawn
 /// fails, the process errors, or the output doesn't parse. Cross-platform — used
 /// by both the Windows installer verify and the cargo-path verify.
+#[cfg(windows)]
 fn reexec_installed_version() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
     let output = Command::new(&exe).arg("--version").output().ok()?;
@@ -1251,6 +1268,7 @@ fn reexec_installed_version() -> Option<String> {
 /// `nd300 --version` is unchanged, then loop forever. Re-exec `--version`; on
 /// mismatch return a `Runtime` error so `execute_update` falls through to the
 /// prebuilt GitHub-release installer, which always carries `latest`.
+#[cfg(windows)]
 fn verify_cargo_post_install(expected: &str) -> Result<(), StrategyError> {
     match reexec_installed_version() {
         Some(installed) if post_install_version_ok(&installed, expected) => Ok(()),
@@ -1471,11 +1489,7 @@ mod tests {
     fn unix_with_cargo_orders_cargo_first() {
         assert_eq!(
             order_strategies(true, TargetOs::Unix),
-            vec![
-                UpdateStrategy::Cargo,
-                UpdateStrategy::InstallerCurl,
-                UpdateStrategy::InstallerWget,
-            ]
+            vec![UpdateStrategy::Cargo, UpdateStrategy::UnixArchive,]
         );
     }
 
@@ -1483,7 +1497,7 @@ mod tests {
     fn unix_without_cargo_prunes_cargo() {
         assert_eq!(
             order_strategies(false, TargetOs::Unix),
-            vec![UpdateStrategy::InstallerCurl, UpdateStrategy::InstallerWget,]
+            vec![UpdateStrategy::UnixArchive]
         );
     }
 
@@ -1513,8 +1527,7 @@ mod tests {
     #[test]
     fn json_method_maps_to_legacy_taxonomy() {
         assert_eq!(UpdateStrategy::Cargo.json_method(), "cargo");
-        assert_eq!(UpdateStrategy::InstallerCurl.json_method(), "installer");
-        assert_eq!(UpdateStrategy::InstallerWget.json_method(), "installer");
+        assert_eq!(UpdateStrategy::UnixArchive.json_method(), "installer");
         assert_eq!(
             UpdateStrategy::InstallerPowerShell.json_method(),
             "installer"
@@ -1553,8 +1566,7 @@ mod tests {
             UpdateStrategy::Cargo.label(),
             UpdateStrategy::InstallerPowerShell.label(),
             UpdateStrategy::InstallerPwsh.label(),
-            UpdateStrategy::InstallerCurl.label(),
-            UpdateStrategy::InstallerWget.label(),
+            UpdateStrategy::UnixArchive.label(),
         ];
         let unique: std::collections::HashSet<_> = labels.iter().collect();
         assert_eq!(
@@ -1618,6 +1630,7 @@ mod tests {
         super::super::uninstall::CleanupReport {
             binary_removed: removed,
             binary_removal_scheduled: scheduled,
+            target_retained: false,
             sibling_removed: false,
             receipt_removed: false,
             path_cleaned: false,

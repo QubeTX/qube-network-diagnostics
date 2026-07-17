@@ -6,15 +6,31 @@
 **Sibling Tool:** TR-300 (Machine Report), SD-300 (System Diagnostic)
 **Language:** Rust
 **License:** PolyForm Noncommercial (consistent with TR-300)
-**Target Platforms:** Windows, macOS, Linux — single static binary per platform, fully independent (zero runtime dependencies, no admin/root required for core diagnostics)
+**Target Platforms:** Windows, macOS, Linux — two standalone binaries per platform (`nd300` + `speedqx`), with no admin/root required for core diagnostics
 
 ---
 
-## Current Shipping Status (v3.0.7)
+## Current Shipping Status (v3.6.0 release candidate, updated 2026-07-17)
 
 This file began as the original product plan. The implemented package now ships as the lowercase crates.io package `nd300` while keeping ND300 as the product brand. End users should install with `cargo install nd300` or the GitHub release installers (`nd300-installer.sh`, `nd300-installer.ps1`, Windows MSI/archives). GitHub releases also publish legacy `nd-300-installer.*` aliases so older installed copies can still self-update.
 
-Release deploys are automated from `main`: a push with a new `Cargo.toml` version runs source checks, the full cargo-dist matrix, GitHub release/updater asset hosting, and then crates.io publishing with `CARGO_REGISTRY_TOKEN`. `nd300 update` is Cargo-first, falls back to cargo-dist installers, and cleans up shadowing non-Cargo ND300 installs when migrating users to the canonical Cargo package. Bare `cargo install nd300` cannot run ND300-specific cleanup hooks for unrelated old install locations, so users with a shadowing legacy install should run `nd300 update` or `nd300 uninstall` first.
+The manifest is staged at `3.6.0`; the last published baseline is `3.5.2`.
+Release is a two-push, exact-SHA flow: merge through cross-platform `main` CI so
+the crate publisher handles crates.io, then push the immutable version tag for
+cargo-dist hosting and the chained Windows installers. A release is not complete
+until Apple accepts both Mac architectures, the post-signing artifacts and later
+Windows assets are attested, and all 28 assets are verified.
+
+The remaining release and follow-up work is tracked in root `TASKS.md`, with
+Windows-ready commands plus the rationale, user impact, and acceptance evidence
+for every item. Update that board rather than relying on this Mac session.
+
+`nd300 update` remains Cargo-first but is bounded and never runs an unsolicited
+Rust-toolchain update. On macOS/Linux its fallback downloads the exact-tag target
+archive plus required checksum, extracts only the two allowlisted programs,
+verifies both versions and Mac trust, and installs the pair transactionally with
+rollback. Windows retains the four installer-aware paths. Unix uninstall is
+origin-aware and refuses unknown or package-manager-owned locations.
 
 ## 1. Overview
 
@@ -23,7 +39,7 @@ ND300 is a zero-config, cross-platform CLI network diagnostic tool. It must work
 1. **A user-facing diagnostic summary** at the top of the output — clear pass/warn/fail verdicts on major categories that any user (including non-technical and gaming users) can understand at a glance.
 2. **A detailed technical report** below the summary — an ASCII/Unicode table with raw diagnostic data for technicians and power users.
 
-The tool should feel like a natural extension of the TR-300 ecosystem: same visual language (Unicode box-drawing with ASCII fallback), same `--json` output for scripting, same single-binary-no-dependencies philosophy.
+The tool should feel like a natural extension of the TR-300 ecosystem: same visual language (Unicode box-drawing with ASCII fallback), same `--json` output for scripting, and self-contained release binaries.
 
 ND300 is intended to be a **one-shot diagnostic**, not a live monitor. The user runs `nd300`, it executes all tests (including a timed speed test), and outputs the full report. Total runtime target: **15–25 seconds** depending on network conditions, with the speed test being the primary time cost.
 
@@ -33,10 +49,16 @@ ND300 is intended to be a **one-shot diagnostic**, not a live monitor. The user 
 
 ### 2.1 Network Interface Detection
 
-- Detect all active network interfaces (Ethernet, Wi-Fi, loopback).
-- For each active interface: name, type (wired/wireless), MAC address, assigned local/private IP, subnet mask.
+- Build one topology snapshot from the default route, current kernel flags,
+  hardware-port/network-service mapping, and addresses.
+- Count only usable physical uplinks as active. Keep loopback, AWDL/LLW,
+  virtual adapters, dormant tunnels, and link-local-only devices in the detail
+  inventory without inflating the headline.
+- For each interface: name, type (wired/wireless/virtual), operational state,
+  MAC address, assigned local/private IP, and subnet mask.
 - On Wi-Fi interfaces (where OS APIs permit): SSID, signal strength (dBm and/or percentage), frequency band (2.4 GHz / 5 GHz / 6 GHz), channel number, and link speed.
-- Identify the primary/default interface (the one used for outbound traffic).
+- Identify the primary/default interface. If a VPN owns the default route,
+  report the logical tunnel and underlying physical uplink separately.
 
 ### 2.1.1 Network Driver & Adapter Status
 
@@ -293,13 +315,16 @@ These are starting suggestions — the developer should evaluate and choose:
 - **`wifi-rs`** or platform-specific APIs — Wi-Fi info (SSID, signal strength). This may require platform-specific code paths.
 - **`wmi`** (Windows only) — WMI queries for driver info, adapter status, service state. Compile-gated with `#[cfg(target_os = "windows")]`.
 - **`windows` or `winapi`** (Windows only) — Low-level Windows API access for network adapter enumeration, service queries, and device status.
-- **`objc2` / `core-wlan`** bindings (macOS only) — Programmatic access to CoreWLAN for Wi-Fi adapter details, or shell out to `airport`/`networksetup` utilities.
+- **macOS Wi-Fi collection** — core mode uses the cached topology only;
+  technician mode runs bounded `system_profiler SPAirPortDataType` JSON with a
+  text fallback for older supported macOS versions. Do not use the removed
+  private `airport` utility.
 - **`neli`** or **`netlink-sys`** (Linux only) — Netlink socket interface for nl80211 Wi-Fi queries, route information, and kernel interface state.
 - **`nix`** (Linux/macOS) — Unix system call wrappers, useful for interface ioctl calls, rfkill queries, and other low-level operations.
 
 ### 5.2 Cross-Platform Considerations
 
-ND300 must be fully cross-platform (Windows, macOS, Linux) and must build as a single static binary on each platform. However, the diagnostics available differ by OS. The tool should detect the host platform at runtime and run the appropriate platform-specific checks. Features that don't apply to the current OS should be silently omitted (not shown as "SKIP" or "N/A" unless the user would expect them to be present).
+ND300 must be fully cross-platform (Windows, macOS, Linux) and build the self-contained `nd300` and `speedqx` binaries on every release platform. However, the diagnostics available differ by OS. Compile-time platform branches run the appropriate checks; features that do not apply should be silently omitted (not shown as "SKIP" or "N/A" unless the user would expect them to be present).
 
 **General cross-platform rules:**
 
@@ -322,7 +347,9 @@ ND300 must be fully cross-platform (Windows, macOS, Linux) and must build as a s
   - Detect active VPN or proxy configurations.
   - Report Application Firewall status (enabled/disabled, stealth mode).
   - Detect loaded networking-related system extensions that may interfere (e.g., third-party VPN or firewall extensions).
-- **Wi-Fi info:** CoreWLAN framework (programmatic) or `airport` CLI utility (`/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport`).
+- **Wi-Fi info:** bounded `system_profiler` in technician mode only. Parse only
+  the connected network, treat redacted SSIDs as unavailable, and trust the
+  reported band rather than channel-number guesses.
 - **ICMP ping:** Requires no special privileges on macOS.
 
 #### Linux
@@ -347,7 +374,33 @@ ND300 must be fully cross-platform (Windows, macOS, Linux) and must build as a s
 6. Print the detailed technical report.
 7. Exit with appropriate code.
 
-**Target total runtime:** 15–25 seconds with speed test, < 5 seconds without (`--fast`).
+**Target runtime:** bounded by the diagnostic wall-clock cap. Core work should
+return promptly; technician mode intentionally takes longer because it includes
+route, sustained-loss, path-MTU, and loaded-latency phases. Partial results must
+render when the cap is reached, and timed-out child processes must be killed and
+reaped.
+
+### 5.4 Repair Safety Invariants
+
+- macOS repair must never delete/recreate a network service, retrieve a Wi-Fi
+  password, or infer state from an incomplete snapshot.
+- The high-risk macOS replacement may only cycle one unambiguously mapped,
+  enabled physical service. Register re-enable before disable, preserve DNS
+  servers and search domains exactly, and resolve the restore token only after
+  enabled state plus the expected physical route/reachability are verified.
+- Keep the production service-cycle gate false until the exact production path
+  passes under an independent offline watchdog on a disposable Mac VM/service.
+  Never test it on a computer whose Codex, SSH, or other recovery control uses
+  the link being cycled.
+- DHCP renewal is allowed only when the selected service is already configured
+  for DHCP. Static, Manual, BootP, disabled, virtual, missing, or ambiguous
+  configurations must not be mutated.
+- Restore operations run LIFO after Ctrl-C, SIGTERM, SIGHUP, panic, timeout, or
+  normal completion. Register every consumer-VPN inverse before disconnect;
+  enterprise VPNs remain untouched. Report `reverted: true` only after proof.
+- Elevated Unix operations must resolve the invoking user from numeric account
+  data, drop privileges for user-scoped commands, and create private atomic
+  reports owned by that user rather than root.
 
 ---
 
@@ -360,7 +413,16 @@ Consistent with TR-300:
 - **PowerShell installer:** `powershell -ExecutionPolicy Bypass -c "irm https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.ps1 | iex"` for Windows.
 - **Cargo install:** `cargo install nd300` for Rust developers.
 - **Legacy updater aliases:** `nd-300-installer.sh` and `nd-300-installer.ps1` are uploaded to every release for older installed copies.
-- **Single static binary, zero runtime dependencies.**
+- **Self-update distinction:** the shell command above is a user-invoked fresh
+  install path. The built-in Unix updater must not execute downloaded scripts;
+  it uses the verified exact-tag native archive transaction described above.
+- **Mac trust:** both `nd300` and `speedqx`, in arm64 and Intel archives, require
+  the pinned Developer ID identity, hardened runtime, timestamp, and Apple
+  notarization status `Accepted`; there is no unsigned publishing fallback.
+- **Attestations and permissions:** attest final post-signing cargo-dist assets
+  and later Windows add-ons separately; workflow defaults are read-only.
+- **Man pages:** include `man/` in archives. macOS instructions use a
+  user-writable man directory and do not require `mandb`.
 
 ---
 
@@ -375,7 +437,7 @@ Consistent with TR-300:
 
 ## 8. Summary of Deliverables
 
-1. **Rust binary** — `nd300` — cross-platform, single static binary.
+1. **Rust binaries** — `nd300` and `speedqx` — cross-platform release pair.
 2. **GitHub repository** — under the QubeTX organization, with README, LICENSE (PolyForm Noncommercial), CI/CD for release builds.
 3. **Shell installer script** — consistent with TR-300's installation method.
 4. **JSON output schema** — documented in the README.

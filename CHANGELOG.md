@@ -7,6 +7,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-07-17
+
+macOS accuracy, repair safety, transactional Unix update/uninstall, and
+fail-closed Apple release trust hardening. Commands, action IDs, exit codes, and
+existing serialized field shapes remain compatible.
+
+### Added
+- **Coherent macOS interface topology for interface truth.** Default route,
+  kernel interface flags, hardware-port/network-service mappings, and addresses
+  are reconciled inside the interface collection. The active total now counts
+  only usable physical uplinks;
+  loopback, AWDL/LLW, dormant tunnels, and link-local-only devices remain
+  available as detail without inflating the headline. A default-route VPN is
+  reported as the logical tunnel over its physical uplink.
+- **A git-tracked v3.6.0 handoff board.** `TASKS.md` gives a Windows/Alienware
+  operator exact remaining release and smoke commands, plus the reason, impact,
+  and acceptance criteria for every deferred item. It also records the
+  non-destructive follow-up to share one immutable topology object across the
+  independently collected interface, VPN, route, DHCP, and Wi-Fi sections.
+- **Modern bounded macOS Wi-Fi collection.** Core mode uses the topology cache
+  and never waits for optional radio metadata. Technician mode uses bounded
+  `system_profiler SPAirPortDataType` JSON with a legacy text fallback, parses
+  only the connected network, treats redacted SSIDs as unavailable, and trusts
+  the reported radio band rather than guessing from channel numbers.
+- **Captured macOS fixtures** cover modern and older routing, listener,
+  connection, DHCP, protocol-statistics, Wi-Fi, network-service, VPN, ULA IPv6,
+  and dormant-tunnel output. DHCP parsing now normalizes typed hexadecimal lease
+  durations and braced gateway values; macOS-suppressed protocol counters are
+  omitted rather than represented as fabricated zeroes.
+- **Evidence-qualified TLS and DNSSEC findings.** The bounded Rust TLS probe now
+  populates the existing issuer field and describes evidence as clear, detected,
+  or inconclusive. DNSSEC is reported as validating only when a signed control
+  resolves and the deliberately invalid control does not.
+- **Validated invoking-user context.** Elevated Unix work resolves the original
+  user from numeric `SUDO_UID`/passwd data, uses that user's home and Cargo
+  paths, and drops privileges for user-scoped commands. Fix reports are created
+  atomically with mode `0600` and correct ownership.
+- **Transactional native Unix archive updater.** The non-Windows fallback now
+  downloads the exact-tag target archive and required SHA-256 sidecar with
+  request deadlines and size limits, verifies the digest in Rust, and extracts
+  only the two allowlisted regular files from `.tar.xz`. Absolute/traversal
+  paths, links, duplicates, and unexpected layouts are rejected. Both staged
+  binaries must report the exact expected version before an atomic paired swap;
+  either binary failing rolls both back.
+- **Origin-aware Unix uninstall.** Cargo installs use `cargo uninstall nd300`,
+  an invoked symlink removes only that symlink, validated cargo-dist receipts
+  permit the matching managed layout, and package-manager-owned or unknown
+  locations are refused.
+
+### Changed
+- **IPv6 and VPN semantics are stricter.** ULA addresses are classified
+  separately; `dual_stack` now requires verified IPv4 and IPv6 connectivity.
+  A raw `utun` device is no longer enough to claim a VPN: macOS filtering now
+  correlates `scutil --nc list`, `scutil --nwi`, addresses, and routes.
+- **Diagnostic timeouts terminate child processes.** Apple network-quality work
+  also has progress heartbeats, a whole-phase deadline, and capped exponential
+  backoff with jitter, preventing an unavailable provider from silently
+  consuming the run.
+- **macOS deep reset is fail-closed.** Service deletion/recreation, Wi-Fi
+  password retrieval, SSID scanning, and the incomplete network snapshot were
+  removed. The replacement is a high-risk service off/on cycle that maps the
+  exact enabled physical service, registers re-enable before mutation, restores
+  DNS servers and search domains exactly, and verifies enabled state plus the
+  expected route/reachability before resolving rollback. It remains explicitly
+  unavailable until an offline-supervised disposable macOS VM/service passes the
+  live acceptance test; an active machine whose control path depends on Wi-Fi is
+  not an acceptable test host.
+- **The exact live service-cycle path received supplementary evidence without
+  weakening its gate.** A one-time, user-authorized run on this Mac passed under
+  an independent root watchdog and post-run verification found the service
+  enabled with healthy DHCP, DNS/search, and default-route state. A launchd
+  harness restart defect discovered during that exercise was fixed with an
+  explicit `RunAtLoad=true`, `KeepAlive=false` plist and a durable terminal
+  marker. Because this was not a disposable service and did not inject failure
+  at every transition, `MACOS_SERVICE_CYCLE_VALIDATED` remains false.
+- **DHCP renewal preserves static configuration.** It now runs only when the
+  selected network service is already DHCP-configured; Manual, BootP, static,
+  ambiguous, disabled, and virtual services are skipped without mutation.
+- **Interrupt restoration is stricter.** Restore operations drain in LIFO order
+  after Ctrl-C, SIGTERM, or SIGHUP. Every consumer-VPN inverse is registered
+  before disconnect; enterprise VPNs remain untouched. `reverted: true` is set
+  only after restored state is verified.
+- **Unix Cargo update is bounded and non-invasive.** The unsolicited
+  `rustup update stable` was removed. Cargo remains first when present, but runs
+  as the invoking user under a deadline and both binaries in that user's Cargo
+  bin directory must report the expected version before any known legacy origin
+  is cleaned.
+- **macOS release archives include `man/`.** User-writable man-page installation
+  is documented for macOS without `mandb`; Linux system-wide installation
+  remains available.
+
+### Fixed
+- **macOS 26 diagnostic regressions:** physical interfaces no longer appear as
+  Unknown solely because private `airport` disappeared; virtual interfaces no
+  longer inflate the active count; dotted listening endpoints, the routing
+  `Netif` column, wide IPv6 connections, dynamic DHCP interface selection, and
+  modern `netstat -s` wording parse correctly.
+- **Potentially destructive macOS reset path removed.** Previous releases could
+  delete a network service, restore only part of its state, suppress restoration
+  errors, and still report success. v3.6.0 contains no network-service deletion
+  path and never reports the replacement cycle restored until verification.
+- **Elevated user paths no longer drift to `/var/root`.** Reports, Cargo paths,
+  updates, and uninstall decisions use the validated invoking user.
+
+### Security
+- **Developer ID signing and notarization fail closed for both Mac binaries and
+  architectures.** Release automation uses an ephemeral keychain whose original
+  search list is restored immediately and during cleanup; signs by the sole
+  imported fingerprint; verifies Team ID `M9D5379H93`, identifiers
+  `com.qubetx.nd300` / `com.qubetx.speedqx`, pinned leaf fingerprint, hardened
+  runtime, and timestamp; notarizes a temporary ZIP containing both binaries;
+  and requires Apple status `Accepted`. The exact signed bytes are repacked and
+  checksums/manifests regenerated; there is no unsigned fallback.
+- **Final release artifacts are attested after signing.** Workflow defaults are
+  `contents: read`; write/id-token permissions are granted only to hosting and
+  attestation jobs. The later Windows-installer assets are attested separately,
+  and `cargo audit` is a blocking gate.
+- **macOS runners are current.** arm64 cargo-dist builds use `macos-15` and Intel
+  uses `macos-15-intel`, while deployment floors remain macOS 11.0 arm64 and
+  10.12 Intel.
+
+### Release acceptance still required
+- Before the service cycle can be enabled, run it under offline/local console
+  supervision on a disposable macOS VM or sacrificial network service and prove
+  interruption/recovery at every transition. The v3.6.0 release keeps it
+  unavailable if that evidence is absent.
+- Cross-module collection still takes independently timed snapshots. A rare
+  route/VPN transition can therefore make two otherwise-correct report sections
+  briefly disagree; `TASKS.md` records the shared immutable topology follow-up,
+  its impact, and fixture acceptance criteria. This is diagnostic consistency
+  work, not a mutation or repair-safety defect.
+- Native arm64 and Rosetta x86_64 smokes, quarantined-artifact trust checks,
+  accepted notarization for both Mac archives, exact-SHA hosted CI, crates.io,
+  28 release assets plus attestations, update-from-v3.5.2, and the Alienware
+  smoke remain release gates; this changelog does not claim they have completed.
+
 ## [3.5.2] - 2026-07-06
 
 ### Fixed

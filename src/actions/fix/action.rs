@@ -123,8 +123,9 @@ pub enum ActionId {
     DisableConsumerVpns,
     BounceInterface,
     /// Platform-specific deep stack reset (Windows: Winsock+TCPIP+IPv6; macOS:
-    /// remove/recreate network service; Linux: nmcli connection
-    /// delete/recreate).
+    /// fail-closed gated service cycle, never deletion; Linux: nmcli
+    /// guarded deep recovery. Destructive profile deletion/recreation paths
+    /// that cannot be restored are explicitly unavailable.
     DeepStackReset,
 }
 
@@ -208,8 +209,8 @@ impl Action {
     pub async fn apply(&self, config: &Config, restore: &RestoreRegistry) -> ActionOutcome {
         match self.id {
             ActionId::FlushDns => apply_flush_dns().await,
-            ActionId::SetDnsCloudflare => apply_set_dns(DnsProvider::Cloudflare).await,
-            ActionId::SetDnsAutomatic => apply_set_dns(DnsProvider::Automatic).await,
+            ActionId::SetDnsCloudflare => apply_set_dns(DnsProvider::Cloudflare, restore).await,
+            ActionId::SetDnsAutomatic => apply_set_dns(DnsProvider::Automatic, restore).await,
             ActionId::FlushArp => apply_flush_arp().await,
             ActionId::RestartNetworkServices => apply_restart_services().await,
             ActionId::RenewDhcp => apply_renew_dhcp().await,
@@ -226,13 +227,50 @@ async fn apply_flush_dns() -> ActionOutcome {
     ActionOutcome::from_result(flush_dns_platform().await)
 }
 
-async fn apply_set_dns(provider: DnsProvider) -> ActionOutcome {
+async fn apply_set_dns(provider: DnsProvider, restore: &RestoreRegistry) -> ActionOutcome {
     let iface = match adapters::detect_default_interface().await {
         Some(i) => i,
         None => return ActionOutcome::fail("Could not detect a default network interface"),
     };
     let service_name = service_name_for(&iface).await;
-    ActionOutcome::from_result(dns::set_dns_servers(&iface, &service_name, provider).await)
+    #[cfg(target_os = "macos")]
+    {
+        let snapshot = match dns::capture_macos_dns_snapshot(&service_name).await {
+            Ok(snapshot) => std::sync::Arc::new(snapshot),
+            Err(error) => {
+                return ActionOutcome::fail(format!(
+                    "Refused to change DNS because the exact prior DNS/search-domain state could not be captured: {error}"
+                ));
+            }
+        };
+        let token = restore
+            .register(RestoreOp::RestoreMacosDns(std::sync::Arc::clone(&snapshot)))
+            .await;
+        let result = dns::set_dns_servers(&iface, &service_name, provider).await;
+        match result {
+            Ok(message) => {
+                restore.mark_resolved(token).await;
+                ActionOutcome::ok(message)
+            }
+            Err(error) => match dns::restore_macos_dns_snapshot(&snapshot).await {
+                Ok(()) => {
+                    restore.mark_resolved(token).await;
+                    ActionOutcome::fail(format!(
+                        "{error}; exact prior DNS/search-domain state restored"
+                    ))
+                }
+                Err(restore_error) => ActionOutcome::fail(format!(
+                    "{error}; exact DNS/search-domain restoration also failed ({restore_error}); nd300 will retry during cleanup"
+                )),
+            },
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = restore;
+        ActionOutcome::from_result(dns::set_dns_servers(&iface, &service_name, provider).await)
+    }
 }
 
 async fn apply_flush_arp() -> ActionOutcome {
@@ -258,36 +296,70 @@ async fn apply_disable_consumer_vpns(config: &Config, restore: &RestoreRegistry)
         );
     }
 
-    let disabled = vpn::detect_and_disable(config).await;
-    if disabled.is_empty() {
+    let batch = vpn::detect_and_disable(config, restore).await;
+    if batch.disabled.is_empty() && batch.uncertain_attempts == 0 {
         return ActionOutcome::ok("No consumer VPNs were active");
     }
-
-    // Register a re-enable op for every VPN we disabled BEFORE we report
-    // success. If the run is interrupted (Ctrl-C / timeout / panic) before the
-    // normal-path offer below runs, the drain re-connects each still-registered
-    // VPN so the user isn't left disconnected.
-    let mut tokens = Vec::with_capacity(disabled.len());
-    for v in &disabled {
-        let token = restore
-            .register(RestoreOp::ReEnableVpn(std::sync::Arc::new(v.clone())))
-            .await;
-        tokens.push(token);
+    if batch.disabled.is_empty() {
+        let cleanup_failures = restore.drain().await;
+        let cleanup = if cleanup_failures.is_empty() {
+            "conservative reconnect cleanup completed".to_string()
+        } else {
+            format!(
+                "reconnect cleanup needs attention: {}",
+                cleanup_failures.join("; ")
+            )
+        };
+        return ActionOutcome::fail(format!(
+            "Could not confirm {} VPN disconnect attempt(s); {}",
+            batch.uncertain_attempts, cleanup
+        ))
+        .with_fatal_env_change();
     }
+
+    let disabled: Vec<vpn::DisabledVpn> =
+        batch.disabled.iter().map(|item| item.vpn.clone()).collect();
 
     let names: Vec<String> = disabled.iter().map(|v| v.name.clone()).collect();
 
     // Normal path: offer to re-enable now (default No keeps them off for the
-    // re-probe). Whatever the user chooses, the offer has happened, so mark the
-    // restore ops resolved — the drain must not blindly re-enable them on a
-    // normal terminal path (that would undo a successful fix).
-    vpn::offer_reenable(&disabled, config).await;
-    for token in tokens {
-        restore.mark_resolved(token).await;
+    // re-probe). Resolve an inverse only after the user's explicit leave-off
+    // choice or positive provider/OS readback of the requested state. Any
+    // uncertain reconnect stays registered so terminal drain can retry it.
+    let dispositions = vpn::offer_reenable(&disabled, config).await;
+    let mut reconnect_pending = 0_usize;
+    for (item, disposition) in batch.disabled.into_iter().zip(dispositions) {
+        if disposition.resolves_restore() {
+            restore.mark_resolved(item.restore_token).await;
+        } else {
+            reconnect_pending += 1;
+        }
     }
 
-    ActionOutcome::ok(format!("Disabled consumer VPNs: {}", names.join(", ")))
-        .with_fatal_env_change()
+    let cleanup_pending = batch.uncertain_attempts + reconnect_pending;
+    let uncertain = if cleanup_pending == 0 {
+        String::new()
+    } else {
+        let cleanup_failures = restore.drain().await;
+        let cleanup = if cleanup_failures.is_empty() {
+            "reconnect cleanup completed".to_string()
+        } else {
+            format!(
+                "reconnect cleanup needs attention: {}",
+                cleanup_failures.join("; ")
+            )
+        };
+        format!(
+            "; {} uncertain/failed reconnect state(s), {}",
+            cleanup_pending, cleanup
+        )
+    };
+    ActionOutcome::ok(format!(
+        "Disabled consumer VPNs: {}{}",
+        names.join(", "),
+        uncertain
+    ))
+    .with_fatal_env_change()
 }
 
 async fn apply_bounce_interface(restore: &RestoreRegistry) -> ActionOutcome {
@@ -295,6 +367,14 @@ async fn apply_bounce_interface(restore: &RestoreRegistry) -> ActionOutcome {
         Some(i) => i,
         None => return ActionOutcome::fail("Could not detect a default network interface"),
     };
+
+    #[cfg(target_os = "macos")]
+    if stages::detect_macos_service(&iface).await.is_none() {
+        return ActionOutcome::fail(format!(
+            "Refused to bounce macOS interface {} because it is not an unambiguous physical network service. Tunnel/virtual interfaces such as utun are never bounced.",
+            iface
+        ));
+    }
 
     // Register the re-enable BEFORE disabling, so an interrupt between disable
     // and re-enable still brings the adapter back up via the drain.
@@ -305,25 +385,49 @@ async fn apply_bounce_interface(restore: &RestoreRegistry) -> ActionOutcome {
         .await;
 
     if let Err(e) = stages::disable_interface(&iface).await {
-        // Disable never happened — nothing to restore.
-        restore.mark_resolved(token).await;
-        return ActionOutcome::fail(format!("Disable {} failed: {}", iface, e));
+        // The subprocess may have taken effect before returning non-zero or
+        // timing out. Keep the idempotent re-enable op pending for the terminal
+        // drain instead of assuming the adapter stayed up, and attempt that
+        // cleanup immediately rather than waiting through more repair steps.
+        let cleanup_failures = restore.drain().await;
+        let cleanup = if cleanup_failures.is_empty() {
+            "conservative re-enable cleanup completed".to_string()
+        } else {
+            format!(
+                "re-enable cleanup needs attention: {}",
+                cleanup_failures.join("; ")
+            )
+        };
+        return ActionOutcome::fail(format!(
+            "Disable {} did not complete cleanly: {}. {}.",
+            iface, e, cleanup
+        ))
+        .with_fatal_env_change();
     }
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Re-enable with one retry. Leaving an adapter disabled is far worse than a
     // slow retry, so mirror the legacy 2s-wait retry that the old Stage 2 had.
-    if let Err(first_err) = stages::enable_interface(&iface).await {
+    if let Err(first_err) = stages::restore_interface(&iface).await {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        if let Err(retry_err) = stages::enable_interface(&iface).await {
-            // Still down. Leave the restore op REGISTERED so the drain retries
-            // it on the terminal path, and surface a loud, actionable message.
+        if let Err(retry_err) = stages::restore_interface(&iface).await {
+            // Still down. Keep the restore registered and immediately invoke
+            // the drain for another bounded idempotent re-enable attempt.
+            let cleanup_failures = restore.drain().await;
+            let cleanup = if cleanup_failures.is_empty() {
+                "cleanup re-enabled the adapter".to_string()
+            } else {
+                format!(
+                    "cleanup still needs attention: {}",
+                    cleanup_failures.join("; ")
+                )
+            };
             let cmd_hint = reenable_command_hint(&iface);
             return ActionOutcome::fail(format!(
-                "Your network adapter \"{}\" is still DISABLED — re-enable failed twice ({}; retry: {}). \
-                 nd300 will try again as it exits. If you still have no connection, run: {}",
-                iface, first_err, retry_err, cmd_hint
+                "Network adapter \"{}\" re-enable failed twice ({}; retry: {}); {}. \
+                 If you still have no connection, run: {}",
+                iface, first_err, retry_err, cleanup, cmd_hint
             ))
             .with_fatal_env_change();
         }
@@ -356,6 +460,9 @@ fn reenable_command_hint(iface: &str) -> String {
 }
 
 async fn apply_deep_stack_reset(config: &Config, restore: &RestoreRegistry) -> ActionOutcome {
+    #[cfg(target_os = "macos")]
+    let saved_ssid = None;
+    #[cfg(not(target_os = "macos"))]
     let saved_ssid = super::wifi::capture_current_ssid().await;
     match stages::platform_stage3(config, &saved_ssid, restore).await {
         Ok(steps) => {
@@ -536,30 +643,30 @@ fn make_deep_reset_explanation() -> RiskExplanation {
 #[cfg(target_os = "macos")]
 fn make_deep_reset_explanation() -> RiskExplanation {
     RiskExplanation {
-        what: "Recreate the macOS network service",
-        why: "This removes and recreates your active network service in System Settings — the standard fix when a service entry is corrupted.",
+        what: "Safely cycle the macOS network service",
+        why: "The former reset deleted and recreated the active network service and could damage Wi-Fi configuration. That implementation has been removed. Its replacement only disables and re-enables an exactly-mapped physical service, preserves resolver state, and remains unavailable until disposable-Mac validation is complete.",
         side_effects: &[
-            "You will lose internet for ~10–20 seconds.",
-            "Wi-Fi will need to reconnect; nd300 will try to restore it from Keychain.",
-            "nd300 snapshots and attempts to restore DNS, proxy, service order, and IP mode settings.",
+            "The service-deletion reset will never run.",
+            "This build refuses the replacement cycle until it passes destructive testing on a disposable Mac.",
+            "Use the lower-risk adapter restart or System Settings while this safeguard is active.",
         ],
-        reversible: Reversibility::NotReversible,
-        typical_duration: "10–20 seconds",
+        reversible: Reversibility::FullyReversible,
+        typical_duration: "Unavailable until disposable-Mac validation",
     }
 }
 
 #[cfg(target_os = "linux")]
 fn make_deep_reset_explanation() -> RiskExplanation {
     RiskExplanation {
-        what: "Recreate the NetworkManager connection profile",
-        why: "This deletes and recreates the active NetworkManager connection profile — the standard fix when a profile is corrupted.",
+        what: "Attempt guarded Linux deep network recovery",
+        why: "ND300 no longer deletes and recreates NetworkManager profiles because an interruption could leave the connection permanently missing. NetworkManager-managed connections are refused; the remaining fallback only applies to legacy dhcpcd/wpa_supplicant systems.",
         side_effects: &[
-            "You will lose internet briefly.",
-            "Saved settings on the deleted profile are gone.",
-            "For Wi-Fi, you'll need to provide the SSID and passphrase again.",
+            "NetworkManager-managed connections will not be altered.",
+            "On legacy dhcpcd systems, the network service may restart briefly.",
+            "A requested Wi-Fi reconnect may append a wpa_supplicant entry and is not automatically reversible.",
         ],
         reversible: Reversibility::NotReversible,
-        typical_duration: "10–20 seconds",
+        typical_duration: "Unavailable for NetworkManager; about 10–20 seconds on the legacy fallback",
     }
 }
 
@@ -581,6 +688,50 @@ mod tests {
             outcome.message.contains("requires an interactive session"),
             "unexpected outcome: {:?}",
             outcome
+        );
+    }
+
+    #[test]
+    fn macos_action_sources_contain_no_service_deletion_or_credential_replay() {
+        let stages = include_str!("stages.rs");
+        let wifi = include_str!("wifi.rs");
+        let dns = include_str!("dns.rs");
+        let standalone_dns = include_str!("../dns.rs");
+        for forbidden in [
+            concat!("-remove", "networkservice"),
+            concat!("-create", "networkservice"),
+            concat!("find-generic", "-password"),
+            concat!("Apple80211", ".framework"),
+            concat!("-setairport", "network"),
+        ] {
+            assert!(
+                !stages.contains(forbidden) && !wifi.contains(forbidden),
+                "forbidden destructive macOS action dependency returned: {forbidden}"
+            );
+        }
+        for forbidden in [
+            "install_cmd",
+            "nextdns deactivate",
+            concat!("find-generic", "-password"),
+        ] {
+            assert!(
+                !dns.contains(forbidden) && !standalone_dns.contains(forbidden),
+                "forbidden non-transactional macOS DNS mutation returned: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn linux_action_sources_contain_no_networkmanager_profile_deletion() {
+        let stages = include_str!("stages.rs");
+        let forbidden = concat!("\"connection\"", ", \"delete\"");
+        assert!(
+            !stages.contains(forbidden),
+            "unguarded NetworkManager profile deletion returned"
+        );
+        assert!(
+            stages.contains("Linux deep reset is safely unavailable while NetworkManager"),
+            "fail-closed NetworkManager recovery guidance is missing"
         );
     }
 }

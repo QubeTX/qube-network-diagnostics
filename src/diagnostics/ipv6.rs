@@ -50,8 +50,6 @@ pub async fn collect_with_cache(cache: &SharedCache) -> Option<Ipv6Info> {
         Ipv6Connectivity::None
     };
 
-    let dual_stack = has_global;
-
     // Deep probes (v3.4.0+): only meaningful when a global v6 address exists.
     let (v6_http_ok, v4_connect_ms, v6_connect_ms, v6_penalty_ms) = if has_global {
         let v6_http = fetch_over_v6().await;
@@ -61,10 +59,13 @@ pub async fn collect_with_cache(cache: &SharedCache) -> Option<Ipv6Info> {
             (Some(v4), Some(v6)) => Some(v6 - v4),
             _ => None,
         };
-        (Some(v6_http), v4_ms, v6_ms, penalty)
+        (v6_http, v4_ms, v6_ms, penalty)
     } else {
         (None, None, None, None)
     };
+    let dual_stack = matches!(connectivity, Ipv6Connectivity::Full)
+        && v4_connect_ms.is_some()
+        && v6_connect_ms.is_some();
 
     Some(Ipv6Info {
         available: !addresses.is_empty(),
@@ -78,21 +79,23 @@ pub async fn collect_with_cache(cache: &SharedCache) -> Option<Ipv6Info> {
     })
 }
 
-/// HTTPS fetch pinned to an IPv6 literal — proves real end-to-end v6, not
-/// just an address assignment.
-async fn fetch_over_v6() -> bool {
-    let Ok(client) = reqwest::Client::builder()
+/// HTTPS fetch whose DNS result is pinned to Cloudflare IPv6 while the URL
+/// retains a hostname. This preserves SNI and certificate hostname
+/// validation; requesting a raw IPv6 literal can falsely fail TLS even on a
+/// healthy IPv6 path.
+async fn fetch_over_v6() -> Option<bool> {
+    let endpoint = "[2606:4700:4700::1111]:443".parse().ok()?;
+    let client = reqwest::Client::builder()
+        .resolve("one.one.one.one", endpoint)
         .timeout(std::time::Duration::from_secs(5))
         .build()
-    else {
-        return false;
-    };
-    client
-        .get("https://[2606:4700:4700::1111]/cdn-cgi/trace")
+        .ok()?;
+    let response = client
+        .get("https://one.one.one.one/cdn-cgi/trace")
         .send()
         .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
+        .ok()?;
+    Some(response.status().is_success())
 }
 
 /// Timed TCP connect — used for the v4-vs-v6 happy-eyeballs comparison.
@@ -144,29 +147,21 @@ fn parse_ipv6_from_ipconfig(text: &str) -> Vec<Ipv6Address> {
                 .trim()
                 .strip_suffix("(Preferred)")
             {
-                let scope = if trimmed.contains("Link-local") {
-                    "link-local"
-                } else {
-                    "global"
-                };
+                let scope = classify_ipv6_scope(addr.trim());
                 addrs.push(Ipv6Address {
                     interface: current_iface.clone(),
                     address: addr.trim().to_string(),
-                    scope: scope.to_string(),
+                    scope,
                 });
             } else {
                 let addr: String = trimmed.split(':').skip(1).collect::<Vec<&str>>().join(":");
                 let addr = addr.trim().trim_end_matches("(Preferred)").trim();
                 if !addr.is_empty() {
-                    let scope = if trimmed.contains("Link-local") {
-                        "link-local"
-                    } else {
-                        "global"
-                    };
+                    let scope = classify_ipv6_scope(addr);
                     addrs.push(Ipv6Address {
                         interface: current_iface.clone(),
                         address: addr.to_string(),
-                        scope: scope.to_string(),
+                        scope,
                     });
                 }
             }
@@ -190,7 +185,8 @@ pub async fn collect() -> Option<Ipv6Info> {
         Ipv6Connectivity::None
     };
 
-    let dual_stack = has_global;
+    let dual_stack = matches!(connectivity, Ipv6Connectivity::Full)
+        && timed_connect("1.1.1.1:443").await.is_some();
 
     Some(Ipv6Info {
         available: !addresses.is_empty(),
@@ -233,30 +229,22 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
                         .trim()
                         .strip_suffix("(Preferred)")
                     {
-                        let scope = if trimmed.contains("Link-local") {
-                            "link-local"
-                        } else {
-                            "global"
-                        };
+                        let scope = classify_ipv6_scope(addr.trim());
                         addrs.push(Ipv6Address {
                             interface: current_iface.clone(),
                             address: addr.trim().to_string(),
-                            scope: scope.to_string(),
+                            scope,
                         });
                     } else {
                         let addr: String =
                             trimmed.split(':').skip(1).collect::<Vec<&str>>().join(":");
                         let addr = addr.trim().trim_end_matches("(Preferred)").trim();
                         if !addr.is_empty() {
-                            let scope = if trimmed.contains("Link-local") {
-                                "link-local"
-                            } else {
-                                "global"
-                            };
+                            let scope = classify_ipv6_scope(addr);
                             addrs.push(Ipv6Address {
                                 interface: current_iface.clone(),
                                 address: addr.to_string(),
-                                scope: scope.to_string(),
+                                scope,
                             });
                         }
                     }
@@ -281,7 +269,7 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
                     let parts: Vec<&str> = trimmed.split_whitespace().collect();
                     if parts.len() >= 4 {
                         let addr = parts[1].split('/').next().unwrap_or(parts[1]);
-                        let scope = parts.get(3).unwrap_or(&"unknown").to_string();
+                        let scope = classify_ipv6_scope(addr);
                         addrs.push(Ipv6Address {
                             interface: current_iface.clone(),
                             address: addr.to_string(),
@@ -305,17 +293,11 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
                     } else if line.contains("inet6") {
                         let parts: Vec<&str> = line.split_whitespace().collect();
                         if let Some(addr) = parts.get(1) {
-                            let scope = if addr.starts_with("fe80") {
-                                "link-local"
-                            } else if *addr == "::1" {
-                                "loopback"
-                            } else {
-                                "global"
-                            };
+                            let scope = classify_ipv6_scope(addr);
                             addrs.push(Ipv6Address {
                                 interface: current_iface.clone(),
                                 address: addr.to_string(),
-                                scope: scope.to_string(),
+                                scope,
                             });
                         }
                     }
@@ -325,6 +307,33 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
     }
 
     addrs
+}
+
+fn classify_ipv6_scope(address: &str) -> String {
+    let address = address
+        .split('%')
+        .next()
+        .unwrap_or(address)
+        .split('/')
+        .next()
+        .unwrap_or(address);
+    let Ok(address) = address.parse::<std::net::Ipv6Addr>() else {
+        return "unknown".to_string();
+    };
+    if address.is_loopback() {
+        "loopback"
+    } else if address.is_unicast_link_local() {
+        "link-local"
+    } else if address.is_unique_local() {
+        "unique-local"
+    } else if address.is_multicast() {
+        "multicast"
+    } else if address.is_unspecified() {
+        "unspecified"
+    } else {
+        "global"
+    }
+    .to_string()
 }
 
 async fn test_ipv6_connectivity() -> Ipv6Connectivity {
@@ -348,5 +357,18 @@ async fn test_ipv6_connectivity() -> Ipv6Connectivity {
                 _ => Ipv6Connectivity::None,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv6_unique_local_is_not_global() {
+        assert_eq!(classify_ipv6_scope("fd48:7b1c:8406::1"), "unique-local");
+        assert_eq!(classify_ipv6_scope("fe80::1%en0"), "link-local");
+        assert_eq!(classify_ipv6_scope("::1"), "loopback");
+        assert_eq!(classify_ipv6_scope("2606:4700:4700::1111"), "global");
     }
 }

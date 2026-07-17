@@ -23,6 +23,9 @@ pub(crate) struct CleanupReport {
     /// guard can tell "already gone" from "scheduled for removal on exit" and not
     /// be silently defeated by an optimistic "removed".
     pub(crate) binary_removal_scheduled: bool,
+    /// Unix symlink invocation: only the link was removed; the underlying
+    /// package-manager/Cargo/archive target remains installed.
+    pub(crate) target_retained: bool,
     pub(crate) sibling_removed: bool,
     pub(crate) receipt_removed: bool,
     pub(crate) path_cleaned: bool,
@@ -68,6 +71,9 @@ pub async fn run(config: &Config) -> i32 {
     }
 
     println!();
+    #[cfg(unix)]
+    print_unix_uninstall_preview(&real_path, config);
+    #[cfg(windows)]
     println!(
         "  This will remove nd300 and speedqx from: {}",
         color::cyan(
@@ -82,8 +88,12 @@ pub async fn run(config: &Config) -> i32 {
 
     // Show what we'll clean up
     let receipt_dir = get_receipt_dir();
+    #[cfg(unix)]
+    let show_receipt = unix_uninstall_cleans_receipt();
+    #[cfg(windows)]
+    let show_receipt = true;
     if let Some(ref dir) = receipt_dir {
-        if dir.exists() {
+        if show_receipt && dir.exists() {
             println!(
                 "  Config/receipt directory:    {}",
                 color::cyan(&dir.display().to_string(), config),
@@ -107,17 +117,26 @@ pub async fn run(config: &Config) -> i32 {
     println!();
 
     if is_interactive(config) {
-        if !prompt_yes_no("  Are you sure you want to uninstall nd300 and speedqx? (y/N): ") {
+        #[cfg(unix)]
+        let prompt = "  Proceed with this origin-aware uninstall? (y/N): ";
+        #[cfg(windows)]
+        let prompt = "  Are you sure you want to uninstall nd300 and speedqx? (y/N): ";
+        if !prompt_yes_no(prompt) {
             println!("  Uninstall cancelled.");
             return 0;
         }
         println!();
     }
 
-    let report = uninstall_path(&real_path);
+    let report = execute_uninstall(&real_path).await;
 
     // Print results
-    if report.binary_removed {
+    if report.target_retained {
+        print_ok(
+            "Invocation symlink removed; target installation retained",
+            config,
+        );
+    } else if report.binary_removed {
         print_ok("nd300 binary removed", config);
     } else if report.binary_removal_scheduled {
         // Windows: the running exe is deleted by the spawned helper once we exit.
@@ -146,7 +165,17 @@ pub async fn run(config: &Config) -> i32 {
     }
 
     println!();
-    if report.binary_removed || report.binary_removal_scheduled {
+    if report.target_retained {
+        println!(
+            "  {} {}",
+            color::green(success_icon(config), config),
+            color::green(
+                "Invocation symlink removed; ND300 remains installed",
+                config
+            ),
+        );
+        0
+    } else if report.binary_removed || report.binary_removal_scheduled {
         println!(
             "  {} {}",
             color::green(success_icon(config), config),
@@ -163,13 +192,78 @@ pub async fn run(config: &Config) -> i32 {
     }
 }
 
+#[cfg(unix)]
+fn unix_uninstall_cleans_receipt() -> bool {
+    use super::unix_install::UnixOriginKind;
+    let Ok(user) = crate::platform::invoking_user::InvokingUser::detect() else {
+        return false;
+    };
+    super::unix_install::detect_origin(&user)
+        .ok()
+        .is_some_and(|origin| {
+            matches!(
+                origin.kind,
+                UnixOriginKind::Cargo | UnixOriginKind::ManagedArchive
+            ) && super::unix_install::cargo_dist_receipt_valid(&user)
+        })
+}
+
+#[cfg(unix)]
+fn print_unix_uninstall_preview(real_path: &Path, config: &Config) {
+    use super::unix_install::UnixOriginKind;
+
+    let origin = crate::platform::invoking_user::InvokingUser::detect()
+        .ok()
+        .and_then(|user| super::unix_install::detect_origin(&user).ok());
+    match origin {
+        Some(origin) if origin.kind == UnixOriginKind::Symlink => {
+            let link = origin.invocation_symlink.as_deref().unwrap_or(real_path);
+            println!(
+                "  This will remove only the invocation symlink: {}",
+                color::cyan(&link.display().to_string(), config)
+            );
+            println!("  The target installation will remain intact.");
+        }
+        Some(origin) if origin.kind == UnixOriginKind::Cargo => println!(
+            "  This will run `cargo uninstall nd300` for: {}",
+            color::cyan(&origin.executable.display().to_string(), config)
+        ),
+        Some(origin) if origin.kind == UnixOriginKind::ManagedArchive => println!(
+            "  This will remove the validated ND300 archive install from: {}",
+            color::cyan(
+                &origin
+                    .executable
+                    .parent()
+                    .unwrap_or(&origin.executable)
+                    .display()
+                    .to_string(),
+                config
+            )
+        ),
+        Some(origin) => println!(
+            "  ND300 will inspect and refuse this {} installation unless its original manager removes it: {}",
+            match origin.kind {
+                UnixOriginKind::PackageManager => "package-manager-owned",
+                UnixOriginKind::LocalBuild => "local-build",
+                _ => "unknown",
+            },
+            color::cyan(&origin.executable.display().to_string(), config)
+        ),
+        None => println!(
+            "  ND300 could not validate the install origin and will refuse removal: {}",
+            color::cyan(&real_path.display().to_string(), config)
+        ),
+    }
+}
+
 async fn run_json(exe_path: &Path, _config: &Config) -> i32 {
-    let report = uninstall_path(exe_path);
+    let report = execute_uninstall(exe_path).await;
 
     // `binary_removed` stays a literal "is it gone right now?" so existing
-    // scripts read the same field; `success` and the exit code key off the OR so
-    // a Windows scheduled-on-exit removal is reported as success.
-    let succeeded = report.binary_removed || report.binary_removal_scheduled;
+    // scripts read the same field; `success` and the exit code also accept a
+    // Windows scheduled removal or a Unix symlink-only removal.
+    let succeeded =
+        report.binary_removed || report.binary_removal_scheduled || report.target_retained;
     let output = serde_json::json!({
         "action": "uninstall",
         "success": succeeded,
@@ -193,10 +287,38 @@ async fn run_json(exe_path: &Path, _config: &Config) -> i32 {
     }
 }
 
+async fn execute_uninstall(_exe_path: &Path) -> CleanupReport {
+    #[cfg(unix)]
+    {
+        let user = match crate::platform::invoking_user::InvokingUser::detect() {
+            Ok(user) => user,
+            Err(error) => {
+                return CleanupReport {
+                    binary_removed: false,
+                    binary_removal_scheduled: false,
+                    target_retained: false,
+                    sibling_removed: false,
+                    receipt_removed: false,
+                    path_cleaned: false,
+                    notes: vec![format!("Could not identify invoking user: {error}")],
+                };
+            }
+        };
+        super::unix_install::uninstall_detected(&user).await
+    }
+
+    #[cfg(windows)]
+    {
+        uninstall_path(_exe_path)
+    }
+}
+
+#[cfg(windows)]
 pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
     let mut report = CleanupReport {
         binary_removed: false,
         binary_removal_scheduled: false,
+        target_retained: false,
         sibling_removed: false,
         receipt_removed: false,
         path_cleaned: false,
@@ -377,15 +499,19 @@ fn get_receipt_dir() -> Option<PathBuf> {
 
     #[cfg(not(windows))]
     {
-        let base = std::env::var("XDG_CONFIG_HOME")
+        crate::platform::invoking_user::InvokingUser::detect()
             .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".config"))
-            });
-        base.map(|b| b.join("nd300"))
+            .map(|user| {
+                let config_home = if !user.is_different_from_effective_user() {
+                    std::env::var_os("XDG_CONFIG_HOME")
+                        .map(PathBuf::from)
+                        .filter(|path| path.is_absolute())
+                        .unwrap_or_else(|| user.home().join(".config"))
+                } else {
+                    user.home().join(".config")
+                };
+                config_home.join("nd300")
+            })
     }
 }
 

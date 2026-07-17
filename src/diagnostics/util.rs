@@ -39,6 +39,11 @@ pub const SLOW: Duration = Duration::from_secs(10);
 /// wedged probe can't hold the whole run hostage.
 pub const TRACE: Duration = Duration::from_secs(60);
 
+/// Budget for heavyweight but local macOS inventory tools such as
+/// `system_profiler`. These can legitimately take several seconds even on a
+/// healthy machine, especially on the first invocation after boot.
+pub const PROFILE: Duration = Duration::from_secs(30);
+
 /// Per-command budget for an N-probe ping burst: 2s reply timeout per probe
 /// plus 4s of process/DNS overhead. The fixed [`SLOW`] cap silently truncates
 /// bursts of more than ~3 probes (e.g. a 6-probe burst can take ~12s on a
@@ -94,6 +99,10 @@ pub async fn harvest_or<T>(handle: tokio::task::JoinHandle<T>, fallback: T) -> T
 /// The `None` case is identical to today's bare `cmd.output().await.ok()`
 /// returning `None`, so existing fallback branches handle it unchanged.
 pub async fn run_with_timeout(mut cmd: Command, dur: Duration) -> Option<std::process::Output> {
+    // Dropping `Command::output()` on timeout otherwise leaves the spawned OS
+    // process running in the background. Diagnostics are often timed out
+    // precisely because a platform utility is wedged, so guarantee cleanup.
+    cmd.kill_on_drop(true);
     match tokio::time::timeout(dur, cmd.output()).await {
         Ok(Ok(output)) => Some(output),
         // Spawn / run error (e.g. binary not found) — same as `.ok()` == None.
@@ -166,6 +175,40 @@ mod tests {
 
         let out = run_with_timeout(cmd, Duration::from_millis(1)).await;
         assert!(out.is_none(), "command exceeding budget should yield None");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_command_is_killed() {
+        let pid_file = std::env::temp_dir().join(format!(
+            "nd300-timeout-child-{}-{}.pid",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let script = format!("echo $$ > '{}'; exec sleep 10", pid_file.display());
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &script]);
+        assert!(run_with_timeout(cmd, Duration::from_millis(200))
+            .await
+            .is_none());
+        let pid: i32 = tokio::fs::read_to_string(&pid_file)
+            .await
+            .expect("child should write pid before timeout")
+            .trim()
+            .parse()
+            .unwrap();
+        for _ in 0..20 {
+            // Signal 0 checks existence without changing process state.
+            if unsafe { libc::kill(pid, 0) } == -1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        let _ = tokio::fs::remove_file(pid_file).await;
     }
 
     /// A missing binary returns `None` (spawn error), not a hang.

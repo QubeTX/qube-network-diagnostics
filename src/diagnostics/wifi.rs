@@ -53,18 +53,25 @@ pub async fn collect() -> Option<Vec<WifiLink>> {
 
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = tokio::process::Command::new(
-            "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport",
-        );
-        cmd.arg("-I");
-        let output = util::run_with_timeout(cmd, util::QUICK).await?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        let links = parse_airport(&text);
-        if links.is_empty() {
-            None
-        } else {
-            Some(links)
+        let mut json_cmd = tokio::process::Command::new("/usr/sbin/system_profiler");
+        json_cmd.args(["SPAirPortDataType", "-json", "-detailLevel", "basic"]);
+        if let Some(output) = util::run_with_timeout(json_cmd, util::PROFILE).await {
+            if output.status.success() {
+                let links = parse_system_profiler_json(&output.stdout);
+                if serde_json::from_slice::<serde_json::Value>(&output.stdout).is_ok() {
+                    return (!links.is_empty()).then_some(links);
+                }
+            }
         }
+
+        // Older supported macOS versions may not support system_profiler's
+        // JSON flag. Its text format is public and preferable to the private
+        // `airport` binary, which Apple removed from current macOS releases.
+        let mut text_cmd = tokio::process::Command::new("/usr/sbin/system_profiler");
+        text_cmd.args(["SPAirPortDataType", "-detailLevel", "basic"]);
+        let output = util::run_with_timeout(text_cmd, util::PROFILE).await?;
+        let links = parse_system_profiler_text(&String::from_utf8_lossy(&output.stdout));
+        (!links.is_empty()).then_some(links)
     }
 
     #[cfg(target_os = "linux")]
@@ -286,7 +293,7 @@ fn parse_netsh(text: &str) -> Vec<WifiLink> {
 }
 
 /// Parse `airport -I` (macOS, pre-14.4 path).
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 fn parse_airport(text: &str) -> Vec<WifiLink> {
     let mut ssid = None;
     let mut bssid = None;
@@ -346,6 +353,254 @@ fn parse_airport(text: &str) -> Vec<WifiLink> {
         assessment,
         level,
     }]
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn visible_ssid(value: &str) -> Option<String> {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    (!value.is_empty()
+        && !matches!(
+            lower.as_str(),
+            "<redacted>" | "<private>" | "<unknown>" | "(null)"
+        ))
+    .then(|| value.to_string())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_channel_band(value: &str) -> (Option<u32>, Option<String>) {
+    let channel = value
+        .split_whitespace()
+        .next()
+        .and_then(|part| part.trim_end_matches(',').parse().ok());
+    let compact = value.to_ascii_lowercase().replace(' ', "");
+    let band = if compact.contains("6ghz") {
+        Some("6 GHz".to_string())
+    } else if compact.contains("5ghz") {
+        Some("5 GHz".to_string())
+    } else if compact.contains("2ghz") || compact.contains("2.4ghz") {
+        Some("2.4 GHz".to_string())
+    } else {
+        None
+    };
+    (channel, band)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_signal_noise(value: &str) -> Option<i32> {
+    value
+        .split_whitespace()
+        .find_map(|part| part.trim_end_matches("dBm").parse::<i32>().ok())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn normalize_macos_security(value: &str) -> Option<String> {
+    let value = value
+        .trim()
+        .strip_prefix("spairport_security_mode_")
+        .unwrap_or(value.trim());
+    if value.is_empty() {
+        None
+    } else {
+        Some(
+            value
+                .split('_')
+                .map(|word| match word {
+                    "wpa2" => "WPA2".to_string(),
+                    "wpa3" => "WPA3".to_string(),
+                    "wep" => "WEP".to_string(),
+                    other => {
+                        let mut chars = other.chars();
+                        chars
+                            .next()
+                            .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                            .unwrap_or_default()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+}
+
+/// Parse the public `system_profiler SPAirPortDataType -json` shape. Nearby
+/// networks are deliberately ignored; only an interface whose status is
+/// connected and its `current_network_information` are considered.
+#[cfg(any(target_os = "macos", test))]
+fn parse_system_profiler_json(bytes: &[u8]) -> Vec<WifiLink> {
+    let Ok(root) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return Vec::new();
+    };
+    let mut links = Vec::new();
+    let Some(groups) = root.get("SPAirPortDataType").and_then(|v| v.as_array()) else {
+        return links;
+    };
+    for group in groups {
+        let Some(interfaces) = group
+            .get("spairport_airport_interfaces")
+            .and_then(|v| v.as_array())
+        else {
+            continue;
+        };
+        for interface in interfaces {
+            if interface
+                .get("spairport_status_information")
+                .and_then(|v| v.as_str())
+                != Some("spairport_status_connected")
+            {
+                continue;
+            }
+            let Some(network) = interface
+                .get("spairport_current_network_information")
+                .and_then(|v| v.as_object())
+            else {
+                continue;
+            };
+            let interface_name = interface
+                .get("_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Wi-Fi")
+                .to_string();
+            let ssid = network
+                .get("_name")
+                .and_then(|v| v.as_str())
+                .and_then(visible_ssid);
+            let bssid = network
+                .get("spairport_network_bssid")
+                .and_then(|v| v.as_str())
+                .and_then(visible_ssid);
+            let channel_text = network
+                .get("spairport_network_channel")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let (channel, band) = parse_channel_band(channel_text);
+            let rssi = network
+                .get("spairport_signal_noise")
+                .and_then(|v| v.as_str())
+                .and_then(parse_signal_noise);
+            let security = network
+                .get("spairport_security_mode")
+                .and_then(|v| v.as_str())
+                .and_then(normalize_macos_security);
+            let tx_rate_mbps = network
+                .get("spairport_network_rate")
+                .and_then(|v| v.as_f64());
+            let phy_mode = network
+                .get("spairport_network_phymode")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let (assessment, level) = assess_signal(None, rssi, security.as_deref());
+            links.push(WifiLink {
+                interface: interface_name,
+                ssid,
+                bssid,
+                signal_pct: None,
+                rssi_dbm: rssi,
+                channel,
+                band,
+                phy_mode,
+                security,
+                rx_rate_mbps: None,
+                tx_rate_mbps,
+                assessment,
+                level,
+            });
+        }
+    }
+    links
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_system_profiler_text(text: &str) -> Vec<WifiLink> {
+    #[derive(Default)]
+    struct Accum {
+        interface: String,
+        connected: bool,
+        current_network_indent: Option<usize>,
+        ssid: Option<String>,
+        bssid: Option<String>,
+        rssi: Option<i32>,
+        channel: Option<u32>,
+        band: Option<String>,
+        phy_mode: Option<String>,
+        security: Option<String>,
+        tx_rate: Option<f64>,
+    }
+
+    fn flush(acc: Accum, links: &mut Vec<WifiLink>) {
+        if !acc.connected || acc.interface.is_empty() {
+            return;
+        }
+        let (assessment, level) = assess_signal(None, acc.rssi, acc.security.as_deref());
+        links.push(WifiLink {
+            interface: acc.interface,
+            ssid: acc.ssid,
+            bssid: acc.bssid,
+            signal_pct: None,
+            rssi_dbm: acc.rssi,
+            channel: acc.channel,
+            band: acc.band,
+            phy_mode: acc.phy_mode,
+            security: acc.security,
+            rx_rate_mbps: None,
+            tx_rate_mbps: acc.tx_rate,
+            assessment,
+            level,
+        });
+    }
+
+    let mut links = Vec::new();
+    let mut acc = Accum::default();
+    for line in text.lines() {
+        let indent = line.chars().take_while(|c| c.is_whitespace()).count();
+        let trimmed = line.trim();
+        if indent == 8 && trimmed.ends_with(':') {
+            flush(std::mem::take(&mut acc), &mut links);
+            acc.interface = trimmed.trim_end_matches(':').to_string();
+            continue;
+        }
+        if acc.interface.is_empty() {
+            continue;
+        }
+        if trimmed == "Current Network Information:" {
+            acc.current_network_indent = Some(indent);
+            continue;
+        }
+        if acc
+            .current_network_indent
+            .is_some_and(|root_indent| !trimmed.is_empty() && indent <= root_indent)
+        {
+            acc.current_network_indent = None;
+        }
+        if trimmed == "Status: Connected" {
+            acc.connected = true;
+            continue;
+        }
+        let Some(root_indent) = acc.current_network_indent else {
+            continue;
+        };
+        if indent == root_indent + 2 && trimmed.ends_with(':') && !trimmed.contains("Information") {
+            acc.ssid = visible_ssid(trimmed.trim_end_matches(':'));
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match key {
+            "PHY Mode" => acc.phy_mode = Some(value.to_string()),
+            "Channel" => {
+                (acc.channel, acc.band) = parse_channel_band(value);
+            }
+            "Security" => acc.security = normalize_macos_security(value),
+            "Signal / Noise" => acc.rssi = parse_signal_noise(value),
+            "Transmit Rate" => acc.tx_rate = value.parse().ok(),
+            "BSSID" => acc.bssid = visible_ssid(value),
+            _ => {}
+        }
+    }
+    flush(acc, &mut links);
+    links
 }
 
 /// Parse `nmcli -t -f ACTIVE,SSID,BSSID,SIGNAL,CHAN,FREQ,RATE,SECURITY dev wifi`.
@@ -534,6 +789,52 @@ There is 1 interface on the system:
         assert_eq!(l.channel, Some(44));
         assert_eq!(l.band.as_deref(), Some("5 GHz"));
         assert_eq!(l.level, "ok");
+    }
+
+    #[test]
+    fn parses_modern_system_profiler_json_and_respects_redaction() {
+        let fixture = br#"{
+          "SPAirPortDataType": [{
+            "spairport_airport_interfaces": [{
+              "_name": "en0",
+              "spairport_status_information": "spairport_status_connected",
+              "spairport_current_network_information": {
+                "_name": "<redacted>",
+                "spairport_network_channel": "48 (5GHz, 80MHz)",
+                "spairport_network_phymode": "802.11ac",
+                "spairport_network_rate": 780,
+                "spairport_security_mode": "spairport_security_mode_wpa2_personal",
+                "spairport_signal_noise": "-58 dBm / -93 dBm"
+              }
+            }, {
+              "_name": "awdl0",
+              "spairport_current_network_information": {}
+            }]
+          }]
+        }"#;
+        let links = parse_system_profiler_json(fixture);
+        assert_eq!(links.len(), 1);
+        let link = &links[0];
+        assert_eq!(link.interface, "en0");
+        assert_eq!(link.ssid, None);
+        assert_eq!(link.channel, Some(48));
+        assert_eq!(link.band.as_deref(), Some("5 GHz"));
+        assert_eq!(link.rssi_dbm, Some(-58));
+        assert_eq!(link.security.as_deref(), Some("WPA2 Personal"));
+        assert_eq!(link.tx_rate_mbps, Some(780.0));
+    }
+
+    #[test]
+    fn parses_system_profiler_text_fallback() {
+        let fixture = "      Interfaces:\n        en0:\n          Status: Connected\n          Current Network Information:\n            Home WiFi:\n              PHY Mode: 802.11ax\n              Channel: 5 (6GHz, 80MHz)\n              Security: WPA3 Personal\n              Signal / Noise: -51 dBm / -91 dBm\n              Transmit Rate: 1200\n          Other Local Wi-Fi Networks:\n            Neighbor Network:\n              PHY Mode: 802.11n\n              Channel: 1 (2GHz, 20MHz)\n              Security: Open\n              Signal / Noise: -80 dBm / -91 dBm\n        awdl0:\n          Current Network Information:\n              Network Type: Infrastructure\n";
+        let links = parse_system_profiler_text(fixture);
+        assert_eq!(links.len(), 1);
+        let link = &links[0];
+        assert_eq!(link.interface, "en0");
+        assert_eq!(link.ssid.as_deref(), Some("Home WiFi"));
+        assert_eq!(link.band.as_deref(), Some("6 GHz"));
+        assert_eq!(link.rssi_dbm, Some(-51));
+        assert_eq!(link.security.as_deref(), Some("WPA3 Personal"));
     }
 
     #[test]

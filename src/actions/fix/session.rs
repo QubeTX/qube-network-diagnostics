@@ -41,8 +41,8 @@ pub enum FinalOutcome {
     UserDeclined(Vec<DiagnosticKey>),
     /// Pre-flight check failed (e.g. not elevated). No diagnostics ran.
     PreflightFailed(String),
-    /// The run was interrupted before it could finish — a Ctrl-C, a caught
-    /// panic, or the outer drain timeout. The restore registry is drained on
+    /// The run was interrupted before it could finish — Ctrl-C, SIGTERM,
+    /// SIGHUP, a caught panic, or the outer drain timeout. The restore registry is drained on
     /// this path so any half-applied network state is rolled back; the carried
     /// keys are whatever failures were still outstanding when the interrupt
     /// landed (best-effort, may be empty if the interrupt arrived early).
@@ -72,12 +72,18 @@ impl FinalOutcome {
 /// drain cap), so each one is individually bounded to keep the drain prompt.
 const RESTORE_OP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Scheduling/reporting headroom added after reserving one complete per-op
+/// timeout for every pending restore. This replaces the old fixed 90-second
+/// aggregate cap, which could prevent the fourth and later LIFO entries from
+/// receiving any attempt at all.
+const RESTORE_DRAIN_MARGIN: Duration = Duration::from_secs(5);
+
 /// An inverse operation that undoes a destructive change applied during the fix.
 ///
 /// Destructive actions register the matching `RestoreOp` *before* mutating
 /// state and `mark_resolved` it once they have restored the state themselves
 /// on a normal path. Anything still unresolved when the run ends — whether it
-/// ended normally, via Ctrl-C, via a caught panic, or via the wall-clock cap —
+/// ended normally, via a supported signal, via a caught panic, or via the wall-clock cap —
 /// is replayed by [`RestoreRegistry::drain`].
 #[derive(Debug, Clone)]
 pub enum RestoreOp {
@@ -85,14 +91,16 @@ pub enum RestoreOp {
     ReEnableInterface { iface: String },
     /// Re-connect a consumer VPN that the fix disabled.
     ReEnableVpn(Arc<DisabledVpn>),
-    /// Recreate a removed macOS network service and restore its captured
-    /// settings. macOS-only by construction so non-macOS builds never reference
-    /// the macOS snapshot type.
+    /// Restore exact resolver state if a macOS DNS command is interrupted.
     #[cfg(target_os = "macos")]
-    RecreateMacosService {
+    RestoreMacosDns(Arc<super::dns::MacosDnsSnapshot>),
+    /// Re-enable a macOS network service and restore exact DNS/search-domain
+    /// state. The hardened deep-reset path never deletes/recreates services.
+    #[cfg(target_os = "macos")]
+    ReEnableMacosService {
         iface: String,
         service: String,
-        snapshot: super::stages::MacosNetworkSnapshot,
+        dns_snapshot: Arc<super::dns::MacosDnsSnapshot>,
     },
 }
 
@@ -105,8 +113,12 @@ impl RestoreOp {
             }
             RestoreOp::ReEnableVpn(vpn) => format!("re-enable VPN {}", vpn.name),
             #[cfg(target_os = "macos")]
-            RestoreOp::RecreateMacosService { service, .. } => {
-                format!("recreate macOS network service {}", service)
+            RestoreOp::RestoreMacosDns(snapshot) => {
+                format!("restore DNS/search domains on {}", snapshot.service())
+            }
+            #[cfg(target_os = "macos")]
+            RestoreOp::ReEnableMacosService { service, .. } => {
+                format!("re-enable macOS network service {}", service)
             }
         }
     }
@@ -116,20 +128,27 @@ impl RestoreOp {
 /// on failure — the caller turns failures into manual-recovery guidance.
 async fn restore_op(op: &RestoreOp) -> Result<(), String> {
     match op {
-        RestoreOp::ReEnableInterface { iface } => super::stages::enable_interface(iface).await,
+        RestoreOp::ReEnableInterface { iface } => super::stages::restore_interface(iface).await,
         RestoreOp::ReEnableVpn(vpn) => {
             if super::vpn::reenable_vpn(vpn).await {
                 Ok(())
             } else {
-                Err(format!("could not re-enable VPN {}", vpn.name))
+                Err(format!(
+                    "could not positively verify VPN {} reconnected",
+                    vpn.name
+                ))
             }
         }
         #[cfg(target_os = "macos")]
-        RestoreOp::RecreateMacosService {
+        RestoreOp::RestoreMacosDns(snapshot) => {
+            super::dns::restore_macos_dns_snapshot(snapshot).await
+        }
+        #[cfg(target_os = "macos")]
+        RestoreOp::ReEnableMacosService {
             iface,
             service,
-            snapshot,
-        } => super::stages::recreate_and_restore_macos_service(iface, service, snapshot).await,
+            dns_snapshot,
+        } => super::stages::restore_macos_service_state(iface, service, dns_snapshot).await,
     }
 }
 
@@ -185,6 +204,23 @@ impl RestoreRegistry {
         }
     }
 
+    /// Aggregate timeout for a drain snapshot. Reserve a full bounded attempt
+    /// for every currently-pending inverse operation, plus small bookkeeping
+    /// headroom. The fix loop has stopped mutating state before it asks for
+    /// this value, so the following drain sees the same or fewer entries.
+    pub(crate) async fn required_drain_timeout(&self) -> Duration {
+        let pending = self
+            .inner
+            .lock()
+            .await
+            .iter()
+            .filter(|entry| !entry.resolved)
+            .count();
+        let pending = u64::try_from(pending).unwrap_or(u64::MAX);
+        let operation_budget = RESTORE_OP_TIMEOUT.as_secs().saturating_mul(pending);
+        Duration::from_secs(operation_budget.saturating_add(RESTORE_DRAIN_MARGIN.as_secs()))
+    }
+
     /// Run every still-unresolved restore op, best-effort. Snapshots the
     /// pending ops under the lock, releases the lock, then runs each with its
     /// own timeout so a wedged restore can't stall the others. Returns a
@@ -201,6 +237,7 @@ impl RestoreRegistry {
             guard
                 .iter()
                 .enumerate()
+                .rev()
                 .filter(|(_, e)| !e.resolved)
                 .map(|(i, e)| (i, e.op.clone()))
                 .collect()
@@ -936,6 +973,47 @@ mod restore_registry_tests {
         // success), so a second drain re-attempts it and fails the same way.
         let second = reg.drain().await;
         assert_eq!(second.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn drain_restores_in_lifo_order() {
+        let reg = RestoreRegistry::new();
+        reg.register(failing_vpn_op("FirstRegistered")).await;
+        reg.register(failing_vpn_op("LastRegistered")).await;
+
+        let failures = reg.drain().await;
+
+        assert_eq!(failures.len(), 2);
+        assert!(failures[0].contains("LastRegistered"), "{failures:?}");
+        assert!(failures[1].contains("FirstRegistered"), "{failures:?}");
+    }
+
+    #[tokio::test]
+    async fn aggregate_timeout_reserves_an_attempt_for_every_pending_restore() {
+        let reg = RestoreRegistry::new();
+        for index in 0..4 {
+            reg.register(failing_vpn_op(&format!("Vpn{index}"))).await;
+        }
+
+        assert_eq!(reg.required_drain_timeout().await, Duration::from_secs(125));
+    }
+
+    #[tokio::test]
+    async fn drain_attempts_more_than_three_pending_ops_in_lifo_order() {
+        let reg = RestoreRegistry::new();
+        for index in 0..5 {
+            reg.register(failing_vpn_op(&format!("Vpn{index}"))).await;
+        }
+
+        let failures = reg.drain().await;
+
+        assert_eq!(failures.len(), 5, "failures: {failures:?}");
+        for (position, expected_index) in (0..5).rev().enumerate() {
+            assert!(
+                failures[position].contains(&format!("Vpn{expected_index}")),
+                "unexpected LIFO result: {failures:?}"
+            );
+        }
     }
 
     #[test]

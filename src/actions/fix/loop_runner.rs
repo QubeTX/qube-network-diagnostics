@@ -25,10 +25,35 @@ use super::triage::{
     MAX_ITERATIONS,
 };
 
-/// Outer timeout on the whole restore drain. The drain runs on every terminal
-/// path (normal end, Ctrl-C, panic, wall-clock cap); each op is individually
-/// bounded too, but this caps the aggregate so cleanup itself can never hang.
-const DRAIN_CAP: Duration = Duration::from_secs(90);
+/// Wait for any supported operator/process-manager interruption. Unix service
+/// managers commonly use SIGTERM, and terminal/session loss can deliver
+/// SIGHUP; both must take the same restore-drain path as Ctrl-C.
+async fn fix_interrupt_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let term = signal(SignalKind::terminate());
+        let hup = signal(SignalKind::hangup());
+        match (term, hup) {
+            (Ok(mut term), Ok(mut hup)) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = term.recv() => {},
+                    _ = hup.recv() => {},
+                }
+            }
+            _ => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
 
 /// Seam for injecting scripted diagnostics into the triage loop in tests.
 /// The real implementation wraps `diagnostics::run_all` with the loop's
@@ -309,12 +334,12 @@ fn is_interactive(config: &Config) -> bool {
 /// report and returns the exit code derived from the `FinalOutcome`.
 ///
 /// This is the interrupt-safe boundary: the triage loop runs inside a
-/// `tokio::select!` that races it against `Ctrl-C`, and the loop future is
+/// `tokio::select!` that races it against Ctrl-C/SIGTERM/SIGHUP, and the loop future is
 /// wrapped in `catch_unwind` so a panic is caught rather than aborting the
 /// process. On EVERY terminal path — normal end, user-declined, wall-clock cap,
 /// Ctrl-C, or panic — the restore registry is drained so any half-applied
-/// network change (a disabled adapter, a disconnected VPN, a removed macOS
-/// service) is rolled back before the process exits.
+/// network change (a disabled adapter, a disconnected VPN, or a temporarily
+/// disabled macOS service) is rolled back before the process exits.
 pub async fn run_and_finalize(config: &Config) -> i32 {
     use futures_util::FutureExt;
 
@@ -336,8 +361,9 @@ pub async fn run_and_finalize(config: &Config) -> i32 {
     let mut session = Session::new();
     let restore = RestoreRegistry::new();
 
-    // Race the loop against Ctrl-C, and catch any panic from the loop so we can
-    // still drain restores instead of leaving the network half-broken.
+    // Race the loop against Ctrl-C/SIGTERM/SIGHUP, and catch any panic from the
+    // loop so we can still drain restores instead of leaving the network
+    // half-broken.
     //
     // `AssertUnwindSafe` is sound here: the registry uses a non-poisoning
     // `tokio::sync::Mutex`, and after a caught panic we only READ the partially
@@ -347,13 +373,13 @@ pub async fn run_and_finalize(config: &Config) -> i32 {
         let fut = std::panic::AssertUnwindSafe(run(config, &mut session, &restore)).catch_unwind();
         tokio::select! {
             biased;
-            _ = tokio::signal::ctrl_c() => None,
+            _ = fix_interrupt_signal() => None,
             r = fut => Some(r),
         }
     };
 
     // Classify the terminal path.
-    //   None                -> Ctrl-C interrupted the loop.
+    //   None                -> a supported signal interrupted the loop.
     //   Some(Ok(outcome))   -> loop finished normally (verdict already printed).
     //   Some(Err(_panic))   -> loop panicked (caught); re-raise after cleanup.
     let (outcome, panicked) = match loop_result {
@@ -363,7 +389,7 @@ pub async fn run_and_finalize(config: &Config) -> i32 {
             true,
         ),
         None => {
-            // Ctrl-C: print a clear interrupted line now (the loop never
+            // Signal: print a clear interrupted line now (the loop never
             // returned, so it never printed a verdict).
             if !is_json {
                 println!();
@@ -383,13 +409,15 @@ pub async fn run_and_finalize(config: &Config) -> i32 {
         );
     }
 
-    // ALWAYS drain restores, regardless of how we got here. Bound the whole
-    // drain so cleanup itself can never hang.
-    let drain_failures = match tokio::time::timeout(DRAIN_CAP, restore.drain()).await {
+    // ALWAYS drain restores, regardless of how we got here. The aggregate
+    // bound scales with the pending snapshot so every LIFO entry receives its
+    // own bounded attempt; a fixed 90-second cap could skip entry four onward.
+    let drain_timeout = restore.required_drain_timeout().await;
+    let drain_failures = match tokio::time::timeout(drain_timeout, restore.drain()).await {
         Ok(failures) => failures,
         Err(_) => vec![format!(
             "Network-state cleanup did not finish within {}s; some changes may not have been restored.",
-            DRAIN_CAP.as_secs()
+            drain_timeout.as_secs()
         )],
     };
 

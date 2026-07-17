@@ -161,7 +161,19 @@ async fn collect_macos() -> Option<ProtocolStatistics> {
 
     let text = String::from_utf8_lossy(&output.stdout);
 
-    // macOS netstat -s output parsing (similar structure to Windows)
+    let mut stats = parse_macos_protocol_stats(&text)?;
+    let mut connections_cmd = tokio::process::Command::new("netstat");
+    connections_cmd.args(["-anW", "-p", "tcp"]);
+    let connections = super::util::run_with_timeout(connections_cmd, super::util::QUICK).await?;
+    stats.tcp.current_connections = String::from_utf8_lossy(&connections.stdout)
+        .lines()
+        .filter(|line| line.split_whitespace().last() == Some("ESTABLISHED"))
+        .count() as u64;
+    Some(stats)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_protocol_stats(text: &str) -> Option<ProtocolStatistics> {
     let mut tcp = TcpStats {
         active_opens: 0,
         passive_opens: 0,
@@ -186,6 +198,8 @@ async fn collect_macos() -> Option<ProtocolStatistics> {
     };
 
     let mut section = "";
+    let mut icmp_input_histogram = false;
+    let mut icmp_input_total = 0u64;
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed == "tcp:" {
@@ -198,6 +212,11 @@ async fn collect_macos() -> Option<ProtocolStatistics> {
         }
         if trimmed == "icmp:" {
             section = "icmp";
+            icmp_input_histogram = false;
+            continue;
+        }
+        if trimmed.ends_with(':') && !trimmed.contains(' ') {
+            section = "";
             continue;
         }
 
@@ -211,35 +230,73 @@ async fn collect_macos() -> Option<ProtocolStatistics> {
                     tcp.passive_opens = val;
                 } else if trimmed.contains("bad connection") {
                     tcp.failed_connections = val;
-                } else if trimmed.contains("reset") {
+                } else if trimmed.ends_with("bad reset") {
                     tcp.reset_connections = val;
-                } else if trimmed.contains("packet") && trimmed.contains("sent") {
-                    tcp.segments_sent = val;
-                } else if trimmed.contains("packet") && trimmed.contains("received") {
-                    tcp.segments_received = val;
-                } else if trimmed.contains("retransmit") {
+                } else if trimmed.contains("data packet") && trimmed.contains("retransmitted") {
                     tcp.segments_retransmitted = val;
+                } else if trimmed.ends_with("packet sent") || trimmed.ends_with("packets sent") {
+                    tcp.segments_sent = val;
+                } else if trimmed.ends_with("packet received")
+                    || trimmed.ends_with("packets received")
+                {
+                    tcp.segments_received = val;
                 }
             }
             "udp" => {
                 if trimmed.contains("datagram") && trimmed.contains("received") {
                     udp.datagrams_received = val;
-                } else if trimmed.contains("datagram") && trimmed.contains("sent") {
+                } else if trimmed.contains("datagram") && trimmed.contains("output") {
                     udp.datagrams_sent = val;
+                } else if trimmed.contains("dropped due to no socket") {
+                    udp.no_port_errors = val;
+                } else if trimmed.contains("incomplete header")
+                    || trimmed.contains("bad data length")
+                    || trimmed.contains("bad checksum")
+                    || trimmed.contains("full socket buffers")
+                {
+                    udp.receive_errors = udp.receive_errors.saturating_add(val);
                 }
             }
             "icmp" => {
-                if trimmed.contains("response") && trimmed.contains("received") {
-                    icmp.messages_received = val;
-                } else if trimmed.contains("sent") {
-                    icmp.messages_sent = val;
+                if trimmed == "Input histogram:" {
+                    icmp_input_histogram = true;
+                } else if trimmed.ends_with("calls to icmp_error") {
+                    icmp.errors_sent = val;
+                    icmp.messages_sent = icmp.messages_sent.saturating_add(val);
+                } else if trimmed.ends_with("message response generated") {
+                    icmp.messages_sent = icmp.messages_sent.saturating_add(val);
+                } else if icmp_input_histogram && trimmed.contains(':') {
+                    let histogram_value = trimmed
+                        .rsplit_once(':')
+                        .and_then(|(_, value)| value.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
+                    icmp_input_total = icmp_input_total.saturating_add(histogram_value);
+                } else if trimmed.contains("bad code")
+                    || trimmed.contains("bad checksum")
+                    || trimmed.contains("bad length")
+                    || trimmed.contains("minimum length")
+                {
+                    icmp.errors_received = icmp.errors_received.saturating_add(val);
                 }
             }
             _ => {}
         }
     }
+    icmp.messages_received = icmp_input_total;
 
-    Some(ProtocolStatistics { tcp, udp, icmp })
+    // Current macOS releases can expose a populated TCP connection table while
+    // `netstat -s` returns an all-zero TCP block. The public schema uses plain
+    // integers, so serializing that block would claim measured zeroes. Omit
+    // this optional technician section until the kernel supplies counters.
+    let tcp_available = tcp.active_opens > 0
+        || tcp.passive_opens > 0
+        || tcp.failed_connections > 0
+        || tcp.reset_connections > 0
+        || tcp.current_connections > 0
+        || tcp.segments_received > 0
+        || tcp.segments_sent > 0
+        || tcp.segments_retransmitted > 0;
+    tcp_available.then_some(ProtocolStatistics { tcp, udp, icmp })
 }
 
 #[cfg(target_os = "linux")]
@@ -331,8 +388,32 @@ fn extract_stat_value(line: &str) -> Option<u64> {
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn extract_leading_number(line: &str) -> Option<u64> {
     let num_str: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
     num_str.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_macos_udp_wording_and_icmp_histogram_parse() {
+        let fixture = "tcp:\n\t12 packets sent\n\t3 data packets retransmitted\n\t15 packets received\n\t2 connection requests\n\t1 connection accept\nudp:\n\t409241 datagrams received\n\t\t7 dropped due to no socket\n\t\t3 dropped due to full socket buffers\n\t104267 datagrams output\nicmp:\n\t5 calls to icmp_error\n\tInput histogram:\n\t\techo reply: 8\n\t\tdestination unreachable: 2\n\t1 message response generated\n";
+        let stats = parse_macos_protocol_stats(fixture).unwrap();
+        assert_eq!(stats.tcp.segments_sent, 12);
+        assert_eq!(stats.tcp.segments_retransmitted, 3);
+        assert_eq!(stats.udp.datagrams_sent, 104267);
+        assert_eq!(stats.udp.no_port_errors, 7);
+        assert_eq!(stats.udp.receive_errors, 3);
+        assert_eq!(stats.icmp.messages_received, 10);
+        assert_eq!(stats.icmp.messages_sent, 6);
+    }
+
+    #[test]
+    fn suppressed_macos_tcp_counters_omit_optional_section() {
+        let fixture = "tcp:\n\t0 packet sent\n\t0 packet received\n\t0 connection request\n\t0 connection accept\nudp:\n\t12 datagrams received\n\t9 datagrams output\n";
+        assert!(parse_macos_protocol_stats(fixture).is_none());
+    }
 }

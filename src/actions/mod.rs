@@ -3,6 +3,8 @@ pub mod dns;
 pub mod fix;
 pub mod migrate;
 pub mod uninstall;
+#[cfg(unix)]
+pub(crate) mod unix_install;
 pub mod update;
 
 use crate::config::{Config, OutputFormat};

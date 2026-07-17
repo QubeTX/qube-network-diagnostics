@@ -29,7 +29,8 @@ pub async fn collect_with_cache(cache: &SharedCache) -> Option<Vec<VpnAdapter>> 
     #[cfg(target_os = "macos")]
     {
         let _ = cache;
-        collect_macos_ifconfig(&mut vpns).await;
+        let active_interfaces = collect_macos_active_interfaces().await;
+        collect_macos_ifconfig(&mut vpns, &active_interfaces).await;
         collect_macos_scutil(&mut vpns).await;
     }
 
@@ -67,7 +68,8 @@ pub async fn collect() -> Option<Vec<VpnAdapter>> {
 
     #[cfg(target_os = "macos")]
     {
-        collect_macos_ifconfig(&mut vpns).await;
+        let active_interfaces = collect_macos_active_interfaces().await;
+        collect_macos_ifconfig(&mut vpns, &active_interfaces).await;
         collect_macos_scutil(&mut vpns).await;
     }
 
@@ -259,59 +261,154 @@ async fn collect_windows_wmi(vpns: &mut Vec<VpnAdapter>) {
 // ── macOS ───────────────────────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
-async fn collect_macos_ifconfig(vpns: &mut Vec<VpnAdapter>) {
+async fn collect_macos_active_interfaces() -> std::collections::HashSet<String> {
+    let mut cmd = tokio::process::Command::new("/usr/sbin/scutil");
+    cmd.arg("--nwi");
+    let mut routes4 = tokio::process::Command::new("netstat");
+    routes4.args(["-rn", "-f", "inet"]);
+    let mut routes6 = tokio::process::Command::new("netstat");
+    routes6.args(["-rn", "-f", "inet6"]);
+    let (nwi, routes4, routes6) = tokio::join!(
+        super::util::run_with_timeout(cmd, super::util::QUICK),
+        super::util::run_with_timeout(routes4, super::util::QUICK),
+        super::util::run_with_timeout(routes6, super::util::QUICK),
+    );
+    let mut active = nwi
+        .map(|output| parse_macos_nwi(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_default();
+    for output in [routes4, routes6].into_iter().flatten() {
+        active.extend(parse_macos_route_interfaces(&String::from_utf8_lossy(
+            &output.stdout,
+        )));
+    }
+    active
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_nwi(text: &str) -> std::collections::HashSet<String> {
+    let mut active = std::collections::HashSet::new();
+    for line in text.lines().map(str::trim) {
+        if let Some(interfaces) = line.strip_prefix("Network interfaces:") {
+            active.extend(interfaces.split_whitespace().map(str::to_string));
+        } else if line.contains(": flags") && line.contains("Reachable") {
+            if let Some((name, _)) = line.split_once(':') {
+                active.insert(name.trim().to_string());
+            }
+        }
+    }
+    active
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_route_interfaces(text: &str) -> std::collections::HashSet<String> {
+    text.lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            (fields.len() >= 4
+                && !matches!(
+                    fields[0],
+                    "Destination" | "Routing" | "Internet:" | "Internet6:"
+                )
+                && meaningful_macos_route(fields[0], fields[1], fields[2]))
+            .then(|| fields[3].to_string())
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn meaningful_macos_route(destination: &str, gateway: &str, _flags: &str) -> bool {
+    let destination = destination.to_ascii_lowercase();
+    let gateway = gateway.to_ascii_lowercase();
+
+    if destination == "default" {
+        // Modern macOS installs interface-scoped IPv6 defaults for every utun,
+        // including dormant system tunnels. A reachable VPN is also present in
+        // `scutil --nwi`, so a link-local gateway is not sufficient route
+        // evidence on its own.
+        return !gateway.starts_with("fe80::");
+    }
+
+    !(destination.starts_with("fe80")
+        || destination.starts_with("ff")
+        || destination.starts_with("169.254")
+        || destination.starts_with("::1")
+        || destination.starts_with("link#"))
+}
+
+#[cfg(target_os = "macos")]
+async fn collect_macos_ifconfig(
+    vpns: &mut Vec<VpnAdapter>,
+    active_interfaces: &std::collections::HashSet<String>,
+) {
     let cmd = tokio::process::Command::new("ifconfig");
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
-        let mut current_iface = String::new();
-        let mut current_ip = None;
+        vpns.extend(parse_macos_ifconfig(&text, active_interfaces));
+    }
+}
 
-        for line in text.lines() {
-            if !line.starts_with('\t') && !line.starts_with(' ') {
-                if !current_iface.is_empty() && is_vpn_interface(&current_iface) {
-                    let vendor = detect_vendor(&current_iface);
-                    let is_enterprise = is_enterprise_vendor(&current_iface, vendor.as_deref());
-                    vpns.push(VpnAdapter {
-                        name: current_iface.clone(),
-                        adapter_type: detect_vpn_type(&current_iface),
-                        status: if current_ip.is_some() {
-                            "Connected"
-                        } else {
-                            "Disconnected"
-                        }
-                        .to_string(),
-                        ip_address: current_ip.take(),
-                        vendor,
-                        is_enterprise,
-                        interface_name: Some(current_iface.clone()),
-                    });
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_ifconfig(
+    text: &str,
+    active_interfaces: &std::collections::HashSet<String>,
+) -> Vec<VpnAdapter> {
+    let mut rows = Vec::new();
+    let mut current_iface = String::new();
+    let mut current_ip: Option<String> = None;
+
+    let flush = |rows: &mut Vec<VpnAdapter>, iface: &str, ip: Option<String>| {
+        if !is_vpn_interface(iface) {
+            return;
+        }
+        // Darwin leaves many utun devices UP for system services, sometimes
+        // even with non-link-local addresses. Require reachability from
+        // `scutil --nwi` or ownership of an IPv4/IPv6 route; an address alone
+        // is not evidence of a currently active VPN.
+        if !active_interfaces.contains(iface) {
+            return;
+        }
+        let vendor = detect_vendor(iface);
+        let is_enterprise = is_enterprise_vendor(iface, vendor.as_deref());
+        rows.push(VpnAdapter {
+            name: iface.to_string(),
+            adapter_type: detect_vpn_type(iface),
+            status: "Connected".to_string(),
+            ip_address: ip,
+            vendor,
+            is_enterprise,
+            interface_name: Some(iface.to_string()),
+        });
+    };
+
+    for line in text.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            flush(&mut rows, &current_iface, current_ip.take());
+            current_iface = line
+                .split_once(':')
+                .map(|(name, _)| name)
+                .unwrap_or("")
+                .to_string();
+        } else {
+            let trimmed = line.trim();
+            if let Some(value) = trimmed.strip_prefix("inet ") {
+                let address = value.split_whitespace().next().unwrap_or("");
+                if !address.starts_with("127.") && !address.is_empty() {
+                    current_ip = Some(address.to_string());
                 }
-                current_iface = line.split(':').next().unwrap_or("").to_string();
-                current_ip = None;
-            } else if line.contains("inet ") {
-                current_ip = line.split_whitespace().nth(1).map(|s| s.to_string());
+            } else if let Some(value) = trimmed.strip_prefix("inet6 ") {
+                let address = value.split_whitespace().next().unwrap_or("");
+                if !address.starts_with("fe80:")
+                    && address != "::1"
+                    && !address.is_empty()
+                    && current_ip.is_none()
+                {
+                    current_ip = Some(address.to_string());
+                }
             }
         }
-
-        if !current_iface.is_empty() && is_vpn_interface(&current_iface) {
-            let vendor = detect_vendor(&current_iface);
-            let is_enterprise = is_enterprise_vendor(&current_iface, vendor.as_deref());
-            vpns.push(VpnAdapter {
-                name: current_iface.clone(),
-                adapter_type: detect_vpn_type(&current_iface),
-                status: if current_ip.is_some() {
-                    "Connected"
-                } else {
-                    "Disconnected"
-                }
-                .to_string(),
-                ip_address: current_ip,
-                vendor,
-                is_enterprise,
-                interface_name: Some(current_iface),
-            });
-        }
     }
+    flush(&mut rows, &current_iface, current_ip);
+    rows
 }
 
 #[cfg(target_os = "macos")]
@@ -320,55 +417,53 @@ async fn collect_macos_scutil(vpns: &mut Vec<VpnAdapter>) {
     cmd.args(["--nc", "list"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
-        for line in text.lines() {
-            // Lines like: * (Connected)      "VPN Name" [L2TP]
-            //   or:      - (Disconnected)   "VPN Name" [IPSec]
+        for row in parse_macos_scutil(&text) {
+            // Skip if already found via ifconfig.
+            if !vpns.iter().any(|vpn| vpn.name == row.name) {
+                vpns.push(row);
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_scutil(text: &str) -> Vec<VpnAdapter> {
+    text.lines()
+        .filter_map(|line| {
+            // Current NetworkExtension services include an application ID
+            // before the quoted display name; older L2TP/IPSec rows do not.
             let trimmed = line.trim();
             let status = if trimmed.contains("(Connected)") {
                 "Connected"
             } else if trimmed.contains("(Disconnected)") {
                 "Disconnected"
             } else {
-                continue;
+                return None;
             };
 
-            // Extract name between quotes
-            if let (Some(start), Some(end)) = (trimmed.find('"'), trimmed.rfind('"')) {
-                if start < end {
-                    let name = &trimmed[start + 1..end];
-
-                    // Skip if already found via ifconfig
-                    if vpns.iter().any(|v| v.name == name) {
-                        continue;
-                    }
-
-                    // Extract type in brackets
-                    let vpn_type = if let Some(bracket_start) = trimmed.rfind('[') {
-                        if let Some(bracket_end) = trimmed.rfind(']') {
-                            trimmed[bracket_start + 1..bracket_end].to_string()
-                        } else {
-                            "VPN".to_string()
-                        }
-                    } else {
-                        "VPN".to_string()
-                    };
-
-                    let vendor = detect_vendor(name);
-                    let is_enterprise = is_enterprise_vendor(name, vendor.as_deref());
-
-                    vpns.push(VpnAdapter {
-                        name: name.to_string(),
-                        adapter_type: vpn_type,
-                        status: status.to_string(),
-                        ip_address: None,
-                        vendor,
-                        is_enterprise,
-                        interface_name: None,
-                    });
+            let (start, end) = (trimmed.find('"')?, trimmed.rfind('"')?);
+            (start < end).then(|| {
+                let name = &trimmed[start + 1..end];
+                let adapter_type = trimmed
+                    .rfind('[')
+                    .zip(trimmed.rfind(']'))
+                    .filter(|(open, close)| open < close)
+                    .map(|(open, close)| trimmed[open + 1..close].to_string())
+                    .unwrap_or_else(|| "VPN".to_string());
+                let vendor = detect_vendor(name);
+                let is_enterprise = is_enterprise_vendor(name, vendor.as_deref());
+                VpnAdapter {
+                    name: name.to_string(),
+                    adapter_type,
+                    status: status.to_string(),
+                    ip_address: None,
+                    vendor,
+                    is_enterprise,
+                    interface_name: None,
                 }
-            }
-        }
-    }
+            })
+        })
+        .collect()
 }
 
 // ── Linux ───────────────────────────────────────────────────────────────────
@@ -478,7 +573,7 @@ async fn collect_linux_wireguard(vpns: &mut Vec<VpnAdapter>) {
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn is_vpn_interface(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.starts_with("tun")
@@ -575,4 +670,48 @@ fn is_enterprise_vendor(name: &str, vendor: Option<&str>) -> bool {
     enterprise_patterns
         .iter()
         .any(|p| lower.contains(p) || vendor_lower.contains(p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_nwi_identifies_only_reachable_interfaces() {
+        let text = "IPv4 network interface information\n     en0 : flags : 0x5 (IPv4,DNS)\n           reach : 0x00000002 (Reachable)\nNetwork interfaces: en0 utun7\n";
+        let active = parse_macos_nwi(text);
+        assert!(active.contains("en0"));
+        assert!(active.contains("utun7"));
+        assert!(!active.contains("utun0"));
+    }
+
+    #[test]
+    fn macos_routes_identify_split_and_default_tunnels() {
+        let text = "Routing tables\n\nInternet:\nDestination Gateway Flags Netif Expire\ndefault link#20 UCS utun7\n100.64/10 link#21 UCS utun8 !\nInternet6:\nDestination Gateway Flags Netif Expire\ndefault fe80::%utun0 UGcIg utun0\nfe80::%utun0/64 fe80::1 UcI utun0\nff00::/8 ::1 UmCI utun1\n";
+        let routed = parse_macos_route_interfaces(text);
+        assert!(routed.contains("utun7"));
+        assert!(routed.contains("utun8"));
+        assert!(!routed.contains("!"));
+        assert!(!routed.contains("utun0"));
+        assert!(!routed.contains("utun1"));
+    }
+
+    #[test]
+    fn dormant_link_local_utuns_are_not_reported_as_vpns() {
+        let text = "utun0: flags=8051<UP,POINTOPOINT,RUNNING> mtu 1380\n\tinet6 fe80::1%utun0 prefixlen 64\nutun7: flags=8051<UP,POINTOPOINT,RUNNING> mtu 1380\n\tinet6 fe80::2%utun7 prefixlen 64\nutun8: flags=8051<UP,POINTOPOINT,RUNNING> mtu 1380\n\tinet 100.64.0.2 --> 100.64.0.1 netmask 0xffffffff\n";
+        let active = ["utun7".to_string()].into_iter().collect();
+        let rows = parse_macos_ifconfig(text, &active);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].interface_name.as_deref(), Some("utun7"));
+    }
+
+    #[test]
+    fn macos_scutil_parses_modern_network_extension_service() {
+        let text = "Available network connection services in the current set (*=enabled):\n* (Disconnected) 38349A36 VPN (io.tailscale.ipn.macos) \"Tailscale\" [VPN:io.tailscale.ipn.macos]\n";
+        let rows = parse_macos_scutil(text);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Tailscale");
+        assert_eq!(rows[0].status, "Disconnected");
+        assert_eq!(rows[0].vendor.as_deref(), Some("Tailscale"));
+    }
 }

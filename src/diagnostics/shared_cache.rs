@@ -5,6 +5,10 @@ use std::collections::HashMap;
 /// module's `collect_with_cache()` to avoid duplicate subprocess calls.
 pub struct SharedCache {
     pub netstat: Option<NetstatCache>,
+    /// Machine-readable `lsof` TCP records used on macOS when Darwin's
+    /// fixed-width `netstat` output truncates long IPv6 endpoints. Always
+    /// `None` on other platforms.
+    pub macos_lsof_tcp: Option<Vec<String>>,
     pub ipconfig: Option<IpconfigCache>,
     pub sysinfo_networks: Option<sysinfo::Networks>,
     pub gateway_ip: Option<String>,
@@ -25,8 +29,9 @@ impl SharedCache {
     /// Run all pre-fetches concurrently. Each field is `None` on failure
     /// so consumers can fall back to their own subprocess call.
     pub async fn build_for_tech_mode() -> Self {
-        let (netstat, ipconfig, networks, gateway) = tokio::join!(
+        let (netstat, macos_lsof_tcp, ipconfig, networks, gateway) = tokio::join!(
             fetch_netstat(),
+            fetch_macos_lsof_tcp_lines(),
             fetch_ipconfig(),
             fetch_sysinfo_networks(),
             fetch_gateway(),
@@ -34,11 +39,37 @@ impl SharedCache {
 
         Self {
             netstat,
+            macos_lsof_tcp,
             ipconfig,
             sysinfo_networks: networks,
             gateway_ip: gateway,
         }
     }
+}
+
+/// Darwin 25/macOS 26 still truncates long IPv6 addresses in `netstat` even
+/// with `-W`. `lsof` field output is stable, machine-readable, and retains the
+/// complete bracketed endpoints. The shared diagnostic timeout kills and
+/// reaps `lsof` if the kernel query stalls.
+#[cfg(target_os = "macos")]
+pub(super) async fn fetch_macos_lsof_tcp_lines() -> Option<Vec<String>> {
+    let mut cmd = tokio::process::Command::new("/usr/sbin/lsof");
+    cmd.args(["-nP", "-iTCP", "-FpcPnT"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    (!lines.is_empty()).then_some(lines)
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn fetch_macos_lsof_tcp_lines() -> Option<Vec<String>> {
+    None
 }
 
 // ── Netstat ────────────────────────────────────────────────────────────────
@@ -73,7 +104,10 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 #[cfg(target_os = "macos")]
 async fn fetch_netstat() -> Option<NetstatCache> {
     let mut cmd = tokio::process::Command::new("netstat");
-    cmd.args(["-anp", "tcp"]);
+    // `-W` is still useful for Darwin's other wide columns. Long IPv6
+    // endpoints remain fixed-width on macOS 26, so `connections` prefers the
+    // bounded lsof field cache above when it is available.
+    cmd.args(["-anW", "-p", "tcp"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);

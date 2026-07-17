@@ -2,6 +2,9 @@
 // Individual diagnostics handle their own platform-specific code via #[cfg] attributes.
 // This module provides shared utilities for platform detection and common operations.
 
+#[cfg(unix)]
+pub mod invoking_user;
+
 pub fn platform_name() -> &'static str {
     #[cfg(windows)]
     {

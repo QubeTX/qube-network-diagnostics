@@ -1,6 +1,6 @@
 [package]
 name = "nd300"
-version = "3.5.2"
+version = "3.6.0"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -43,7 +43,11 @@ path = "src/bin/speedqx.rs"
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# Use rustls with both the operating-system and public WebPKI roots. Normal
+# requests follow the host trust policy; the TLS-inspection diagnostic also
+# compares a native-root handshake with a public-root-only control so a
+# locally trusted enterprise interception certificate remains observable.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots", "json"] }
 serde = { version = "1", features = ["derive"] }
 # `float_roundtrip` makes serde_json's float parser correctly-rounded so the v4
 # golden-vectors.json f64 literals load bit-identically to V8/Rust-std (the
@@ -60,14 +64,16 @@ default-net = "0.22"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 url = "2"
+# Release artifact integrity and TLS certificate inspection are shared across
+# platforms. Keep SHA-256 outside a target-specific section because the native
+# Unix updater verifies cargo-dist archives before extraction.
+sha2 = "0.10"
+x509-parser = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 wmi = "0.14"
 winapi = { version = "0.3", features = ["consoleapi", "wincon", "iphlpapi", "tcpmib", "udpmib", "ifdef", "winsock2", "ws2def", "ws2tcpip", "netioapi", "iptypes"] }
 ipconfig = "0.3"
-# SHA-256 verification of MSI/EXE installers downloaded by `nd300 update`
-# against their `.sha256` sidecar (refuse-on-mismatch).
-sha2 = "0.10"
 # HKCU\Software\ND300\InstallSource registry marker read by the updater to pick
 # the matching installer (MSI/EXE × Global/Corporate) for in-place upgrades.
 winreg = "0.52"
@@ -75,6 +81,13 @@ winreg = "0.52"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["net", "socket"] }
 libc = "0.2"
+# Native, allowlisted extraction of verified cargo-dist `.tar.xz` archives.
+tar = "0.4"
+xz2 = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Pin the embedded Developer ID leaf certificate used by signed release CLIs.
+sha1 = "0.10"
 
 [build-dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -88,7 +101,8 @@ lto = "thin"
 [workspace.metadata.dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.31.0"
-# The release workflow is intentionally customized for main-branch deploys and crates.io.
+# The release workflow is intentionally customized for tag-triggered artifacts;
+# crates.io publishing remains CI-gated from the default branch.
 # "msi" allows the customized wix/main.wxs (InstallSourceMarker component) to
 # coexist with cargo-dist's generated MSI without dist complaining.
 allow-dirty = ["ci", "msi"]
@@ -96,6 +110,9 @@ allow-dirty = ["ci", "msi"]
 ci = "github"
 # The installers to generate for each app
 installers = ["shell", "powershell", "msi"]
+# Ship generated man pages inside every archive. Installers continue to own only
+# the binaries; README documents the user-writable macOS man path.
+include = ["man/"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
 # Which actions to run on pull requests
@@ -106,3 +123,9 @@ install-updater = false
 install-path = "CARGO_HOME"
 # Whether to publish prereleases to package managers
 publish-prereleases = false
+
+[workspace.metadata.dist.github-custom-runners]
+# macos-14 enters retirement in 2026; keep both release architectures on
+# explicit, supported runner labels so cargo-dist plan cannot silently regress.
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15-intel"

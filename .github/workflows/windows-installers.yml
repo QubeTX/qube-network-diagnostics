@@ -44,27 +44,75 @@ on:
         type: string
 
 permissions:
-  contents: write # required for `gh release upload`
+  contents: read
 
 jobs:
   build-windows-installers:
     name: Build Corporate MSI + Global EXE + Corporate EXE
     runs-on: windows-2022
+    permissions:
+      contents: write # required for `gh release upload`
+      id-token: write
+      attestations: write
     # Filter:
     # - workflow_dispatch path: always run (user provided the tag explicitly).
-    # - workflow_run path: only when the tag-triggered Release workflow SUCCEEDED.
+    # - workflow_run path: only when a same-repository tag-push Release workflow
+    #   succeeded. Pull-request Release runs are never trusted by this privileged
+    #   workflow, even if a PR branch is named like a version tag.
     #   ND-300 releases on a `vX.Y.Z` tag push (consistent with TR-300), so a
     #   tag-triggered Release run has head_branch == the tag name, which starts
     #   with 'v'. (Matches TR-300's windows-installers.yml.)
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
        startsWith(github.event.workflow_run.head_branch, 'v'))
+
+    env:
+      ND300_TARGET_REPO: ${{ github.repository }}
+      ND300_TRIGGER_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+      # Manual repair must be dispatched with `--ref <tag>` so the workflow's
+      # own OIDC/source SHA and the checked-out release source remain identical.
+      ND300_TRIGGER_SHA: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
 
     steps:
       - name: Enable Windows long paths
         shell: pwsh
         run: git config --global core.longpaths true
+
+      - name: Resolve and verify immutable release tag
+        id: trusted_tag
+        shell: pwsh
+        run: |
+          $tag = $env:ND300_TRIGGER_TAG
+          $expectedSha = $env:ND300_TRIGGER_SHA
+          if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$') {
+            throw "Refusing unexpected release tag syntax"
+          }
+          if ($expectedSha -and $expectedSha -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Refusing invalid upstream commit SHA"
+          }
+
+          # Resolve both lightweight and annotated tags without checking out or
+          # executing any upstream source. Prefer the peeled ^{} commit when it
+          # exists, then prove it is the exact SHA that the trusted Release run
+          # built.
+          $remote = "https://github.com/$env:ND300_TARGET_REPO.git"
+          $lines = @(
+            git ls-remote --exit-code $remote "refs/tags/$tag" "refs/tags/$tag^{}"
+          )
+          if ($LASTEXITCODE -ne 0 -or $lines.Count -eq 0) {
+            throw "Could not resolve immutable release tag $tag"
+          }
+          $peeled = $lines | Where-Object { $_ -match [regex]::Escape("refs/tags/$tag^{}") }
+          $selected = if ($peeled) { $peeled | Select-Object -First 1 } else { $lines | Select-Object -First 1 }
+          $resolvedSha = ($selected -split "`t")[0]
+          if ($expectedSha -and $resolvedSha.ToLowerInvariant() -ne $expectedSha.ToLowerInvariant()) {
+            throw "Release tag $tag resolves to $resolvedSha, not trusted upstream SHA $expectedSha"
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "sha=$resolvedSha"
+          Write-Host "Verified immutable tag $tag at commit $resolvedSha"
 
       # Check out the exact tagged commit we're building installers for. The auto
       # path is a tag-triggered Release run (head_branch IS the tag, head_sha is
@@ -72,21 +120,16 @@ jobs:
       - name: Checkout source at trigger commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_sha }}
+          ref: ${{ steps.trusted_tag.outputs.sha }}
           persist-credentials: false
 
       - name: Resolve target tag
         id: tag
         shell: pwsh
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ inputs.tag }}"
-          } else {
-            # Tag-triggered Release run: head_branch IS the tag name (vX.Y.Z).
-            $tag = "${{ github.event.workflow_run.head_branch }}"
-          }
-          if (-not $tag.StartsWith("v")) {
-            throw "Expected tag to start with 'v', got '$tag'"
+          $tag = $env:ND300_TRIGGER_TAG
+          if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$') {
+            throw "Expected a version tag, got invalid input"
           }
           $version = $tag -replace '^v', ''
           Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$tag"
@@ -113,6 +156,10 @@ jobs:
           $tag = "${{ steps.tag.outputs.tag }}"
           $repo = "${{ github.repository }}"
           Write-Host "Probing release $tag in $repo ..."
+          $releaseTarget = gh release view $tag --repo $repo --json targetCommitish --jq '.targetCommitish'
+          if ($LASTEXITCODE -ne 0 -or $releaseTarget.ToLowerInvariant() -ne "${{ steps.trusted_tag.outputs.sha }}".ToLowerInvariant()) {
+            throw "Release $tag does not target the verified tag commit"
+          }
           $assets = (gh release view $tag --repo $repo --json assets --jq '.assets[].name') -split "`n"
 
           $required = @(
@@ -130,7 +177,7 @@ jobs:
             Write-Host "This usually means a target build was skipped or failed in release.yml."
             Write-Host "Fix the upstream release (re-run release.yml, or attach the missing assets"
             Write-Host "manually) before re-firing this workflow via:"
-            Write-Host "    gh workflow run 'Windows Installers' -f tag=$tag"
+            Write-Host "    gh workflow run 'Windows Installers' --ref $tag -f tag=$tag"
             exit 1
           }
           Write-Host "Upstream release looks complete (dist-manifest.json + Global MSI present)."
@@ -156,7 +203,18 @@ jobs:
       # cargo-wix + Inno Setup a Rust version that matches the repo.
       - name: Set up Rust toolchain
         if: steps.preflight.outputs.skip != 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Verify checked-out Cargo version
+        if: steps.preflight.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Could not read Cargo metadata" }
+          $packages = @($metadata.packages | Where-Object { $_.name -eq "nd300" })
+          if ($packages.Count -ne 1 -or $packages[0].version -ne "${{ steps.tag.outputs.version }}") {
+            throw "Release tag and checked-out nd300 Cargo version do not match"
+          }
 
       - name: Build nd300.exe + speedqx.exe (release)
         if: steps.preflight.outputs.skip != 'true'
@@ -268,6 +326,16 @@ jobs:
             Write-Host "  $name  ->  $hash"
           }
 
+      - name: Attest Windows installer add-ons
+        if: steps.preflight.outputs.skip != 'true'
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            target/wix/*.msi
+            target/wix/*.sha256
+            inno/Output/*.exe
+            inno/Output/*.sha256
+
       - name: Upload artifacts to GitHub Release
         if: steps.preflight.outputs.skip != 'true'
         env:
@@ -285,3 +353,123 @@ jobs:
             "inno\Output\nd300-x86_64-pc-windows-msvc-corporate-setup.exe.sha256" `
             --clobber
           Write-Host "Uploaded 6 assets to ${{ steps.tag.outputs.tag }}"
+
+      - name: Verify complete 28-asset release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $expected = @(
+            "dist-manifest.json",
+            "nd-300-installer.ps1",
+            "nd-300-installer.sh",
+            "nd300-aarch64-apple-darwin.tar.xz",
+            "nd300-aarch64-apple-darwin.tar.xz.sha256",
+            "nd300-aarch64-unknown-linux-gnu.tar.xz",
+            "nd300-aarch64-unknown-linux-gnu.tar.xz.sha256",
+            "nd300-installer.ps1",
+            "nd300-installer.sh",
+            "nd300-x86_64-apple-darwin.tar.xz",
+            "nd300-x86_64-apple-darwin.tar.xz.sha256",
+            "nd300-x86_64-pc-windows-msvc-corporate-setup.exe",
+            "nd300-x86_64-pc-windows-msvc-corporate-setup.exe.sha256",
+            "nd300-x86_64-pc-windows-msvc-corporate.msi",
+            "nd300-x86_64-pc-windows-msvc-corporate.msi.sha256",
+            "nd300-x86_64-pc-windows-msvc-setup.exe",
+            "nd300-x86_64-pc-windows-msvc-setup.exe.sha256",
+            "nd300-x86_64-pc-windows-msvc.msi",
+            "nd300-x86_64-pc-windows-msvc.msi.sha256",
+            "nd300-x86_64-pc-windows-msvc.zip",
+            "nd300-x86_64-pc-windows-msvc.zip.sha256",
+            "nd300-x86_64-unknown-linux-gnu.tar.xz",
+            "nd300-x86_64-unknown-linux-gnu.tar.xz.sha256",
+            "nd300-x86_64-unknown-linux-musl.tar.xz",
+            "nd300-x86_64-unknown-linux-musl.tar.xz.sha256",
+            "sha256.sum",
+            "source.tar.gz",
+            "source.tar.gz.sha256"
+          ) | Sort-Object
+
+          $actual = @(
+            gh release view "${{ steps.tag.outputs.tag }}" `
+              --repo "${{ github.repository }}" `
+              --json assets `
+              --jq '.assets[].name'
+          ) | Where-Object { $_ } | Sort-Object
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not read the completed GitHub Release asset set"
+          }
+
+          $difference = @(Compare-Object -ReferenceObject $expected -DifferenceObject $actual)
+          if ($actual.Count -ne 28 -or $difference.Count -ne 0) {
+            Write-Host "Expected $($expected.Count) release assets; found $($actual.Count)."
+            $difference | Format-Table | Out-String | Write-Host
+            throw "Final GitHub Release asset set is incomplete or unexpected"
+          }
+          Write-Host "Verified the exact 28-asset ND300 release set."
+
+          $downloadDir = Join-Path $env:RUNNER_TEMP "nd300-complete-release"
+          New-Item -ItemType Directory -Path $downloadDir -ErrorAction Stop | Out-Null
+          gh release download "${{ steps.tag.outputs.tag }}" `
+            --repo "${{ github.repository }}" `
+            --dir $downloadDir
+          if ($LASTEXITCODE -ne 0) { throw "Could not download the complete release for verification" }
+
+          foreach ($sidecar in Get-ChildItem -LiteralPath $downloadDir -Filter "*.sha256" -File) {
+            $line = [System.IO.File]::ReadAllText($sidecar.FullName).Trim()
+            if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)$') {
+              throw "Malformed SHA-256 sidecar: $($sidecar.Name)"
+            }
+            $expectedHash = $Matches[1].ToLowerInvariant()
+            $targetName = $Matches[2]
+            if ($targetName -ne $sidecar.Name.Substring(0, $sidecar.Name.Length - 7)) {
+              throw "Sidecar $($sidecar.Name) names unexpected target $targetName"
+            }
+            $targetPath = Join-Path $downloadDir $targetName
+            if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+              throw "Sidecar target is missing: $targetName"
+            }
+            $actualHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+              throw "SHA-256 mismatch for $targetName"
+            }
+          }
+
+          foreach ($line in [System.IO.File]::ReadAllLines((Join-Path $downloadDir "sha256.sum"))) {
+            if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)$') {
+              throw "Malformed sha256.sum entry"
+            }
+            $expectedHash = $Matches[1].ToLowerInvariant()
+            $targetName = $Matches[2]
+            $targetPath = Join-Path $downloadDir $targetName
+            if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+              throw "sha256.sum target is missing: $targetName"
+            }
+            $actualHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+              throw "sha256.sum mismatch for $targetName"
+            }
+          }
+          Write-Host "Verified every published SHA-256 sidecar and sha256.sum entry."
+
+          $pending = @(Get-ChildItem -LiteralPath $downloadDir -File | Select-Object -ExpandProperty FullName)
+          for ($attempt = 1; $attempt -le 6 -and $pending.Count -gt 0; $attempt++) {
+            $stillPending = @()
+            foreach ($artifact in $pending) {
+              gh attestation verify $artifact `
+                --repo "${{ github.repository }}" `
+                --source-digest "${{ steps.trusted_tag.outputs.sha }}" `
+                --format json | Out-Null
+              if ($LASTEXITCODE -ne 0) { $stillPending += $artifact }
+            }
+            $pending = @($stillPending)
+            if ($pending.Count -gt 0 -and $attempt -lt 6) {
+              Write-Host "Waiting for $($pending.Count) artifact attestation(s) to propagate (attempt $attempt/6)."
+              Start-Sleep -Seconds 10
+            }
+          }
+          if ($pending.Count -gt 0) {
+            $names = $pending | ForEach-Object { Split-Path $_ -Leaf }
+            throw "Missing or invalid exact-source attestations: $($names -join ', ')"
+          }
+          Write-Host "Verified exact-source GitHub attestations for all 28 release assets."

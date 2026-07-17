@@ -57,12 +57,9 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 const AUTO_DOWNLOAD_SECS: u64 = 15;
 const AUTO_UPLOAD_SECS: u64 = 10;
 
-const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
-
-fn remaining_budget(deadline: Instant) -> Duration {
-    deadline
-        .saturating_duration_since(Instant::now())
-        .max(MIN_REQUEST_TIMEOUT)
+fn remaining_budget(deadline: Instant) -> Option<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    (!remaining.is_zero()).then_some(remaining)
 }
 
 /// Run the Apple networkQuality capacity test.
@@ -70,10 +67,24 @@ pub async fn run<F>(config: &SpeedTestConfig, progress: F) -> ProviderResult
 where
     F: Fn(Phase, f64) + Send + Sync,
 {
-    match run_inner(config, &progress).await {
-        Ok(result) => result,
-        Err(e) => error_result(e.to_string()),
+    match tokio::time::timeout(provider_budget(config), run_inner(config, &progress)).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => error_result(e),
+        Err(_) => {
+            error_result("Apple networkQuality exceeded its whole-provider deadline".to_string())
+        }
     }
+}
+
+fn provider_budget(config: &SpeedTestConfig) -> Duration {
+    let seconds = match config.duration {
+        TestDuration::Seconds(seconds) => seconds.saturating_mul(3).saturating_add(40),
+        TestDuration::Auto => AUTO_DOWNLOAD_SECS
+            .saturating_mul(2)
+            .saturating_add(AUTO_UPLOAD_SECS)
+            .saturating_add(40),
+    };
+    Duration::from_secs(seconds)
 }
 
 async fn run_inner<F>(config: &SpeedTestConfig, progress: &F) -> Result<ProviderResult, String>
@@ -124,6 +135,12 @@ where
         if i + 1 < n_probes {
             tokio::time::sleep(super::DENSE_PROBE_INTERVAL).await;
         }
+        // Discovery includes the dense latency phase; emit heartbeats so a
+        // slow endpoint never looks like a frozen provider.
+        progress(
+            Phase::AnqDiscovery,
+            0.5 + 0.5 * (f64::from(i + 1) / f64::from(n_probes)),
+        );
     }
     // Discard the first 3 warm-up probes; keep all if ≤ 3.
     let measured: Vec<f64> = if rtts.len() > super::DENSE_PROBE_WARMUP {
@@ -269,60 +286,20 @@ where
     let deadline = start + budget;
     let counter = Arc::new(AtomicU64::new(0));
 
-    let mut handles = Vec::new();
-    for _ in 0..CONNECTIONS {
+    let mut workers = tokio::task::JoinSet::new();
+    for worker_id in 0..CONNECTIONS {
         let client = client.clone();
         let counter = counter.clone();
-        let handle = match &spec {
+        match &spec {
             SaturateSpec::Download { url } => {
                 let url = url.clone();
-                tokio::spawn(async move {
-                    while Instant::now() < deadline {
-                        let Ok(resp) = client
-                            .get(&url)
-                            .timeout(remaining_budget(deadline))
-                            .send()
-                            .await
-                        else {
-                            continue;
-                        };
-                        if !resp.status().is_success() {
-                            continue;
-                        }
-                        // Stream the (8 GB+) object chunk by chunk; one
-                        // request typically spans the whole phase.
-                        let mut resp = resp;
-                        while let Ok(Some(chunk)) = resp.chunk().await {
-                            counter.fetch_add(chunk.len() as u64, Ordering::Relaxed);
-                            if Instant::now() >= deadline {
-                                break;
-                            }
-                        }
-                    }
-                })
+                workers.spawn(download_worker(client, counter, url, deadline, worker_id));
             }
             SaturateSpec::Upload { url } => {
                 let url = url.clone();
-                tokio::spawn(async move {
-                    let payload = vec![0u8; UPLOAD_CHUNK_BYTES];
-                    while Instant::now() < deadline {
-                        match client
-                            .post(&url)
-                            .body(payload.clone())
-                            .timeout(remaining_budget(deadline).min(Duration::from_secs(30)))
-                            .send()
-                            .await
-                        {
-                            Ok(resp) if resp.status().is_success() => {
-                                counter.fetch_add(UPLOAD_CHUNK_BYTES as u64, Ordering::Relaxed);
-                            }
-                            _ => {}
-                        }
-                    }
-                })
+                workers.spawn(upload_worker(client, counter, url, deadline, worker_id));
             }
-        };
-        handles.push(handle);
+        }
     }
 
     // Aggregate sampler.
@@ -333,11 +310,14 @@ where
     sampler.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     sampler.reset();
 
-    let join_deadline = tokio::time::Instant::from_std(deadline + Duration::from_secs(35));
-    let mut joined = futures_util::future::join_all(handles);
+    let phase_deadline = tokio::time::Instant::from_std(deadline);
     loop {
         tokio::select! {
-            _ = &mut joined => break,
+            completed = workers.join_next(), if !workers.is_empty() => {
+                if completed.is_none() || workers.is_empty() {
+                    break;
+                }
+            }
             _ = sampler.tick() => {
                 let total = counter.load(Ordering::Relaxed);
                 let now = Instant::now();
@@ -350,15 +330,112 @@ where
                 last_at = now;
                 progress((start.elapsed().as_secs_f64() / budget.as_secs_f64()).min(0.99));
             }
-            _ = tokio::time::sleep_until(join_deadline) => break,
+            _ = tokio::time::sleep_until(phase_deadline) => break,
         }
     }
+    // Explicitly abort and reap any request that did not observe the phase
+    // deadline so it cannot consume bandwidth after the provider advances.
+    workers.abort_all();
+    while workers.join_next().await.is_some() {}
 
     (
         samples,
         counter.load(Ordering::Relaxed),
         start.elapsed().as_secs_f64(),
     )
+}
+
+async fn download_worker(
+    client: Client,
+    counter: Arc<AtomicU64>,
+    url: String,
+    deadline: Instant,
+    worker_id: usize,
+) {
+    let worker = async {
+        let mut failures = 0u32;
+        while let Some(request_budget) = remaining_budget(deadline) {
+            let Ok(resp) = client
+                .get(&url)
+                .timeout(request_budget.min(Duration::from_secs(30)))
+                .send()
+                .await
+            else {
+                failures = failures.saturating_add(1);
+                sleep_retry_backoff(deadline, failures, worker_id).await;
+                continue;
+            };
+            if !resp.status().is_success() {
+                failures = failures.saturating_add(1);
+                sleep_retry_backoff(deadline, failures, worker_id).await;
+                continue;
+            }
+
+            // Stream the (8 GB+) object chunk by chunk; the outer deadline
+            // cancels a peer that sends headers and then stalls the body.
+            let mut resp = resp;
+            let mut received = 0u64;
+            while let Ok(Some(chunk)) = resp.chunk().await {
+                counter.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                received = received.saturating_add(chunk.len() as u64);
+            }
+            if received == 0 {
+                failures = failures.saturating_add(1);
+                sleep_retry_backoff(deadline, failures, worker_id).await;
+            } else {
+                failures = 0;
+            }
+        }
+    };
+    let _ = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), worker).await;
+}
+
+async fn upload_worker(
+    client: Client,
+    counter: Arc<AtomicU64>,
+    url: String,
+    deadline: Instant,
+    worker_id: usize,
+) {
+    let worker = async {
+        let payload = vec![0u8; UPLOAD_CHUNK_BYTES];
+        let mut failures = 0u32;
+        while let Some(request_budget) = remaining_budget(deadline) {
+            match client
+                .post(&url)
+                .body(payload.clone())
+                .timeout(request_budget.min(Duration::from_secs(30)))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    counter.fetch_add(UPLOAD_CHUNK_BYTES as u64, Ordering::Relaxed);
+                    failures = 0;
+                }
+                _ => {
+                    failures = failures.saturating_add(1);
+                    sleep_retry_backoff(deadline, failures, worker_id).await;
+                }
+            }
+        }
+    };
+    let _ = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), worker).await;
+}
+
+fn retry_backoff(failures: u32, worker_id: usize) -> Duration {
+    let exponent = failures.saturating_sub(1).min(5);
+    let base_ms = 25u64.saturating_mul(1u64 << exponent);
+    // Deterministic per-worker jitter prevents four failed connections from
+    // retrying in lockstep without adding a random-number dependency.
+    let jitter_ms = ((u64::from(failures) * 37 + worker_id as u64 * 53) % 75) + 1;
+    Duration::from_millis((base_ms + jitter_ms).min(1_000))
+}
+
+async fn sleep_retry_backoff(deadline: Instant, failures: u32, worker_id: usize) {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if !remaining.is_zero() {
+        tokio::time::sleep(retry_backoff(failures, worker_id).min(remaining)).await;
+    }
 }
 
 fn error_result(msg: String) -> ProviderResult {
@@ -386,6 +463,10 @@ fn error_result(msg: String) -> ProviderResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
 
     /// Shape verified against a live fetch of the config endpoint.
     const CONFIG_FIXTURE: &str = r#"{
@@ -412,5 +493,160 @@ mod tests {
     fn config_missing_urls_is_error() {
         let body: serde_json::Value = serde_json::from_str(r#"{"version":1}"#).unwrap();
         assert!(parse_config(&body).is_err());
+    }
+
+    #[test]
+    fn retry_backoff_is_capped_and_jittered() {
+        assert!(retry_backoff(2, 0) > retry_backoff(1, 0));
+        assert_ne!(retry_backoff(3, 0), retry_backoff(3, 1));
+        assert!(retry_backoff(100, 3) <= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn provider_deadline_scales_with_requested_duration() {
+        let config = SpeedTestConfig {
+            duration: TestDuration::Seconds(30),
+            ..SpeedTestConfig::default()
+        };
+        assert_eq!(provider_budget(&config), Duration::from_secs(130));
+    }
+
+    async fn rejecting_server() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = attempts.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                server_attempts.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let _ = socket
+                        .write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{address}/large"), attempts, task)
+    }
+
+    async fn hanging_server() -> (String, Arc<AtomicUsize>, Arc<AtomicUsize>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicUsize::new(0));
+        let server_accepted = accepted.clone();
+        let server_closed = closed.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                server_accepted.fetch_add(1, Ordering::SeqCst);
+                let closed = server_closed.clone();
+                tokio::spawn(async move {
+                    // Consume the request but deliberately never send headers.
+                    // Cancellation is observed as EOF when reqwest drops the
+                    // in-flight connection.
+                    let mut buffer = [0u8; 1024];
+                    loop {
+                        match socket.read(&mut buffer).await {
+                            Ok(0) | Err(_) => {
+                                closed.fetch_add(1, Ordering::SeqCst);
+                                break;
+                            }
+                            Ok(_) => {}
+                        }
+                    }
+                });
+            }
+        });
+        (format!("http://{address}/large"), accepted, closed, task)
+    }
+
+    async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while counter.load(Ordering::SeqCst) < expected {
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("fault-injection server did not observe cancellation in time");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transient_failures_retry_with_backoff_instead_of_spinning() {
+        let (url, attempts, server) = rejecting_server().await;
+        let client = Client::builder().no_proxy().build().unwrap();
+        let (samples, bytes, _) = saturate(
+            &client,
+            SaturateSpec::Download { url },
+            Duration::from_millis(350),
+            |_| {},
+        )
+        .await;
+        server.abort();
+        let _ = server.await;
+
+        let attempts = attempts.load(Ordering::SeqCst);
+        assert!(attempts > CONNECTIONS, "each failed worker should retry");
+        assert!(
+            attempts < 40,
+            "capped exponential backoff must prevent a retry storm: {attempts} attempts"
+        );
+        assert!(samples.is_empty());
+        assert_eq!(bytes, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn phase_deadline_cancels_stalled_requests_and_reaps_workers() {
+        let (url, accepted, closed, server) = hanging_server().await;
+        let client = Client::builder().no_proxy().build().unwrap();
+        let started = Instant::now();
+        let (samples, bytes, _) = saturate(
+            &client,
+            SaturateSpec::Download { url },
+            Duration::from_millis(150),
+            |_| {},
+        )
+        .await;
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let accepted_count = accepted.load(Ordering::SeqCst);
+        assert!(accepted_count > 0);
+        wait_for_count(&closed, accepted_count).await;
+        server.abort();
+        let _ = server.await;
+        assert!(samples.is_empty());
+        assert_eq!(bytes, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn caller_cancellation_drops_all_in_flight_connections() {
+        let (url, accepted, closed, server) = hanging_server().await;
+        let client = Client::builder().no_proxy().build().unwrap();
+        let saturation = tokio::spawn(async move {
+            saturate(
+                &client,
+                SaturateSpec::Download { url },
+                Duration::from_secs(30),
+                |_| {},
+            )
+            .await
+        });
+
+        wait_for_count(&accepted, CONNECTIONS).await;
+        let accepted_count = accepted.load(Ordering::SeqCst);
+        saturation.abort();
+        assert!(saturation.await.unwrap_err().is_cancelled());
+        wait_for_count(&closed, accepted_count).await;
+        server.abort();
+        let _ = server.await;
     }
 }

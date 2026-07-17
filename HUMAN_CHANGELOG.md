@@ -6,6 +6,121 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 17, 2026 — Mac diagnostics users can trust, repairs that fail safely, and releases Apple can verify
+
+This release is centered on one promise: a diagnostic or repair tool must never
+make a healthy computer harder to recover. The Mac networking code was rebuilt
+around current macOS behavior, the old destructive deep-reset path was removed,
+and update and release handling now fail closed when trust cannot be proved.
+
+**Improved — much more accurate Mac results**
+- The tool now works out which connection is actually carrying traffic before
+  counting interfaces. Wi-Fi and Ethernet are counted as real uplinks;
+  loopback, Apple peer-to-peer links, dormant tunnels, and devices with only a
+  self-assigned address stay in the details without making the headline say
+  several connections are active. When a VPN carries the default route, the
+  report distinguishes the tunnel from the Wi-Fi or Ethernet underneath it.
+- Current macOS no longer supplies the old private Wi-Fi command the tool relied
+  on. Everyday mode now continues immediately without optional radio details,
+  while technician mode asks macOS's supported system report under a strict time
+  limit. It reads only the connected network, does not mistake nearby networks
+  for yours, handles privacy-redacted names honestly, and uses the band macOS
+  reports instead of guessing from a channel number.
+- Modern Mac routing tables, listening ports, long IPv6 addresses, DHCP lease
+  fields, VPN tunnels, and network counters are now interpreted correctly. If
+  macOS hides a counter for privacy, the tool leaves it out instead of showing a
+  made-up zero.
+- A private IPv6 address is now identified separately, and the tool says a Mac
+  is using both IPv4 and IPv6 only after it has actually connected through both.
+  A dormant tunnel by itself is no longer called a live VPN.
+- Secure-connection and signed-DNS checks now use real positive and negative
+  evidence. If the evidence is incomplete, the answer says inconclusive instead
+  of giving false reassurance.
+- Diagnostic helper programs are stopped when their time limit expires. Apple's
+  speed source now keeps progress visible and has a firm overall deadline with
+  restrained retries, so it cannot silently hold up the whole run.
+
+**Safety — the old Mac deep reset is gone**
+- Older versions could remove a Mac network service and then rebuild only part
+  of it. If one of the restore commands failed, the tool could hide that failure
+  and still sound successful. That path could plausibly leave Wi-Fi preferences
+  damaged or incomplete. This release contains no command that deletes a Mac
+  network service, no Wi-Fi-password extraction, and no attempt to reconstruct
+  a service from an incomplete snapshot.
+- The replacement is a carefully reversible off/on cycle of the exact physical
+  service. It refuses renamed-service ambiguity, disabled or virtual services,
+  records the undo step before switching anything off, preserves both DNS
+  servers and search domains, and does not call the operation restored until the
+  service, expected route, and reachability are verified.
+- That replacement remains unavailable until it passes a supervised test on a
+  disposable Mac environment with an offline/local console. A Mac whose only
+  control path is the Wi-Fi being tested is specifically not a safe test host:
+  losing the connection would also lose the person or tool responsible for
+  recovery. If the acceptance proof is missing, users receive safe guidance and
+  no service is cycled.
+- With the user's explicit approval, the exact new path completed one
+  supervised happy-path run on this Mac while a separate administrator-owned
+  watchdog was already responsible for recovery. Wi-Fi, automatic addressing,
+  DNS/search settings, and the default route were healthy afterward. That run
+  also exposed and fixed a one-shot test-harness restart problem. It still does
+  not simulate every possible interruption on disposable hardware, so the
+  feature remains unavailable rather than turning one successful run into a
+  safety claim it cannot support.
+- Lease renewal now first proves the service already uses automatic addressing.
+  Static, manual, BootP, disabled, virtual, missing, or ambiguous configurations
+  are left untouched.
+- Undo steps now run newest-first after Ctrl-C and also after common termination
+  signals. Consumer VPN recovery is recorded before disconnection; managed
+  enterprise VPNs remain untouched. The report says a change was reversed only
+  after checking the restored state.
+
+**Improved — elevated commands act as the real user**
+- When `sudo` is involved, the tool validates which account invoked it instead
+  of silently treating the administrator account as the user. Reports go to the
+  real user's Downloads folder, user-level update commands run as that user, and
+  report files are privately and atomically created with the right owner.
+
+**Security — safer updates and removal on Mac and Linux**
+- The updater still tries the Rust package manager first when it is available,
+  but it no longer updates the Rust toolchain without being asked. That attempt
+  is time-limited and both installed programs must prove they are the requested
+  version.
+- The fallback no longer downloads a script and immediately runs it. It fetches
+  the exact release archive plus its published fingerprint, limits time and
+  size, verifies the fingerprint itself, and accepts only the two expected
+  programs. Suspicious paths, links, duplicate files, unexpected layouts, or a
+  wrong version stop the update before installation.
+- Both programs are replaced as one transaction. If either replacement fails,
+  both are rolled back, so `nd300` and `speedqx` cannot be left at mismatched
+  versions.
+- Uninstall now respects how the tool was installed: it asks the Rust package
+  manager to remove its own install, removes only a symlink when invoked through
+  one, recognizes a managed archive only through its valid receipt, and refuses
+  unknown or operating-system package locations.
+
+**Behind the scenes — Apple release trust**
+- Every Mac release must now have both programs signed with the expected Apple
+  developer identity, hardened runtime, and timestamp, then be accepted by
+  Apple's notarization service. The release job checks the exact certificate,
+  team, and program identities and never publishes an unsigned fallback.
+- The final signed downloads receive tamper-evident build attestations; the later
+  Windows installer downloads receive their own. Routine workflow access is
+  read-only, the security-dependency scan can block a release, current Mac build
+  machines are used, and the command manuals now ship in the archives.
+- Mac users can install those manuals in their own account without changing
+  system folders or running a manual database command.
+
+**Release checks still to complete**
+- The supervised disposable-Mac service-cycle test, native and translated Intel
+  runs, quarantined-download checks, Apple acceptance for both Mac builds,
+  hosted multi-platform checks, public package/release verification, update from
+  the previous release, and an Alienware smoke test are release requirements.
+  They are deliberately listed here as pending rather than claimed as done.
+- A new root-level `TASKS.md` makes those remaining checks actionable from the
+  user's Windows machine. Each item explains why it matters, what changes for
+  users when it is completed, what risk remains if it is deferred, and exactly
+  what evidence closes it.
+
 ## July 6, 2026 (late evening) — no more contradictory agreement line
 
 **Fixed**

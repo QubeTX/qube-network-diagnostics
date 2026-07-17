@@ -75,8 +75,12 @@ async fn collect_macos() -> Option<Vec<RouteEntry>> {
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
-    let mut entries = Vec::new();
+    Some(parse_macos_routes(&text))
+}
 
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_routes(text: &str) -> Vec<RouteEntry> {
+    let mut entries = Vec::new();
     for line in text.lines() {
         if line.starts_with("Destination")
             || line.starts_with("Routing")
@@ -85,19 +89,22 @@ async fn collect_macos() -> Option<Vec<RouteEntry>> {
             continue;
         }
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 4 {
+        // Darwin's columns are Destination Gateway Flags Netif [Expire].
+        // `Expire` is optional and often `!`; taking the final field therefore
+        // produced bogus interface names in technician output.
+        if parts.len() >= 4 && !parts[0].ends_with(':') {
             entries.push(RouteEntry {
                 destination: parts[0].to_string(),
                 gateway: parts[1].to_string(),
                 mask: String::new(),
                 flags: Some(parts[2].to_string()),
-                interface: parts.last().unwrap_or(&"").to_string(),
+                interface: parts[3].to_string(),
                 metric: None,
             });
         }
     }
 
-    Some(entries)
+    entries
 }
 
 #[cfg(target_os = "linux")]
@@ -151,4 +158,17 @@ async fn collect_linux() -> Option<Vec<RouteEntry>> {
     }
 
     Some(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_netif_is_not_expire_column() {
+        let fixture = "Routing tables\n\nInternet:\nDestination Gateway Flags Netif Expire\ndefault 10.1.0.1 UGScg en0\n10.1.0.1 d4:6a:91:ba:18:5c UHLWIir en0 1200\n10.1.0.46 link#11 UHLWI en0 !\n";
+        let routes = parse_macos_routes(fixture);
+        assert_eq!(routes.len(), 3);
+        assert!(routes.iter().all(|route| route.interface == "en0"));
+    }
 }
