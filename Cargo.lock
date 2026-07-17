@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "nd300"
-version = "3.6.1"
+version = "3.6.2"
 dependencies = [
  "chrono",
  "clap",

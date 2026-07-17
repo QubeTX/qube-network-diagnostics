@@ -14,7 +14,7 @@
 - [ ] **Clean merged branches and worktrees in both repositories** - preserve unique work, prune stale refs, and enable automatic merged-branch deletion (needs #doc) (ms #v36) #cln
 
 ## Active
-- [ ] **Tag and verify the final ND-300 release** - fix forward from the immutable v3.6.0 validator failure and verify v3.6.1 trust, assets, and attestations (ms #v36) (owner codex) #rel
+- [ ] **Tag and verify the final ND-300 release** - fix forward from immutable v3.6.0/v3.6.1 verifier failures and verify v3.6.2 trust, assets, and attestations (ms #v36) (owner codex) #rel
 
 ## Done
 - [x] **Repair PR #18 release and cross-platform blockers** - exact head `4b2c623` passed every PR gate and both specialist reviews (ms #v36) #prf
