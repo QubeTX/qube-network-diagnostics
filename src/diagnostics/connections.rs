@@ -22,6 +22,12 @@ pub async fn collect_with_cache(cache: &SharedCache) -> Option<Vec<ConnectionEnt
 
     #[cfg(target_os = "macos")]
     {
+        if let Some(ref lines) = cache.macos_lsof_tcp {
+            let entries = parse_macos_lsof_connections(lines);
+            if !entries.is_empty() {
+                return Some(entries);
+            }
+        }
         if let Some(ref nc) = cache.netstat {
             return Some(parse_macos_connections(&nc.lines));
         }
@@ -105,7 +111,7 @@ async fn collect_windows() -> Option<Vec<ConnectionEntry>> {
     Some(parse_windows_connections(&lines, &process_map))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn parse_macos_connections(lines: &[String]) -> Vec<ConnectionEntry> {
     let mut entries = Vec::new();
 
@@ -126,10 +132,85 @@ fn parse_macos_connections(lines: &[String]) -> Vec<ConnectionEntry> {
     entries
 }
 
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct MacosLsofTcpRecord {
+    name: Option<String>,
+    state: Option<String>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn push_macos_lsof_record(
+    entries: &mut Vec<ConnectionEntry>,
+    seen: &mut std::collections::HashSet<(String, String, String, Option<u32>)>,
+    pid: Option<u32>,
+    process_name: &Option<String>,
+    record: &mut MacosLsofTcpRecord,
+) {
+    let Some(name) = record.name.take() else {
+        record.state = None;
+        return;
+    };
+    let (local_addr, remote_addr) = name
+        .split_once("->")
+        .map(|(local, remote)| (local.to_string(), remote.to_string()))
+        .unwrap_or_else(|| (name, "*:*".to_string()));
+    let state = record.state.take().unwrap_or_default();
+    let key = (local_addr.clone(), remote_addr.clone(), state.clone(), pid);
+    if seen.insert(key) {
+        entries.push(ConnectionEntry {
+            protocol: "TCP".to_string(),
+            local_addr,
+            remote_addr,
+            state,
+            pid,
+            process_name: process_name.clone(),
+        });
+    }
+}
+
+/// Parse `lsof -nP -iTCP -FpcPnT`. A `p` line starts a process, `f` starts a
+/// socket record, `n` carries the complete endpoint, and `TST=` carries state.
+/// This is the macOS 26 fallback for `netstat`'s fixed-width IPv6 truncation.
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_lsof_connections(lines: &[String]) -> Vec<ConnectionEntry> {
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut pid = None;
+    let mut process_name = None;
+    let mut record = MacosLsofTcpRecord::default();
+
+    for line in lines {
+        if let Some(value) = line.strip_prefix('p') {
+            push_macos_lsof_record(&mut entries, &mut seen, pid, &process_name, &mut record);
+            pid = value.parse().ok();
+            process_name = None;
+        } else if let Some(value) = line.strip_prefix('c') {
+            process_name = Some(value.to_string());
+        } else if line.starts_with('f') {
+            push_macos_lsof_record(&mut entries, &mut seen, pid, &process_name, &mut record);
+        } else if let Some(value) = line.strip_prefix('n') {
+            record.name = Some(value.to_string());
+        } else if let Some(value) = line.strip_prefix("TST=") {
+            record.state = Some(value.to_string());
+        }
+    }
+    push_macos_lsof_record(&mut entries, &mut seen, pid, &process_name, &mut record);
+
+    entries
+}
+
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<Vec<ConnectionEntry>> {
+    if let Some(lines) = super::shared_cache::fetch_macos_lsof_tcp_lines().await {
+        let entries = parse_macos_lsof_connections(&lines);
+        if !entries.is_empty() {
+            return Some(entries);
+        }
+    }
+
     let mut cmd = tokio::process::Command::new("netstat");
-    cmd.args(["-anp", "tcp"]);
+    cmd.args(["-anW", "-p", "tcp"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
@@ -184,5 +265,80 @@ fn parse_ss_process(s: &str) -> (Option<u32>, Option<String>) {
         (pid, pname)
     } else {
         (None, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_wide_ipv6_endpoints_are_preserved() {
+        let lines = vec![
+            "tcp6 0 0 fe80::26fd:c41b:b5bc:ff7%utun12.1024 fe80::91b5:8f5b:1234%utun12.1024 SYN_SENT"
+                .to_string(),
+        ];
+        let entries = parse_macos_connections(&lines);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].local_addr,
+            "fe80::26fd:c41b:b5bc:ff7%utun12.1024"
+        );
+        assert_eq!(entries[0].state, "SYN_SENT");
+    }
+
+    #[test]
+    fn macos_26_lsof_field_output_preserves_complete_ipv6_and_process() {
+        // Captured-format fixture from macOS 26 `/usr/sbin/lsof -nP -iTCP
+        // -FpcPnT`; addresses are intentionally long enough to be truncated
+        // by Darwin `netstat`.
+        let fixture = [
+            "p7850",
+            "cidentityservicesd",
+            "f9",
+            "PTCP",
+            "n[fe80:1b::26fd:c41b:b5bc:ff7]:1024->[fe80:1b::91b5:8f5b:be19:6cf3]:1024",
+            "TST=ESTABLISHED",
+            "TQR=0",
+            "TQS=0",
+            "f10",
+            "PTCP",
+            "n*:51140",
+            "TST=LISTEN",
+        ]
+        .map(str::to_string);
+
+        let entries = parse_macos_lsof_connections(&fixture);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].local_addr, "[fe80:1b::26fd:c41b:b5bc:ff7]:1024");
+        assert_eq!(
+            entries[0].remote_addr,
+            "[fe80:1b::91b5:8f5b:be19:6cf3]:1024"
+        );
+        assert_eq!(entries[0].pid, Some(7850));
+        assert_eq!(
+            entries[0].process_name.as_deref(),
+            Some("identityservicesd")
+        );
+        assert_eq!(entries[1].remote_addr, "*:*");
+        assert_eq!(entries[1].state, "LISTEN");
+    }
+
+    #[test]
+    fn macos_lsof_duplicate_socket_records_are_deduplicated() {
+        let fixture = [
+            "p42",
+            "cdaemon",
+            "f9",
+            "PTCP",
+            "n[fd00::1]:5000->[fd00::2]:443",
+            "TST=ESTABLISHED",
+            "f10",
+            "PTCP",
+            "n[fd00::1]:5000->[fd00::2]:443",
+            "TST=ESTABLISHED",
+        ]
+        .map(str::to_string);
+        assert_eq!(parse_macos_lsof_connections(&fixture).len(), 1);
     }
 }

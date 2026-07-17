@@ -1,33 +1,54 @@
+#[cfg(any(windows, target_os = "linux"))]
+use super::cmd::run_owned_mutation_pair;
 #[allow(unused_imports)]
 use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
+
+#[cfg(any(windows, target_os = "linux"))]
+fn mutation_succeeded(result: &Result<std::process::Output, String>) -> bool {
+    result.as_ref().is_ok_and(|output| output.status.success())
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn mutation_error(result: &Result<std::process::Output, String>) -> String {
+    match result {
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("command exited with status {}", output.status)
+            }
+        }
+        Err(error) => error.clone(),
+    }
+}
 
 /// DHCP lease renewal — all platforms.
 pub async fn renew_dhcp() -> Result<String, String> {
     #[cfg(windows)]
     {
-        // Release first, then renew
         let mut release_cmd = tokio::process::Command::new("ipconfig");
         release_cmd.arg("/release");
-        let release = run_cmd(release_cmd, TIMEOUT_SLOW).await;
-
-        if let Ok(output) = &release {
-            if !output.status.success() {
-                let msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                if !msg.is_empty() {
-                    return Err(format!("DHCP release failed: {}", msg));
-                }
-            }
-        }
-
         let mut renew_cmd = tokio::process::Command::new("ipconfig");
         renew_cmd.arg("/renew");
-        match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
-            Ok(output) if output.status.success() => Ok("DHCP lease renewed".to_string()),
-            Ok(output) => Err(format!(
+        let pair = run_owned_mutation_pair(
+            release_cmd,
+            TIMEOUT_SLOW,
+            std::time::Duration::ZERO,
+            renew_cmd,
+            TIMEOUT_SLOW,
+        )
+        .await?;
+        if mutation_succeeded(&pair.inverse) {
+            Ok("DHCP lease renewed".to_string())
+        } else {
+            Err(format!(
                 "DHCP renew failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )),
-            Err(e) => Err(e),
+                mutation_error(&pair.inverse)
+            ))
         }
     }
 
@@ -36,58 +57,50 @@ pub async fn renew_dhcp() -> Result<String, String> {
         // Detect active network device
         let device = detect_active_device_macos().await;
         match &device {
-            Some(dev) => {
-                let mut cmd = tokio::process::Command::new("ipconfig");
-                cmd.args(["set", dev, "DHCP"]);
-                match run_cmd(cmd, TIMEOUT_SLOW).await {
-                    Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {}", dev)),
-                    Ok(output) => Err(format!(
-                        "DHCP renew failed on {}: {}",
-                        dev,
-                        String::from_utf8_lossy(&output.stderr).trim()
-                    )),
-                    Err(e) => Err(e),
-                }
-            }
+            Some(dev) => super::adapters::renew_dhcp_on_interface(dev).await,
             None => Err("Could not detect active network device".to_string()),
         }
     }
 
     #[cfg(target_os = "linux")]
     {
-        // Try dhclient first
         let mut release_cmd = tokio::process::Command::new("dhclient");
         release_cmd.arg("-r");
-        let dhclient_release = run_cmd(release_cmd, TIMEOUT_SLOW).await;
-
-        if let Ok(output) = dhclient_release {
-            if output.status.success() {
-                let renew_cmd = tokio::process::Command::new("dhclient");
-                match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
-                    Ok(output) if output.status.success() => {
-                        return Ok("DHCP lease renewed via dhclient".to_string());
-                    }
-                    _ => {}
-                }
-            }
+        let renew_cmd = tokio::process::Command::new("dhclient");
+        let dhclient = run_owned_mutation_pair(
+            release_cmd,
+            TIMEOUT_SLOW,
+            std::time::Duration::ZERO,
+            renew_cmd,
+            TIMEOUT_SLOW,
+        )
+        .await?;
+        if mutation_succeeded(&dhclient.inverse) {
+            return Ok("DHCP lease renewed via dhclient".to_string());
         }
 
         // Fallback to nmcli
         let mut off_cmd = tokio::process::Command::new("nmcli");
         off_cmd.args(["networking", "off"]);
-        match run_cmd(off_cmd, TIMEOUT_MEDIUM).await {
-            Ok(off_output) if off_output.status.success() => {
-                let mut on_cmd = tokio::process::Command::new("nmcli");
-                on_cmd.args(["networking", "on"]);
-                match run_cmd(on_cmd, TIMEOUT_MEDIUM).await {
-                    Ok(on_output) if on_output.status.success() => {
-                        Ok("DHCP renewed via nmcli".to_string())
-                    }
-                    _ => Err("nmcli networking on failed".to_string()),
-                }
-            }
-            Ok(_) => Err("Neither dhclient nor nmcli available".to_string()),
-            Err(_) => Err("Neither dhclient nor nmcli available".to_string()),
+        let mut on_cmd = tokio::process::Command::new("nmcli");
+        on_cmd.args(["networking", "on"]);
+        let nmcli = run_owned_mutation_pair(
+            off_cmd,
+            TIMEOUT_MEDIUM,
+            std::time::Duration::ZERO,
+            on_cmd,
+            TIMEOUT_MEDIUM,
+        )
+        .await?;
+        if !mutation_succeeded(&nmcli.inverse) {
+            Err(format!(
+                "nmcli networking on failed: {}",
+                mutation_error(&nmcli.inverse)
+            ))
+        } else if mutation_succeeded(&nmcli.first) {
+            Ok("DHCP renewed via nmcli".to_string())
+        } else {
+            Err("Neither dhclient nor nmcli available".to_string())
         }
     }
 }

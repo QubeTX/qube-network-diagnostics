@@ -3,6 +3,8 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::render::color;
 
+#[cfg(target_os = "macos")]
+use super::cmd::run_macos_mutation;
 #[allow(unused_imports)]
 use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK};
 use crate::actions::is_interactive;
@@ -13,6 +15,148 @@ const CLOUDFLARE_V4: [&str; 2] = ["1.1.1.1", "1.0.0.1"];
 const GOOGLE_V4: [&str; 2] = ["8.8.8.8", "8.8.4.4"];
 const HYBRID_V4: [&str; 2] = ["1.1.1.1", "8.8.8.8"];
 const NEXTDNS_V4: [&str; 2] = ["45.90.28.0", "45.90.30.0"];
+
+/// Exact macOS resolver state for one network service. `networksetup` uses an
+/// empty list to mean DHCP/default values, which must remain distinct from a
+/// failed read. Capture therefore fails closed instead of inventing defaults.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacosDnsSnapshot {
+    service: String,
+    dns_servers: Vec<String>,
+    search_domains: Vec<String>,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosDnsSnapshot {
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
+    fn restore_args(&self) -> [Vec<String>; 2] {
+        [
+            macos_set_values_args("-setdnsservers", &self.service, &self.dns_servers),
+            macos_set_values_args("-setsearchdomains", &self.service, &self.search_domains),
+        ]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(service: &str, dns_servers: &[&str], search_domains: &[&str]) -> Self {
+        Self {
+            service: service.to_string(),
+            dns_servers: dns_servers
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            search_domains: search_domains
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_set_values_args(command: &str, service: &str, values: &[String]) -> Vec<String> {
+    let mut args = vec![command.to_string(), service.to_string()];
+    if values.is_empty() {
+        args.push("empty".to_string());
+    } else {
+        args.extend(values.iter().cloned());
+    }
+    args
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_networksetup_values(text: &str, empty_message: &str) -> Result<Vec<String>, String> {
+    let text = text.trim();
+    if text == empty_message {
+        return Ok(Vec::new());
+    }
+    if text.is_empty() || text.starts_with("** Error:") {
+        return Err("networksetup returned no usable resolver state".to_string());
+    }
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+async fn read_macos_networksetup_values(
+    command: &str,
+    service: &str,
+    empty_message: &str,
+) -> Result<Vec<String>, String> {
+    let mut process = tokio::process::Command::new("networksetup");
+    process.args([command, service]);
+    let output = run_cmd(process, TIMEOUT_QUICK).await?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if error.is_empty() {
+            format!("networksetup {command} failed for {service}")
+        } else {
+            format!("networksetup {command} failed for {service}: {error}")
+        });
+    }
+    parse_macos_networksetup_values(&String::from_utf8_lossy(&output.stdout), empty_message)
+}
+
+/// Capture DNS servers and search domains before any macOS mutation. A failed
+/// read is an error; callers must not continue with a destructive/defaulting
+/// operation when the original state is unknown.
+#[cfg(target_os = "macos")]
+pub async fn capture_macos_dns_snapshot(service: &str) -> Result<MacosDnsSnapshot, String> {
+    let dns_servers = read_macos_networksetup_values(
+        "-getdnsservers",
+        service,
+        &format!("There aren't any DNS Servers set on {service}."),
+    )
+    .await?;
+    let search_domains = read_macos_networksetup_values(
+        "-getsearchdomains",
+        service,
+        &format!("There aren't any Search Domains set on {service}."),
+    )
+    .await?;
+    Ok(MacosDnsSnapshot {
+        service: service.to_string(),
+        dns_servers,
+        search_domains,
+    })
+}
+
+/// Restore an exact macOS DNS/search-domain snapshot and read it back. Success
+/// means both commands succeeded and verification matched byte-for-byte after
+/// networksetup's line normalization.
+#[cfg(target_os = "macos")]
+pub async fn restore_macos_dns_snapshot(snapshot: &MacosDnsSnapshot) -> Result<(), String> {
+    for args in snapshot.restore_args() {
+        let mut command = tokio::process::Command::new("networksetup");
+        command.args(&args);
+        let output = run_macos_mutation(command, TIMEOUT_MEDIUM).await?;
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if error.is_empty() {
+                format!("networksetup {} failed", args.join(" "))
+            } else {
+                format!("networksetup {} failed: {error}", args.join(" "))
+            });
+        }
+    }
+
+    let verified = capture_macos_dns_snapshot(snapshot.service()).await?;
+    if &verified == snapshot {
+        Ok(())
+    } else {
+        Err(format!(
+            "DNS/search-domain verification did not match the saved state for {}",
+            snapshot.service()
+        ))
+    }
+}
 
 #[allow(dead_code)]
 const CLOUDFLARE_V6: &str = "2606:4700:4700::1111";
@@ -304,72 +448,36 @@ pub async fn set_dns_servers(
 
 #[cfg(target_os = "macos")]
 async fn set_dns_macos(service: &str, provider: DnsProvider) -> Result<String, String> {
-    if let DnsProvider::NextDns(ref id) = provider {
-        // Check if nextdns CLI is installed
-        let mut check = tokio::process::Command::new("which");
-        check.arg("nextdns");
-        let has_cli = if let Ok(output) = run_cmd(check, TIMEOUT_QUICK).await {
-            output.status.success()
-        } else {
-            false
+    if matches!(provider, DnsProvider::NextDns(_)) {
+        // Do not install, reconfigure, activate, or deactivate a system daemon
+        // from a DNS repair. Those changes cannot be exactly rolled back. Use
+        // the resolver IPs only and leave any pre-existing NextDNS CLI state
+        // untouched.
+        let servers = provider.servers_v4();
+        let mut args: Vec<&str> = vec!["-setdnsservers", service];
+        args.extend_from_slice(servers);
+        let mut cmd = tokio::process::Command::new("networksetup");
+        cmd.args(&args);
+        return match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
+            Ok(output) if output.status.success() => {
+                verify_macos_dns_servers(service, servers).await?;
+                Ok(format!(
+                    "NextDNS resolver IPs set on {} (ND300 did not alter the NextDNS system service)",
+                    service
+                ))
+            }
+            Ok(output) => Err(format!(
+                "Failed to set DNS: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+            Err(error) => Err(error),
         };
-
-        if has_cli {
-            let mut install_cmd = tokio::process::Command::new("nextdns");
-            install_cmd.args(["install", "-config", id, "-report-client-info"]);
-            if let Ok(output) = run_cmd(install_cmd, TIMEOUT_MEDIUM).await {
-                if !output.status.success() {
-                    return Err(format!(
-                        "nextdns install failed: {}",
-                        String::from_utf8_lossy(&output.stderr).trim()
-                    ));
-                }
-            }
-            let mut activate_cmd = tokio::process::Command::new("nextdns");
-            activate_cmd.arg("activate");
-            match run_cmd(activate_cmd, TIMEOUT_MEDIUM).await {
-                Ok(output) if output.status.success() => {
-                    return Ok(format!(
-                        "NextDNS activated with config {} on {}",
-                        id, service
-                    ));
-                }
-                Ok(output) => {
-                    return Err(format!(
-                        "nextdns activate failed: {}",
-                        String::from_utf8_lossy(&output.stderr).trim()
-                    ));
-                }
-                Err(e) => return Err(e),
-            }
-        } else {
-            // No CLI — set DNS IPs directly as fallback (no encryption)
-            let servers = provider.servers_v4();
-            let mut args: Vec<&str> = vec!["-setdnsservers", service];
-            args.extend_from_slice(servers);
-            let mut cmd = tokio::process::Command::new("networksetup");
-            cmd.args(&args);
-            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
-                Ok(output) if output.status.success() => {
-                    return Ok(format!(
-                        "NextDNS IPs set on {} (install nextdns CLI for encrypted DNS: sh -c \"$(curl -sL https://nextdns.io/install)\")",
-                        service
-                    ));
-                }
-                Ok(output) => {
-                    return Err(format!(
-                        "Failed to set DNS: {}",
-                        String::from_utf8_lossy(&output.stderr).trim()
-                    ));
-                }
-                Err(e) => return Err(e),
-            }
-        }
     }
 
     let label = provider.label();
+    let expected_servers = provider.servers_v4().to_vec();
     let mut cmd = tokio::process::Command::new("networksetup");
-    match provider {
+    match &provider {
         DnsProvider::Automatic => {
             cmd.args(["-setdnsservers", service, "empty"]);
         }
@@ -381,13 +489,30 @@ async fn set_dns_macos(service: &str, provider: DnsProvider) -> Result<String, S
         }
     }
 
-    match run_cmd(cmd, TIMEOUT_MEDIUM).await {
-        Ok(output) if output.status.success() => Ok(format!("DNS set to {} on {}", label, service)),
+    match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
+        Ok(output) if output.status.success() => {
+            verify_macos_dns_servers(service, &expected_servers).await?;
+            Ok(format!("DNS set to {} on {}", label, service))
+        }
         Ok(output) => Err(format!(
             "Failed to set DNS: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )),
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn verify_macos_dns_servers(service: &str, expected: &[&str]) -> Result<(), String> {
+    let snapshot = capture_macos_dns_snapshot(service).await?;
+    let expected: Vec<String> = expected.iter().map(|value| (*value).to_string()).collect();
+    if snapshot.dns_servers == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "DNS verification did not match the requested resolver state for {}",
+            service
+        ))
     }
 }
 
@@ -608,4 +733,57 @@ async fn active_nm_connection_for_iface(iface: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn empty_resolver_markers_remain_distinct_from_read_failures() {
+        assert_eq!(
+            parse_macos_networksetup_values(
+                "There aren't any DNS Servers set on Wi-Fi.\n",
+                "There aren't any DNS Servers set on Wi-Fi.",
+            )
+            .unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(
+            parse_macos_networksetup_values("", "There aren't any DNS Servers set on Wi-Fi.",)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn restore_specs_preserve_dns_and_search_domains_exactly() {
+        let snapshot = MacosDnsSnapshot {
+            service: "Studio Wi-Fi".to_string(),
+            dns_servers: vec!["10.0.0.2".to_string(), "10.0.0.3".to_string()],
+            search_domains: vec!["corp.example".to_string(), "lab.example".to_string()],
+        };
+        let args = snapshot.restore_args();
+        assert_eq!(
+            args[0],
+            ["-setdnsservers", "Studio Wi-Fi", "10.0.0.2", "10.0.0.3"]
+        );
+        assert_eq!(
+            args[1],
+            [
+                "-setsearchdomains",
+                "Studio Wi-Fi",
+                "corp.example",
+                "lab.example"
+            ]
+        );
+
+        let automatic = MacosDnsSnapshot {
+            service: "Wi-Fi".to_string(),
+            dns_servers: Vec::new(),
+            search_domains: Vec::new(),
+        };
+        let args = automatic.restore_args();
+        assert_eq!(args[0], ["-setdnsservers", "Wi-Fi", "empty"]);
+        assert_eq!(args[1], ["-setsearchdomains", "Wi-Fi", "empty"]);
+    }
 }

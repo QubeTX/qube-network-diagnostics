@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::speedtest::TestDuration;
 
@@ -187,6 +187,23 @@ pub struct MigrateArgs {
     /// precedence over `--user-profile` for locating the cargo-bin directory.
     #[arg(long = "cargo-home", value_name = "PATH")]
     pub cargo_home: Option<String>,
+
+    /// Installer-declared origin for classifying custom install locations.
+    /// This is an internal installer contract, not a user-facing option.
+    #[arg(long = "install-origin", value_enum, hide = true)]
+    pub install_origin: Option<MigrateInstallOrigin>,
+}
+
+/// Valid installer origins accepted by the hidden migration helper.
+///
+/// Keep these values in lockstep with the four Windows installers and
+/// `actions::update::InstallOrigin::json_id`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrateInstallOrigin {
+    MsiGlobal,
+    MsiCorporate,
+    ExeGlobal,
+    ExeCorporate,
 }
 
 /// SpeedQX Internet Speed Test - QubeTX Developer Tools

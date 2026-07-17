@@ -11,8 +11,8 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **8 core diagnostics**: adapters, interfaces, gateway, DNS, public IP, latency, speed test, port connectivity
 - **25 deep diagnostics** (technician mode): ARP (+ gateway health), routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy (+ PAC/WPAD), VPN, firewall, DNS cache, IPv6 (+ real v6 fetch), MTU (+ path-MTU probe), connection states, real bufferbloat (loaded latency during saturation), reverse DNS, TLS inspection, traffic counters, route path (traceroute analysis), sustained packet loss, NAT/CGNAT analysis, Wi-Fi link quality, DNS resolver benchmark (+ hijack/DNSSEC checks), captive portal detection, clock sync (NTP)
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
-- **Six-provider speed test** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) + M-Lab MSAK (multi-stream) + Apple networkQuality, with bounded N-provider inverse-variance aggregation, minimum-sample floors, modified trimean (Ookla-style), RFC 3550 jitter, and bootstrap confidence intervals ("941 Mbps ±12 Mbps") for technician-grade accuracy. Measures ping, jitter, download, upload, packet loss, stability, and provider divergence.
-- **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and runs a probe-and-retry chain: cargo first when available, cargo-dist installer as universal fallback (curl → wget on macOS/Linux, PowerShell → pwsh on Windows). On Windows it can also upgrade in place via the matching first-class installer (MSI/EXE × Global/Corporate), chosen from an install marker, with SHA-256 verification of the download (refuse-on-mismatch). It cleans up shadowing non-Cargo ND300 installs when migrating to `cargo install nd300`, verifies the new version actually landed, and surfaces per-strategy failures with specific reasons.
+- **Eight-source SpeedQX engine** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) + M-Lab MSAK + Apple networkQuality + CacheFly + Vultr, using Methodology v4 capacity/consensus merging, agreement, confidence intervals, PDV jitter, and RPM. ND300's core diagnostic keeps the shorter Cloudflare + NDT7 run; standalone `speedqx` uses all eight.
+- **Resilient self-update** — `nd300 update` / `speedqx update` checks GitHub for the latest release and tries bounded Cargo installation first. On macOS/Linux, the fallback downloads the exact target archive and required SHA-256 sidecar, verifies and allowlist-extracts only `nd300` and `speedqx`, checks both versions and (on macOS) Apple trust, then replaces the pair transactionally with rollback. Windows keeps its four installer-aware paths (MSI/EXE × Global/Corporate), selected from proven installer registration with a marker/path fallback and SHA-256 verification.
 - **SpeedQX** standalone speed test binary — all 8 providers (Methodology v4: capacity + consensus merge, I² agreement, PDV jitter, RPM) with per-provider breakdown and real-time progress; `--fast` for the quick 3-provider early-stopping run, `--skip-msak`/`--skip-apple` to trim the full run
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
@@ -46,7 +46,7 @@ Four first-class Windows installers are attached to every [release](https://gith
 | **Corporate** EXE | Per-user | No | `%LocalAppData%\Programs\nd300\bin\` | `nd300-x86_64-pc-windows-msvc-corporate-setup.exe` |
 
 - **Corporate** editions install per-user with **no admin prompt** — ideal for locked-down corporate machines where you can't elevate.
-- Each installer writes a small `HKCU\Software\ND300\InstallSource` marker so `nd300 update` knows which installer to re-download for an in-place upgrade (see [Self-Update](#self-update)).
+- Each installer writes a small `HKCU\Software\ND300\InstallSource` marker to help `nd300 update` choose its matching in-place installer. ND300 also proves ownership against the normalized Add/Remove Programs record; a Cargo-path binary or proven registered owner overrides a contradictory stale marker (see [Self-Update](#self-update)).
 - Each installer has a `.sha256` sidecar; `nd300 update` verifies it before running the downloaded installer (refuse-on-mismatch).
 - The cargo-dist PowerShell installer above remains available and installs into Cargo's bin directory.
 
@@ -65,8 +65,10 @@ running, and never anything in your Downloads folder. If removing the other
 edition needs admin rights the installer doesn't have (e.g. a per-user install
 trying to remove a per-machine one), it simply skips that step and reports it —
 it never blocks or fails the install. **This consolidation also runs on a silent
-self-update**, so a routine `nd300 update` quietly leaves you with a single,
-current install. (Under the hood this is the hidden `nd300 migrate-cleanup`
+self-update.** Because it runs inside an active installer transaction, it is
+intentionally file-only: it does not claim to remove the old edition's separate
+Add/Remove Programs record or PATH entry. Use that edition's normal uninstaller
+for full removal. (Under the hood this is the hidden `nd300 migrate-cleanup`
 command, invoked by the installers; you never need to run it by hand.)
 
 ### Cargo
@@ -286,6 +288,28 @@ speedqx --duration 10 --latency-probes 5
 32. Captive Portal Detection
 33. Clock Sync (SNTP offset measurement)
 
+### macOS accuracy notes
+
+ND300 builds one topology view from the default route, current interface flags,
+network-service/hardware-port mappings, and assigned addresses. The active count
+includes usable physical uplinks, not loopback, AWDL/LLW, dormant tunnels, or
+link-local-only devices. If a VPN owns the default route, the logical tunnel and
+underlying physical uplink are described separately.
+
+Core mode never waits for optional Wi-Fi radio metadata. Technician mode uses a
+bounded `system_profiler` query, with a text fallback for older supported macOS
+versions; it reads only the connected network and treats a privacy-redacted SSID
+as unavailable. VPN reporting correlates macOS VPN configuration, network state,
+addresses, and routes rather than calling every `utun` device a VPN. IPv6 ULA is
+reported separately, and `dual_stack` means both IPv4 and IPv6 connectivity were
+actually verified.
+
+TLS inspection reports **clear**, **detected**, or **inconclusive** evidence and
+populates the issuer only after a bounded Rust TLS handshake. DNSSEC is reported
+as validating only when a valid signed control resolves and the deliberately
+invalid control does not. If macOS suppresses protocol counters, that section is
+omitted instead of presenting unknown values as zero.
+
 ## Fix Flow (`nd300 fix` / `nd300 -f`)
 
 The fix flow runs a **diagnostic-driven triage loop**: it tests the network, looks at what actually failed, applies only the recovery actions that target those specific failures, re-tests, and repeats. Requires elevated privileges (`sudo` on macOS/Linux, Administrator on Windows).
@@ -325,7 +349,7 @@ Actions are tried by evidence and risk: cheap first, reversible first, and only 
 | Medium / Low | Renew DHCP lease | Gateway, public IP, adapters, interfaces |
 | Medium / Medium | Temporarily disable consumer VPNs | Public IP, DNS; interactive confirmation required |
 | Expensive / Medium | Restart the network adapter | Adapters, interfaces, gateway, DNS, public IP |
-| Expensive / **High** | Deep stack reset (Winsock / TCP-IP / IPv6 on Windows; recreate network service on macOS; recreate NetworkManager profile on Linux) | Last-resort recovery |
+| Expensive / **High** | Deep stack reset (Winsock / TCP-IP / IPv6 on Windows; gated network-service cycle on macOS; recreate NetworkManager profile on Linux) | Last-resort recovery |
 
 Enterprise VPNs (Cisco AnyConnect, Zscaler, Palo Alto / GlobalProtect, F5, Check Point, Juniper) are **never** auto-disabled. Consumer VPN disable is also skipped in JSON or non-interactive mode, even with `--yes`, because the tool cannot safely guide re-enable/recovery steps there. Other medium-risk actions such as DHCP reset, service restart, adapter restart, and public-DNS changes are skipped in JSON or non-interactive mode unless `--yes` can safely auto-confirm the medium-risk prompt. High-risk actions are never auto-confirmed.
 
@@ -354,6 +378,28 @@ Continue? Type 'y' to proceed, anything else to skip:
 
 `--yes` does **not** bypass high-risk prompts — they always require an explicit `y`. Anything else (including a blank Enter) is treated as N. In `--json` / non-interactive contexts, high-risk actions are skipped, not auto-applied, with a clear marker in the report.
 
+#### macOS deep-reset safety
+
+ND300 no longer deletes and recreates a macOS network service. That older design
+could lose service identity/order and only partially restore Wi-Fi, DNS, search,
+proxy, or addressing state when any command failed. The deletion path, Wi-Fi
+password retrieval, and SSID scanning have been removed.
+
+The replacement maps the exact enabled physical service and cycles it off/on. It
+registers re-enable before mutation, preserves DNS servers and search domains
+exactly, and requires the service to be enabled with the expected physical route
+and reachability before the restore is considered complete. DHCP renewal likewise
+runs only when that service is already configured for DHCP; Manual, BootP,
+static, disabled, virtual, missing, or ambiguous services are not changed.
+
+The macOS service cycle is **fail-closed and unavailable in this release build
+until its destructive acceptance test passes under an independent,
+offline-capable watchdog on a disposable Mac VM or sacrificial service**. A Mac
+whose control session depends on the Wi-Fi being cycled is not a safe acceptance
+host: losing Wi-Fi would also lose the recovery operator. Until the gate is
+deliberately enabled after that proof, ND300 gives safe lower-risk/manual guidance
+and does not cycle the service.
+
 ### Hard-block detection
 
 Some failure shapes can't be auto-fixed. The loop short-circuits cleanly with guidance instead of thrashing:
@@ -373,6 +419,12 @@ Every run produces a Markdown report at `~/Downloads/nd300-fix-report-YYYYMMDD-H
 - **Environment** — OS, version, elevation status, VPNs detected.
 - **What to try next** — concrete suggestions when the fix didn't fully succeed (restart router, contact ISP, check for driver updates, etc.).
 
+When the command is elevated through `sudo`, ND300 validates the invoking user
+from numeric account data and writes the report to that user's Downloads folder,
+not `/var/root`. Reports are created atomically with private `0600` permissions
+and correct ownership. Restore operations run newest-first after Ctrl-C, SIGTERM,
+or SIGHUP, and `reverted` is reported only after state verification.
+
 In JSON mode (`nd300 fix --json`), the schema reports the same data as `outcome`, `iterations`, `applied_actions[]`, `remaining_failures[]`, `hard_block`, and `report_path`.
 
 ## DNS Configuration (`nd300 dns`)
@@ -391,16 +443,32 @@ In JSON mode (`nd300 fix --json`), the schema reports the same data as `outcome`
 - **Linux** — DNS-over-TLS via `systemd-resolved` (falls back to plain IPs via `nmcli`)
 - **macOS** — NextDNS CLI client (`nextdns install/activate`), plain IPs if CLI not installed
 
-After setting DNS, the tool verifies both DNS resolution and HTTP connectivity. If verification fails, it automatically reverts to DHCP and reports the result. On success, full diagnostics run to confirm network health.
+After setting DNS, the tool verifies both DNS resolution and HTTP connectivity.
+On macOS it first captures the exact prior DNS servers **and search domains**;
+if capture fails, no change is made, and if verification fails the exact snapshot
+is restored and read back before `reverted: true` is reported. Windows/Linux
+retain their automatic-DNS rollback for a failed provider change. On success,
+full diagnostics run to confirm network health.
 
 ## Man Pages (Linux/macOS)
 
 Man pages are generated at build time and included in release archives. To install after building from source:
 
+macOS (user-writable, no `sudo` or `mandb`):
+
 ```sh
-sudo cp man/nd300.1 /usr/share/man/man1/
-sudo cp man/speedqx.1 /usr/share/man/man1/
-sudo mandb
+mkdir -p "$HOME/.local/share/man/man1"
+cp man/nd300.1 man/speedqx.1 "$HOME/.local/share/man/man1/"
+export MANPATH="$HOME/.local/share/man:${MANPATH:-}"
+```
+
+Add the `MANPATH` export to `~/.zprofile` if you want it in every new shell.
+
+Linux system-wide:
+
+```sh
+sudo install -Dm644 man/nd300.1 /usr/local/share/man/man1/nd300.1
+sudo install -Dm644 man/speedqx.1 /usr/local/share/man/man1/speedqx.1
 ```
 
 Then use `man nd300` or `man speedqx` to view documentation.
@@ -426,24 +494,54 @@ speedqx update
 speedqx --update
 ```
 
-The updater runs a **probe-and-retry chain** so missing tools don't block the update:
+The updater runs a **probe-and-retry chain** so a missing optional tool does not
+block a safe fallback:
 
 1. Checks the latest release on GitHub. If you're already on it, exits 0 with no action.
-2. Tries `cargo install nd300 --force` first when `cargo --version` succeeds on your system.
-3. If Cargo succeeds while the currently running ND300 copy lives outside Cargo's bin directory, removes the old installer-managed `nd300`/`speedqx` layout so the new Cargo install is not shadowed on `PATH`.
-4. If Cargo reports that an existing `nd300` or `speedqx` binary is blocking installation, runs ND300's uninstall cleanup for the current install and retries `cargo install nd300 --force`.
-5. After a successful `cargo install`, re-runs `nd300 --version` to confirm the new version actually landed. crates.io can briefly serve the old version right after a release (publish lag), or a different `nd300` may be earlier on your `PATH`; if the running binary didn't change, the updater falls through to the prebuilt installer (which always carries the latest version) instead of looping "update available" forever.
-6. If cargo isn't available (or still fails), falls through to the cargo-dist installer for your platform — `curl | sh` then `wget | sh` on macOS/Linux, `powershell.exe` then `pwsh.exe` on Windows. The installer URL uses GitHub's `releases/latest` redirect, so it always resolves to the newest release.
-7. Whichever strategy succeeds first wins; the chain stops there.
-8. If every strategy fails, both pretty and `--json` output show a per-attempt diagnostic block listing what was tried and why each failed, so you can fix the environment manually.
+2. Tries a time-bounded `cargo install nd300 --force` when Cargo is available,
+   running it as the validated invoking user when `sudo` was used. It does **not**
+   run `rustup update` or otherwise change the Rust toolchain.
+3. Verifies the explicit user's `~/.cargo/bin/nd300` and `speedqx` both report the
+   exact requested version before considering Cargo successful or cleaning a
+   validated legacy origin.
+4. On macOS/Linux, a Cargo failure falls through to the native archive strategy:
+   fetch the exact release tag and compile-target `.tar.xz` plus its required
+   `.sha256` sidecar with time and size limits; verify SHA-256 in ND300 itself;
+   and allowlist-extract only the two expected regular files. Absolute paths,
+   traversal, symlinks, hardlinks, duplicate entries, and unexpected layouts are
+   rejected.
+5. Executes both staged programs with `--version`. On macOS it additionally
+   requires the pinned Developer ID certificate, Team ID `M9D5379H93`, identifiers
+   `com.qubetx.nd300` and `com.qubetx.speedqx`, hardened runtime, and timestamp.
+6. Atomically replaces both binaries with backups. Any failure restores both;
+   old and new ND300/SpeedQX versions are never intentionally mixed.
+7. On Windows, a Cargo-bin path wins over any stale installer marker. Otherwise
+   ND300 proves a matching MSI/Inno owner from Add/Remove Programs and its
+   normalized install location before selecting one of the four installer-aware
+   update paths. The marker is used only as a compatible fallback.
+8. If every strategy fails, pretty and `--json` output show what was tried and
+   why each attempt failed.
+
+Unix uninstall is origin-aware too. Cargo-managed installs use
+`cargo uninstall nd300`; invocation through an ordinary symlink removes only the
+symlink; a cargo-dist layout requires its validated receipt. ND300 refuses to
+modify unknown, local-build, Homebrew/MacPorts, or other package-manager-owned
+locations and prints manual guidance instead.
 
 ### Windows installer-aware self-update
 
-If you installed via one of the four first-class Windows installers (MSI/EXE × Global/Corporate — see [Installation](#windows-installers-msi--exe-global--corporate)), `nd300 update` reads the `HKCU\Software\ND300\InstallSource` marker that installer wrote and downloads the **matching** installer for an in-place upgrade — rather than switching you to a different installer/format (which would leave duplicate Add/Remove Programs entries). If no marker is found, it falls back to detecting the install from the binary's path; cargo / PowerShell-installer users get the cargo-first chain above.
+If you installed via one of the four first-class Windows installers (MSI/EXE × Global/Corporate — see [Installation](#windows-installers-msi--exe-global--corporate)), `nd300 update` matches the running executable to its normalized HKCU/HKLM Add/Remove Programs record and downloads the **matching** installer for an in-place upgrade — rather than switching you to a different installer/format. The `HKCU\Software\ND300\InstallSource` marker and known install path are fallbacks, not unconditional authority. A binary in `.cargo\bin`, or a single proven registered owner, overrides a contradictory stale marker.
 
 Before running a downloaded MSI/EXE, the updater fetches the asset's `.sha256` sidecar and verifies the download against it (refuse-on-mismatch) — defending against a corrupted download or a network MITM (corporate TLS-interception proxies, hostile WiFi). After the installer exits, it re-runs `--version` to confirm the file replacement actually took effect (and surfaces the reboot-required case honestly if Windows scheduled a deferred replace).
 
-**Consolidation runs on a silent self-update too.** The Windows installers re-run by `nd300 update` carry the same two clean-up options (remove an older Cargo copy, remove the other edition) — both **default on**, and the silent self-update path (`msiexec /passive`, Inno `/SILENT`) keeps them on, so a routine update leaves you with exactly one current install/edition. Anything that would need admin rights the update doesn't have is skipped and reported, never failing the update.
+**Consolidation runs on a silent self-update too.** The Windows installers re-run by `nd300 update` carry the same two clean-up options (remove an older Cargo copy, remove the other edition) — both **default on**, and the silent self-update path (`msiexec /passive`, Inno `/SILENT`) keeps them on. This removes the old runnable binary pair when permissions allow; because the cleanup is intentionally file-only inside the active installer transaction, the old edition's separate Add/Remove Programs or PATH metadata can remain until that edition's normal uninstaller is used. Anything that needs admin rights the update doesn't have is skipped and reported, never failing the update.
+
+Windows uninstall is ownership-aware as well. For a proven MSI/Inno install,
+`nd300 uninstall` starts that registered uninstaller directly from a validated
+product code or uninstaller path—never a shell-expanded registry command—so the
+binary pair, Add/Remove Programs registration, correct user/system PATH entry,
+and installer marker are removed together. Cargo and portable copies keep the
+strict two-binary allowlist and never remove Cargo, Rustup, or the Cargo PATH.
 
 Versioning is prerelease-aware: a prerelease of an upcoming version is treated as newer than the previous stable patch, and a stable release is newer than its own prerelease. GitHub's unauthenticated rate-limit case (60 requests/hour per IP) is named explicitly so you know to just wait.
 
@@ -457,8 +555,8 @@ In `--json` mode, the response includes `"strategy"` (the precise variant that r
 {
   "action": "update",
   "success": true,
-  "current_version": "3.0.11",
-  "latest_version": "3.1.0",
+  "current_version": "3.5.2",
+  "latest_version": "3.6.0",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",
@@ -466,22 +564,30 @@ In `--json` mode, the response includes `"strategy"` (the precise variant that r
 }
 ```
 
-The precise `"strategy"` values are `cargo`, `installer_curl`, `installer_wget`, `installer_powershell`, `installer_pwsh`, `msi_global`, `msi_corporate`, `exe_global`, and `exe_corporate`.
+The precise `"strategy"` values are `cargo`, `unix_archive`,
+`installer_powershell`, `installer_pwsh`, `msi_global`, `msi_corporate`,
+`exe_global`, and `exe_corporate`.
 
 ## Speed Test Methodology
 
-The speed test uses a technician-grade accuracy pipeline matching the [SpeedQX web speed test](https://speedqx.com/how-it-works):
+The CLI implements [SpeedQX Methodology v4](./METHODOLOGY.md), byte-identical
+with the website/app specification and protected by shared golden vectors:
 
-- **Modified trimean** (Ookla-style): `(P10 + 8*P50 + P90) / 10` for robust central tendency
-- **30% slow-start discard**: eliminates TCP ramp-up contamination
-- **IQR outlier filtering**: removes transient congestion and measurement artifacts
-- **Winsorized cross-validation**: catches edge cases where IQR filtering is too aggressive
-- **Upload-specific pipeline**: keeps fastest 50% of post-warmup samples (following Speedtest.net methodology)
-- **RFC 3550 jitter**: exponentially weighted moving average, the standard used by VoIP and real-time media
-- **Bounded inverse-variance weighted aggregation**: combines every successful provider while preventing any single provider from dominating the result
-- **Provider divergence detection**: flags when the full provider spread differs by >30%, indicating possible throttling or QoS
+- Dense warmed latency sampling and adaptive throughput transfers.
+- Plateau-based warm-up removal, IQR filtering, modified trimean, and a
+  Hodges–Lehmann stability cross-check per provider.
+- Circular block bootstrap with BCa 95% intervals for autocorrelated samples.
+- A capability-aware **capacity** headline plus conservative all-provider
+  **consensus**, random-effects heterogeneity, HKSJ confidence intervals, and a
+  70% per-provider weight cap.
+- I² agreement bands, PDV jitter, bufferbloat deltas, approximate RPM, and honest
+  provider availability/exclusion fields.
+- An anytime-valid empirical-Bernstein confidence sequence for `--fast`, avoiding
+  optional-stopping bias.
 
-For a full technical breakdown, see the [SpeedQX Technical Report](https://speedqx.com/how-it-works).
+For the full equations, thresholds, provider registry, and parity contract, see
+[METHODOLOGY.md](./METHODOLOGY.md) or the
+[SpeedQX technical report](https://speedqx.com/how-it-works).
 
 ## License
 

@@ -45,6 +45,21 @@ pub async fn run(config: &Config) -> i32 {
     // Detect service name (macOS needs this, other platforms use iface)
     let service_name = super::fix::stages::detect_service_name(&iface).await;
 
+    #[cfg(target_os = "macos")]
+    let macos_dns_snapshot = match fix_dns::capture_macos_dns_snapshot(&service_name).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            print_step_fail(
+                "Refused to change DNS",
+                &format!(
+                    "Could not capture exact DNS servers and search domains for rollback: {error}"
+                ),
+                config,
+            );
+            return 2;
+        }
+    };
+
     println!("  Interface: {}", color::cyan(&iface, config),);
     println!();
 
@@ -101,6 +116,18 @@ pub async fn run(config: &Config) -> i32 {
         Ok(msg) => print_step_ok(msg, config),
         Err(msg) => {
             print_step_fail("Failed to set DNS servers", msg, config);
+            #[cfg(target_os = "macos")]
+            match fix_dns::restore_macos_dns_snapshot(&macos_dns_snapshot).await {
+                Ok(()) => print_step_ok(
+                    "Restored exact prior DNS/search-domain state after the failed command",
+                    config,
+                ),
+                Err(error) => print_step_fail(
+                    "Failed to restore prior DNS/search-domain state",
+                    &error,
+                    config,
+                ),
+            }
             return 2;
         }
     }
@@ -144,8 +171,15 @@ pub async fn run(config: &Config) -> i32 {
         return 0; // fall through to diagnostics
     }
 
-    // Verification failed — auto-revert if not Automatic
-    if provider != DnsProvider::Automatic {
+    // Verification failed. macOS always has an exact captured snapshot, so
+    // restore it even when the attempted operation was "Automatic" (which may
+    // have replaced custom DNS/search domains). Other platforms retain the
+    // prior no-op behavior for an Automatic attempt.
+    #[cfg(target_os = "macos")]
+    let should_revert = true;
+    #[cfg(not(target_os = "macos"))]
+    let should_revert = provider != DnsProvider::Automatic;
+    if should_revert {
         println!(
             "  {} {}",
             color::yellow(super::fix::warn_icon(config), config),
@@ -170,16 +204,14 @@ pub async fn run(config: &Config) -> i32 {
             let _ = super::fix::cmd::run_cmd(restart, super::fix::cmd::TIMEOUT_MEDIUM).await;
         }
 
+        // Restore the exact previous macOS DNS/search-domain state. Other
+        // platforms retain their existing automatic-DNS rollback behavior.
+        let spinner = create_spinner("Restoring previous DNS configuration...");
         #[cfg(target_os = "macos")]
-        if matches!(provider, DnsProvider::NextDns(_)) {
-            // Deactivate NextDNS CLI if installed
-            let mut deactivate = tokio::process::Command::new("nextdns");
-            deactivate.arg("deactivate");
-            let _ = super::fix::cmd::run_cmd(deactivate, super::fix::cmd::TIMEOUT_MEDIUM).await;
-        }
-
-        // Revert to DHCP
-        let spinner = create_spinner("Reverting to automatic DNS...");
+        let revert = fix_dns::restore_macos_dns_snapshot(&macos_dns_snapshot)
+            .await
+            .map(|()| format!("Restored exact DNS/search-domain state on {service_name}"));
+        #[cfg(not(target_os = "macos"))]
         let revert = fix_dns::set_dns_servers(&iface, &service_name, DnsProvider::Automatic).await;
         spinner.finish_and_clear();
 
@@ -207,7 +239,10 @@ pub async fn run(config: &Config) -> i32 {
             println!(
                 "  {} {}",
                 color::yellow(super::fix::warn_icon(config), config),
-                color::yellow("Reverted to automatic DNS — running diagnostics...", config,),
+                color::yellow(
+                    "Restored the previous DNS state — running diagnostics...",
+                    config,
+                ),
             );
             println!();
             return 0;
@@ -259,6 +294,26 @@ async fn run_json(config: &Config) -> i32 {
 
     let service_name = super::fix::stages::detect_service_name(&iface).await;
 
+    #[cfg(target_os = "macos")]
+    let macos_dns_snapshot = match fix_dns::capture_macos_dns_snapshot(&service_name).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let output = serde_json::json!({
+                "action": "dns",
+                "interface": iface,
+                "success": false,
+                "reverted": false,
+                "error": "resolver_snapshot_failed",
+                "message": format!("Refused to change DNS because exact rollback state could not be captured: {error}"),
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
+            );
+            return 2;
+        }
+    };
+
     // Test reachability
     let (cf_ok, google_ok) = fix_dns::test_dns_reachability().await;
     let provider =
@@ -273,12 +328,28 @@ async fn run_json(config: &Config) -> i32 {
     };
 
     if !set_ok {
+        #[cfg(target_os = "macos")]
+        let rollback = fix_dns::restore_macos_dns_snapshot(&macos_dns_snapshot).await;
+        #[cfg(target_os = "macos")]
+        let (reverted, rollback_error) = match rollback {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(error)),
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (reverted, rollback_error): (bool, Option<String>) = (false, None);
         let output = serde_json::json!({
             "action": "dns",
             "interface": iface,
             "provider": provider.label(),
             "success": false,
-            "message": set_msg,
+            "reverted": reverted,
+            "message": if let Some(error) = rollback_error {
+                format!("{set_msg}; exact DNS rollback also failed: {error}")
+            } else if reverted {
+                format!("{set_msg}; exact prior DNS/search-domain state restored")
+            } else {
+                set_msg
+            },
         });
         println!(
             "{}",
@@ -301,11 +372,21 @@ async fn run_json(config: &Config) -> i32 {
 
     // Auto-revert on failure
     let mut reverted = false;
+    let mut revert_error = None;
     if !verified {
-        let _ = fix_dns::set_dns_servers(&iface, &service_name, DnsProvider::Automatic).await;
+        #[cfg(target_os = "macos")]
+        let restore_result = fix_dns::restore_macos_dns_snapshot(&macos_dns_snapshot).await;
+        #[cfg(not(target_os = "macos"))]
+        let restore_result =
+            fix_dns::set_dns_servers(&iface, &service_name, DnsProvider::Automatic)
+                .await
+                .map(|_| ());
+        match restore_result {
+            Ok(()) => reverted = true,
+            Err(error) => revert_error = Some(error),
+        }
         let _ = flush_dns_platform().await;
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        reverted = true;
     }
 
     let output = serde_json::json!({
@@ -314,7 +395,13 @@ async fn run_json(config: &Config) -> i32 {
         "provider": provider.label(),
         "success": verified,
         "reverted": reverted,
-        "message": if verified { set_msg } else { "Verification failed — reverted to DHCP".to_string() },
+        "message": if verified {
+            set_msg
+        } else if let Some(error) = revert_error {
+            format!("Verification failed and exact DNS rollback failed: {error}")
+        } else {
+            "Verification failed — restored the exact previous DNS/search-domain state".to_string()
+        },
     });
     println!(
         "{}",

@@ -30,6 +30,9 @@ const MODULE_BUDGET: Duration = Duration::from_secs(20);
 
 /// Deliberately-bogus DNSSEC zone maintained for validation testing.
 const DNSSEC_BOGUS_DOMAIN: &str = "dnssec-failed.org";
+/// A broadly available, DNSSEC-signed control. A bogus-zone failure means
+/// nothing if this valid signed zone cannot resolve at the same time.
+const DNSSEC_VALID_DOMAIN: &str = "cloudflare.com";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolverTiming {
@@ -60,23 +63,19 @@ pub struct DnsBenchmark {
 }
 
 pub async fn collect() -> Option<DnsBenchmark> {
-    tokio::time::timeout(MODULE_BUDGET, collect_inner())
-        .await
-        .unwrap_or_default()
+    collect_with_budget(MODULE_BUDGET).await
 }
 
-async fn collect_inner() -> Option<DnsBenchmark> {
+async fn collect_with_budget(budget: Duration) -> Option<DnsBenchmark> {
+    let deadline = tokio::time::Instant::now() + budget;
+
     // Benchmark all resolver chains concurrently.
-    let mut chains = Vec::new();
-    chains.push(tokio::spawn(benchmark_system()));
+    let mut chains = tokio::task::JoinSet::new();
+    chains.spawn(benchmark_system());
     for (name, server) in PUBLIC_RESOLVERS {
-        chains.push(tokio::spawn(benchmark_public(name, server)));
+        chains.spawn(benchmark_public(name, server));
     }
-    let resolvers: Vec<ResolverTiming> = futures_util::future::join_all(chains)
-        .await
-        .into_iter()
-        .flatten()
-        .collect();
+    let resolvers = join_before_deadline(chains, deadline).await?;
 
     // Control: did the system resolver resolve anything at all? If DNS is
     // dead the core DNS check already failed — skip this section.
@@ -87,19 +86,72 @@ async fn collect_inner() -> Option<DnsBenchmark> {
         return None;
     }
 
-    // Integrity probes (system resolver).
-    let hijack_detected = Some(hijack_probe().await);
-    let bogus_resolved =
-        util::lookup_host_timeout(format!("{}:443", DNSSEC_BOGUS_DOMAIN), util::RESOLVE)
-            .await
-            .is_some_and(|addrs| !addrs.is_empty());
-    let dnssec_validating = Some(!bogus_resolved);
+    // Integrity probes (system resolver). The same valid signed control gates
+    // both claims: a timeout or resolver outage is inconclusive, not evidence
+    // that NXDOMAIN was preserved or that DNSSEC validation occurred.
+    let integrity = async {
+        let random_domain = random_hijack_domain();
+        let (valid_control, bogus_zone, random_label) = tokio::join!(
+            resolves(DNSSEC_VALID_DOMAIN),
+            resolves(DNSSEC_BOGUS_DOMAIN),
+            resolves(&random_domain),
+        );
+        (
+            hijack_evidence(valid_control, random_label),
+            dnssec_evidence(valid_control, bogus_zone),
+        )
+    };
+    let (hijack_detected, dnssec_validating) =
+        tokio::time::timeout_at(deadline, integrity).await.ok()?;
 
     Some(build_benchmark(
         resolvers,
         hijack_detected,
         dnssec_validating,
     ))
+}
+
+async fn join_before_deadline<T: 'static>(
+    mut tasks: tokio::task::JoinSet<T>,
+    deadline: tokio::time::Instant,
+) -> Option<Vec<T>> {
+    let mut values = Vec::new();
+    while !tasks.is_empty() {
+        match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+            Ok(Some(Ok(value))) => values.push(value),
+            // A single failed worker is equivalent to that resolver being
+            // unavailable. Preserve the other measurements.
+            Ok(Some(Err(_))) => {}
+            Ok(None) => break,
+            Err(_) => {
+                // JoinHandle/JoinSet drops detach work unless it is explicitly
+                // aborted. Abort and reap every resolver chain before the
+                // module returns so `dig`/`nslookup` cannot outlive the cap.
+                tasks.abort_all();
+                while tasks.join_next().await.is_some() {}
+                return None;
+            }
+        }
+    }
+    Some(values)
+}
+
+async fn resolves(domain: &str) -> bool {
+    util::lookup_host_timeout(format!("{domain}:443"), util::RESOLVE)
+        .await
+        .is_some_and(|addrs| !addrs.is_empty())
+}
+
+fn hijack_evidence(valid_control_resolved: bool, random_label_resolved: bool) -> Option<bool> {
+    valid_control_resolved.then_some(random_label_resolved)
+}
+
+fn dnssec_evidence(valid_signed_resolved: bool, bogus_signed_resolved: bool) -> Option<bool> {
+    if !valid_signed_resolved {
+        None
+    } else {
+        Some(!bogus_signed_resolved)
+    }
 }
 
 /// Pure assembly + verdict — unit-testable without a network.
@@ -130,6 +182,7 @@ fn build_benchmark(
         (Some(sys), Some((_, fast))) if sys > 2.0 * fast && (sys - fast) > 50.0
     );
 
+    let integrity_inconclusive = hijack_detected.is_none() || dnssec_validating.is_none();
     let (assessment, level) = if hijack_detected == Some(true) {
         (
             "DNS hijack detected: non-existent domains resolve — the resolver is rewriting NXDOMAIN (typically ISP ad redirection)",
@@ -145,8 +198,16 @@ fn build_benchmark(
             "System resolver is much slower than public alternatives — consider changing DNS servers",
             "warn",
         )
+    } else if integrity_inconclusive {
+        (
+            "Resolver performance was measured, but one or more DNS integrity checks were inconclusive",
+            "warn",
+        )
     } else {
-        ("Resolver is fast and honest", "ok")
+        (
+            "Resolver integrity checks passed: NXDOMAIN was preserved and DNSSEC validation was confirmed",
+            "ok",
+        )
     };
 
     DnsBenchmark {
@@ -277,7 +338,7 @@ fn parse_dig_query_time(text: &str) -> Option<f64> {
 /// resolver wildcards NXDOMAIN. The label is derived from time + pid (no
 /// rand dependency); collisions with a real domain are practically
 /// impossible.
-async fn hijack_probe() -> bool {
+fn random_hijack_domain() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos() as u64 + d.as_secs())
@@ -285,11 +346,7 @@ async fn hijack_probe() -> bool {
     let mixed = nanos
         .wrapping_mul(6364136223846793005)
         .wrapping_add(std::process::id() as u64);
-    let label = format!("nd300-{:016x}.com:443", mixed);
-
-    util::lookup_host_timeout(label, util::RESOLVE)
-        .await
-        .is_some_and(|addrs| !addrs.is_empty())
+    format!("nd300-{mixed:016x}.com")
 }
 
 #[cfg(test)]
@@ -312,6 +369,67 @@ mod tests {
             "example.com. 300 IN A 93.184.216.34\n;; Query time: 23 msec\n;; SERVER: 1.1.1.1#53";
         assert_eq!(parse_dig_query_time(out), Some(23.0));
         assert_eq!(parse_dig_query_time("no stats here"), None);
+    }
+
+    #[test]
+    fn dnssec_requires_a_good_signed_control() {
+        assert_eq!(dnssec_evidence(true, false), Some(true));
+        assert_eq!(dnssec_evidence(true, true), Some(false));
+        assert_eq!(dnssec_evidence(false, false), None);
+    }
+
+    #[test]
+    fn hijack_claim_requires_a_good_control() {
+        assert_eq!(hijack_evidence(true, false), Some(false));
+        assert_eq!(hijack_evidence(true, true), Some(true));
+        assert_eq!(hijack_evidence(false, false), None);
+        assert_eq!(hijack_evidence(false, true), None);
+    }
+
+    #[test]
+    fn inconclusive_integrity_never_claims_honesty() {
+        for (hijack, dnssec) in [(None, Some(true)), (Some(false), None), (None, None)] {
+            let b = build_benchmark(
+                vec![timing("System", "system", Some(20.0), 3)],
+                hijack,
+                dnssec,
+            );
+            assert_eq!(b.level, "warn");
+            assert!(b.assessment.contains("inconclusive"));
+            assert!(!b.assessment.to_ascii_lowercase().contains("honest"));
+        }
+    }
+
+    #[tokio::test]
+    async fn module_deadline_aborts_and_reaps_spawned_work() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct Dropped(Arc<AtomicUsize>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..4 {
+            let dropped = dropped.clone();
+            tasks.spawn(async move {
+                let _guard = Dropped(dropped);
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                1usize
+            });
+        }
+
+        let result = join_before_deadline(
+            tasks,
+            tokio::time::Instant::now() + Duration::from_millis(20),
+        )
+        .await;
+        assert!(result.is_none());
+        assert_eq!(dropped.load(Ordering::SeqCst), 4);
     }
 
     #[test]

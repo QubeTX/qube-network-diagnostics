@@ -1,5 +1,33 @@
+#[cfg(target_os = "linux")]
+use super::cmd::run_owned_mutation;
 #[allow(unused_imports)]
 use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
+#[cfg(any(windows, target_os = "linux"))]
+use super::cmd::{run_owned_mutation_pair, MutationPairOutput};
+
+#[cfg(any(windows, target_os = "linux"))]
+fn mutation_failure(result: &Result<std::process::Output, String>) -> Option<String> {
+    match result {
+        Ok(output) if output.status.success() => None,
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Some(if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("command exited with status {}", output.status)
+            })
+        }
+        Err(error) => Some(error.clone()),
+    }
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn require_inverse(pair: &MutationPairOutput, label: &str) -> Result<(), String> {
+    mutation_failure(&pair.inverse).map_or(Ok(()), |error| Err(format!("{label}: {error}")))
+}
 
 /// List active network adapters — all platforms.
 #[cfg(windows)]
@@ -81,143 +109,61 @@ pub async fn list_active_adapters() -> Vec<String> {
 /// Restart a network adapter — all platforms.
 #[cfg(windows)]
 pub async fn restart_adapter(name: &str) -> Result<String, String> {
-    // Disable
     let mut disable_cmd = tokio::process::Command::new("netsh");
     disable_cmd.args(["interface", "set", "interface", name, "disabled"]);
-    let disable = run_cmd(disable_cmd, TIMEOUT_SLOW).await;
-
-    match disable {
-        Ok(output) if !output.status.success() => {
-            return Err(format!(
-                "Failed to disable {}: {}",
-                name,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        Err(e) => return Err(e),
-        _ => {}
-    }
-
-    // Wait for the adapter to fully disable
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    // Re-enable
     let mut enable_cmd = tokio::process::Command::new("netsh");
     enable_cmd.args(["interface", "set", "interface", name, "enabled"]);
-    match run_cmd(enable_cmd, TIMEOUT_SLOW).await {
-        Ok(output) if output.status.success() => Ok(format!("{} restarted", name)),
-        Ok(output) => Err(format!(
-            "Failed to re-enable {}: {}",
-            name,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
-        Err(e) => Err(e),
+    let pair = run_owned_mutation_pair(
+        disable_cmd,
+        TIMEOUT_SLOW,
+        std::time::Duration::from_secs(3),
+        enable_cmd,
+        TIMEOUT_SLOW,
+    )
+    .await?;
+
+    require_inverse(&pair, &format!("Failed to re-enable {name}"))?;
+    if let Some(error) = mutation_failure(&pair.first) {
+        Err(format!(
+            "Failed to disable {name}: {error}; conservative re-enable completed"
+        ))
+    } else {
+        Ok(format!("{} restarted", name))
     }
 }
 
 #[cfg(target_os = "macos")]
 pub async fn restart_adapter(name_and_device: &str) -> Result<String, String> {
-    // name_and_device is "HardwarePort:device" e.g. "Wi-Fi:en0"
-    let parts: Vec<&str> = name_and_device.splitn(2, ':').collect();
-    if parts.len() != 2 {
-        return Err(format!("Invalid adapter format: {}", name_and_device));
-    }
-    let name = parts[0];
-    let device = parts[1];
-
-    let is_wifi = name.to_lowercase().contains("wi-fi") || name.to_lowercase().contains("airport");
-
-    if is_wifi {
-        // Soft toggle via networksetup
-        let mut off_cmd = tokio::process::Command::new("networksetup");
-        off_cmd.args(["-setairportpower", device, "off"]);
-        let off = run_cmd(off_cmd, TIMEOUT_MEDIUM).await;
-
-        if let Ok(output) = &off {
-            if !output.status.success() {
-                return Err(format!(
-                    "Failed to disable Wi-Fi: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
-        }
-
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-        let mut on_cmd = tokio::process::Command::new("networksetup");
-        on_cmd.args(["-setairportpower", device, "on"]);
-        match run_cmd(on_cmd, TIMEOUT_MEDIUM).await {
-            Ok(output) if output.status.success() => Ok(format!("{} restarted", name)),
-            Ok(output) => Err(format!(
-                "Failed to re-enable Wi-Fi: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )),
-            Err(e) => Err(e),
-        }
-    } else {
-        // Hard toggle via ifconfig
-        let mut down_cmd = tokio::process::Command::new("ifconfig");
-        down_cmd.args([device, "down"]);
-        let down = run_cmd(down_cmd, TIMEOUT_MEDIUM).await;
-
-        if let Ok(output) = &down {
-            if !output.status.success() {
-                return Err(format!(
-                    "Failed to disable {}: {}",
-                    name,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
-        }
-
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-        let mut up_cmd = tokio::process::Command::new("ifconfig");
-        up_cmd.args([device, "up"]);
-        match run_cmd(up_cmd, TIMEOUT_MEDIUM).await {
-            Ok(output) if output.status.success() => Ok(format!("{} restarted", name)),
-            Ok(output) => Err(format!(
-                "Failed to re-enable {}: {}",
-                name,
-                String::from_utf8_lossy(&output.stderr).trim()
-            )),
-            Err(e) => Err(e),
-        }
-    }
+    // This legacy helper cannot participate in the interrupt restore registry.
+    // Keep the API but fail closed; the fix loop's guarded BounceInterface
+    // action is the only permitted macOS adapter-cycle path.
+    Err(format!(
+        "Refused unguarded macOS adapter restart for {}. Use `nd300 fix`, which registers re-enable cleanup before disconnecting the interface.",
+        name_and_device
+    ))
 }
-
 #[cfg(target_os = "linux")]
 pub async fn restart_adapter(name: &str) -> Result<String, String> {
-    // Bring interface down
     let mut down_cmd = tokio::process::Command::new("ip");
     down_cmd.args(["link", "set", name, "down"]);
-    let down = run_cmd(down_cmd, TIMEOUT_MEDIUM).await;
-
-    match down {
-        Ok(output) if !output.status.success() => {
-            return Err(format!(
-                "Failed to disable {}: {}",
-                name,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        Err(e) => return Err(e),
-        _ => {}
-    }
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    // Bring interface up
     let mut up_cmd = tokio::process::Command::new("ip");
     up_cmd.args(["link", "set", name, "up"]);
-    match run_cmd(up_cmd, TIMEOUT_MEDIUM).await {
-        Ok(output) if output.status.success() => Ok(format!("{} restarted", name)),
-        Ok(output) => Err(format!(
-            "Failed to re-enable {}: {}",
-            name,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
-        Err(e) => Err(e),
+    let pair = run_owned_mutation_pair(
+        down_cmd,
+        TIMEOUT_MEDIUM,
+        std::time::Duration::from_secs(3),
+        up_cmd,
+        TIMEOUT_MEDIUM,
+    )
+    .await?;
+
+    require_inverse(&pair, &format!("Failed to re-enable {name}"))?;
+    if let Some(error) = mutation_failure(&pair.first) {
+        Err(format!(
+            "Failed to disable {name}: {error}; conservative re-enable completed"
+        ))
+    } else {
+        Ok(format!("{} restarted", name))
     }
 }
 
@@ -280,34 +226,99 @@ pub async fn detect_default_interface() -> Option<String> {
 }
 
 /// Renew DHCP on a specific interface.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacosIpv4Mode {
+    Dhcp,
+    Manual,
+    Bootp,
+    Unknown,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_ipv4_mode(text: &str) -> MacosIpv4Mode {
+    if text.lines().any(|line| line.trim() == "DHCP Configuration") {
+        MacosIpv4Mode::Dhcp
+    } else if text
+        .lines()
+        .any(|line| line.trim() == "Manual Configuration")
+    {
+        MacosIpv4Mode::Manual
+    } else if text
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("BOOTP Configuration"))
+    {
+        MacosIpv4Mode::Bootp
+    } else {
+        MacosIpv4Mode::Unknown
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn require_macos_dhcp_mode(mode: MacosIpv4Mode, service: &str) -> Result<(), String> {
+    match mode {
+        MacosIpv4Mode::Dhcp => Ok(()),
+        MacosIpv4Mode::Manual => Err(format!(
+            "Skipped DHCP renewal on {}: the service uses a manual/static IPv4 configuration",
+            service
+        )),
+        MacosIpv4Mode::Bootp => Err(format!(
+            "Skipped DHCP renewal on {}: the service uses BOOTP",
+            service
+        )),
+        MacosIpv4Mode::Unknown => Err(format!(
+            "Refused DHCP renewal on {} because its IPv4 mode could not be verified as DHCP",
+            service
+        )),
+    }
+}
+
 pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
     #[cfg(windows)]
     {
         let mut release_cmd = tokio::process::Command::new("ipconfig");
         release_cmd.args(["/release", iface]);
-        let release = run_cmd(release_cmd, TIMEOUT_SLOW).await;
-        if let Ok(output) = &release {
-            if !output.status.success() {
-                // Non-fatal: release may fail if already released
-            }
-        }
         let mut renew_cmd = tokio::process::Command::new("ipconfig");
         renew_cmd.args(["/renew", iface]);
-        match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
-            Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {}", iface)),
-            Ok(output) => Err(format!(
-                "DHCP renew failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )),
-            Err(e) => Err(e),
-        }
+        let pair = run_owned_mutation_pair(
+            release_cmd,
+            TIMEOUT_SLOW,
+            std::time::Duration::ZERO,
+            renew_cmd,
+            TIMEOUT_SLOW,
+        )
+        .await?;
+        require_inverse(&pair, "DHCP renew failed")?;
+        Ok(format!("DHCP renewed on {}", iface))
     }
 
     #[cfg(target_os = "macos")]
     {
+        let service = super::stages::detect_macos_service(iface)
+            .await
+            .ok_or_else(|| {
+                format!(
+                    "Refused DHCP renewal: no unambiguous macOS network service maps to {}",
+                    iface
+                )
+            })?;
+        let mut inspect = tokio::process::Command::new("networksetup");
+        inspect.args(["-getinfo", &service]);
+        let inspect_output = run_cmd(inspect, TIMEOUT_QUICK).await?;
+        if !inspect_output.status.success() {
+            return Err(format!(
+                "Refused DHCP renewal: could not inspect IPv4 mode for {}",
+                service
+            ));
+        }
+        require_macos_dhcp_mode(
+            parse_macos_ipv4_mode(&String::from_utf8_lossy(&inspect_output.stdout)),
+            &service,
+        )?;
+
         let mut cmd = tokio::process::Command::new("ipconfig");
         cmd.args(["set", iface, "DHCP"]);
-        match run_cmd(cmd, TIMEOUT_SLOW).await {
+        match super::cmd::run_macos_mutation(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {}", iface)),
             Ok(output) => Err(format!(
                 "DHCP renew failed: {}",
@@ -322,7 +333,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         // Try NetworkManager first
         let mut nmcli_cmd = tokio::process::Command::new("nmcli");
         nmcli_cmd.args(["device", "connect", iface]);
-        if let Ok(output) = run_cmd(nmcli_cmd, TIMEOUT_MEDIUM).await {
+        if let Ok(output) = run_owned_mutation(nmcli_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
                 return Ok(format!("DHCP renewed on {} via nmcli", iface));
             }
@@ -331,7 +342,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         // Fallback to dhcpcd
         let mut dhcpcd_cmd = tokio::process::Command::new("dhcpcd");
         dhcpcd_cmd.args(["-n", iface]);
-        if let Ok(output) = run_cmd(dhcpcd_cmd, TIMEOUT_SLOW).await {
+        if let Ok(output) = run_owned_mutation(dhcpcd_cmd, TIMEOUT_SLOW).await {
             if output.status.success() {
                 return Ok(format!("DHCP renewed on {} via dhcpcd", iface));
             }
@@ -340,14 +351,51 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         // Fallback to dhclient
         let mut release_cmd = tokio::process::Command::new("dhclient");
         release_cmd.args(["-r", iface]);
-        let _ = run_cmd(release_cmd, TIMEOUT_SLOW).await;
         let mut renew_cmd = tokio::process::Command::new("dhclient");
         renew_cmd.arg(iface);
-        match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
-            Ok(output) if output.status.success() => {
-                Ok(format!("DHCP renewed on {} via dhclient", iface))
-            }
-            _ => Err(format!("Could not renew DHCP on {}", iface)),
+        let pair = run_owned_mutation_pair(
+            release_cmd,
+            TIMEOUT_SLOW,
+            std::time::Duration::ZERO,
+            renew_cmd,
+            TIMEOUT_SLOW,
+        )
+        .await?;
+        if mutation_failure(&pair.inverse).is_none() {
+            Ok(format!("DHCP renewed on {} via dhclient", iface))
+        } else {
+            Err(format!("Could not renew DHCP on {}", iface))
         }
+    }
+}
+
+#[cfg(test)]
+mod macos_dhcp_safety_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_dhcp_manual_bootp_and_unknown_without_guessing() {
+        assert_eq!(
+            parse_macos_ipv4_mode("DHCP Configuration\nIP address: 10.0.0.2\n"),
+            MacosIpv4Mode::Dhcp
+        );
+        assert_eq!(
+            parse_macos_ipv4_mode("Manual Configuration\nIP address: 10.0.0.2\n"),
+            MacosIpv4Mode::Manual
+        );
+        assert_eq!(
+            parse_macos_ipv4_mode("BOOTP Configuration\n"),
+            MacosIpv4Mode::Bootp
+        );
+        assert_eq!(
+            parse_macos_ipv4_mode("IPv6: Automatic\n"),
+            MacosIpv4Mode::Unknown
+        );
+        assert!(require_macos_dhcp_mode(MacosIpv4Mode::Dhcp, "Wi-Fi").is_ok());
+        assert!(require_macos_dhcp_mode(MacosIpv4Mode::Manual, "Wi-Fi")
+            .unwrap_err()
+            .contains("manual/static"));
+        assert!(require_macos_dhcp_mode(MacosIpv4Mode::Bootp, "Wi-Fi").is_err());
+        assert!(require_macos_dhcp_mode(MacosIpv4Mode::Unknown, "Wi-Fi").is_err());
     }
 }

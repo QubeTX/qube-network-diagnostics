@@ -32,11 +32,8 @@ fn downloads_dir() -> PathBuf {
 
     #[cfg(not(windows))]
     {
-        if let Ok(home) = std::env::var("HOME") {
-            let dir = PathBuf::from(home).join("Downloads");
-            if dir.is_dir() {
-                return dir;
-            }
+        if let Ok(user) = crate::platform::invoking_user::InvokingUser::detect() {
+            return user.home().join("Downloads");
         }
     }
 
@@ -52,22 +49,32 @@ pub fn save_session_report(session: &Session, outcome: &FinalOutcome) -> Option<
 
 /// Like [`save_session_report`], but also records any manual-recovery items the
 /// restore drain could not handle (a still-disabled adapter, a VPN that
-/// wouldn't reconnect, a macOS service that couldn't be recreated).
+/// wouldn't reconnect, or a macOS service that couldn't be re-enabled).
 pub fn save_session_report_with_recovery(
     session: &Session,
     outcome: &FinalOutcome,
     recovery_needed: &[String],
 ) -> Option<PathBuf> {
     let dir = downloads_dir();
-    let _ = std::fs::create_dir_all(&dir);
-
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let path = dir.join(format!("nd300-fix-report-{}.md", stamp));
     let markdown = render_markdown(session, outcome, recovery_needed);
 
-    match std::fs::write(&path, markdown) {
-        Ok(()) => Some(path),
-        Err(_) => None,
+    #[cfg(unix)]
+    {
+        let user = crate::platform::invoking_user::InvokingUser::detect().ok()?;
+        user.ensure_directory_beneath_home(&dir).ok()?;
+        user.write_private_atomic(&path, markdown.as_bytes())
+            .ok()
+            .map(|()| path)
+    }
+
+    #[cfg(windows)]
+    {
+        match std::fs::write(&path, markdown) {
+            Ok(()) => Some(path),
+            Err(_) => None,
+        }
     }
 }
 

@@ -2,9 +2,8 @@ name: CI
 
 # Cross-platform quality gate for every PR and main-branch push.
 #
-# Complements the cargo-dist release.yml (which builds + ships binaries on a
-# main-branch deploy): this runs fmt / clippy / test / release-build on
-# macOS + Linux + Windows at PR time, so cross-platform compile issues —
+# Complements the tag-triggered cargo-dist release.yml: this runs fmt / clippy /
+# test / release-build on macOS + Linux + Windows at PR time, so cross-platform compile issues —
 # cfg-gated code that only fails on one OS, dead-code/unused warnings that are
 # platform-specific, test assertions that only hold on one platform — are caught
 # BEFORE merge instead of at release. (release.yml's source-check only runs on
@@ -13,10 +12,11 @@ name: CI
 #
 # Jobs:
 #   fmt        — cargo fmt --check (Linux; rustfmt is platform-agnostic)
-#   clippy     — cargo clippy --all-targets --all-features -D warnings (Linux)
-#   test       — cargo test (Linux glibc + macOS ARM + Windows)
+#   clippy     — strict clippy on Linux, macOS ARM/Intel, and Windows
+#   test       — cargo test (Linux glibc + macOS ARM/Intel + Windows)
 #   build      — cargo build --release + run both binaries' --version, per OS
-#   audit      — cargo-audit (advisory; continue-on-error so it never blocks)
+#   linux-targets — compile the two non-host Linux release targets before tagging
+#   audit      — blocking cargo-audit using the checked-in advisory policy
 #   dist-plan  — verify the cargo-dist plan parses (catches dist config errors)
 #
 # RUSTFLAGS=-D warnings is set globally so the per-OS build/test jobs fail on any
@@ -27,6 +27,9 @@ on:
   push:
     branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -42,17 +45,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
   clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
+    name: Clippy (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: "Linux x86_64"
+          - os: macos-15
+            name: "macOS ARM"
+          - os: macos-15-intel
+            name: "macOS Intel"
+          - os: windows-latest
+            name: "Windows x86_64"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -67,15 +82,17 @@ jobs:
         include:
           - os: ubuntu-latest
             name: "Linux x86_64 glibc"
-          - os: macos-latest
-            name: "macOS ARM (Apple Silicon)"
+          - os: macos-15
+            name: "macOS ARM"
+          - os: macos-15-intel
+            name: "macOS Intel"
           - os: windows-latest
             name: "Windows x86_64"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked --all-features
+      - run: cargo test --locked --workspace --all-targets --all-features
 
   build:
     name: Release Build (${{ matrix.name }})
@@ -86,13 +103,15 @@ jobs:
         include:
           - os: ubuntu-latest
             name: "Linux x86_64 glibc"
-          - os: macos-latest
-            name: "macOS ARM (Apple Silicon)"
+          - os: macos-15
+            name: "macOS ARM"
+          - os: macos-15-intel
+            name: "macOS Intel"
           - os: windows-latest
             name: "Windows x86_64"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked --release
       - name: Smoke test (both binaries run)
@@ -102,14 +121,84 @@ jobs:
           [ "${{ runner.os }}" = "Windows" ] && EXT=".exe"
           "./target/release/nd300${EXT}" --version
           "./target/release/speedqx${EXT}" --version
+          "./target/release/nd300${EXT}" --help > /dev/null
+          "./target/release/speedqx${EXT}" --help > /dev/null
+      - name: Read-only macOS diagnostic JSON smoke
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          for args in (["--fast", "--json"], ["-t", "--fast", "--json"]):
+              result = subprocess.run(
+                  ["./target/release/nd300", *args],
+                  capture_output=True,
+                  text=True,
+                  timeout=180,
+              )
+              if result.returncode not in (0, 1, 2):
+                  raise SystemExit(
+                      f"nd300 {' '.join(args)} exited {result.returncode}: {result.stderr}"
+                  )
+              payload = json.loads(result.stdout)
+              for key in ("timestamp", "interfaces", "interface_details"):
+                  if key not in payload:
+                      raise SystemExit(f"missing JSON key {key!r} for {' '.join(args)}")
+          PY
+
+  linux-targets:
+    name: Release Target Compile (${{ matrix.name }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux aarch64 GNU
+            target: aarch64-unknown-linux-gnu
+            # --no-install-recommends omits the target libc headers that GCC's
+            # stdint.h needs while compiling ring/lzma C sources, so request
+            # the cross libc development package explicitly.
+            packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            cc: aarch64-linux-gnu-gcc
+            ar: aarch64-linux-gnu-ar
+          - name: Linux x86_64 musl
+            target: x86_64-unknown-linux-musl
+            packages: musl-tools
+            cc: musl-gcc
+            ar: ar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross toolchain
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ${{ matrix.packages }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Compile release target
+        shell: bash
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_aarch64_unknown_linux_gnu: ${{ matrix.cc }}
+          AR_aarch64_unknown_linux_gnu: ${{ matrix.ar }}
+          CC_x86_64_unknown_linux_musl: ${{ matrix.cc }}
+          AR_x86_64_unknown_linux_musl: ${{ matrix.ar }}
+        run: cargo build --locked --release --workspace --bins
 
   audit:
     name: Security audit
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - run: cargo audit
@@ -135,4 +224,27 @@ jobs:
           chmod +x "$HOME/.cargo/bin/dist"
           "$HOME/.cargo/bin/dist" --version
       - name: Verify dist plan parses
-        run: ~/.cargo/bin/dist plan
+        shell: bash
+        run: |
+          ~/.cargo/bin/dist plan --output-format=json > dist-plan.json
+          if grep -q 'macos-14' dist-plan.json; then
+            echo "cargo-dist still selected the retiring macos-14 runner" >&2
+            exit 1
+          fi
+          grep -q 'macos-15' dist-plan.json
+
+  shellcheck:
+    name: ShellCheck release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck scripts/*.sh
+      - name: Enforce macOS runner Bash 3 compatibility
+        shell: bash
+        run: |
+          # GitHub's macOS runner invokes the system Bash 3.2. Reject the
+          # common Bash-4-only constructs that would fail only after tagging.
+          if grep -En '(^|[[:space:]])declare[[:space:]]+-A|(^|[[:space:]])(mapfile|readarray)([[:space:]]|$)' scripts/*.sh; then
+            echo "Bash-4-only syntax is not allowed in macOS release scripts" >&2
+            exit 1
+          fi

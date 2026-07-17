@@ -1,0 +1,179 @@
+name: Windows Origin Matrix
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-origin-matrix.yml'
+      - 'scripts/windows-origin-matrix.ps1'
+      - 'src/actions/migrate.rs'
+      - 'src/actions/uninstall.rs'
+      - 'src/actions/update.rs'
+      - 'src/cli.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'wix/**'
+      - 'wix-corporate/**'
+      - 'inno/**'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'candidate builds this ref; public exercises nd300 update against the published release'
+        required: true
+        type: choice
+        default: public
+        options:
+          - public
+          - candidate
+      baseline_version:
+        description: 'Published version installed before upgrade'
+        required: true
+        type: string
+        default: '3.5.2'
+      expected_version:
+        description: 'Expected public version (public mode only)'
+        required: true
+        type: string
+        default: '3.6.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-origin-matrix-${{ github.event.pull_request.number || github.ref }}-${{ inputs.mode || 'candidate' }}
+  cancel-in-progress: true
+
+jobs:
+  build-candidate:
+    name: Build candidate Windows installers
+    if: github.event_name == 'pull_request' || inputs.mode == 'candidate'
+    runs-on: windows-2022
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - id: metadata
+        name: Resolve package version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
+          $package = @($metadata.packages | Where-Object name -eq 'nd300')
+          if ($package.Count -ne 1) { throw 'Expected exactly one nd300 package' }
+          "version=$($package[0].version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Build release binaries
+        shell: pwsh
+        run: cargo build --release --locked
+      - name: Build Global and Corporate MSI installers
+        shell: pwsh
+        run: |
+          $candle = "$env:WIX\bin\candle.exe"
+          $light = "$env:WIX\bin\light.exe"
+          if (-not (Test-Path -LiteralPath $candle)) { throw "Missing $candle" }
+          if (-not (Test-Path -LiteralPath $light)) { throw "Missing $light" }
+          New-Item -ItemType Directory -Force -Path target\wix | Out-Null
+
+          & $candle -arch x64 "-dVersion=${{ steps.metadata.outputs.version }}" `
+            '-dCargoTargetBinDir=target\release' -ext WixUIExtension `
+            -out target\wix\main.wixobj wix\main.wxs
+          if ($LASTEXITCODE -ne 0) { throw "Global candle exit $LASTEXITCODE" }
+          & $light -ext WixUIExtension `
+            -out target\wix\nd300-x86_64-pc-windows-msvc.msi target\wix\main.wixobj
+          if ($LASTEXITCODE -ne 0) { throw "Global light exit $LASTEXITCODE" }
+
+          & $candle -arch x64 "-dVersion=${{ steps.metadata.outputs.version }}" `
+            '-dCargoTargetBinDir=target\release' -ext WixUIExtension `
+            -out target\wix\corporate.wixobj wix-corporate\corporate.wxs
+          if ($LASTEXITCODE -ne 0) { throw "Corporate candle exit $LASTEXITCODE" }
+          & $light -sice:ICE38 -sice:ICE64 -sice:ICE91 -ext WixUIExtension `
+            -out target\wix\nd300-x86_64-pc-windows-msvc-corporate.msi `
+            target\wix\corporate.wixobj
+          if ($LASTEXITCODE -ne 0) { throw "Corporate light exit $LASTEXITCODE" }
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: choco install innosetup -y --no-progress --no-color
+      - name: Build Global and Corporate EXE installers
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\iscc.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) { throw "Missing $iscc" }
+          & $iscc "/DMyAppVersion=${{ steps.metadata.outputs.version }}" inno\global.iss
+          if ($LASTEXITCODE -ne 0) { throw "Global iscc exit $LASTEXITCODE" }
+          & $iscc "/DMyAppVersion=${{ steps.metadata.outputs.version }}" inno\corporate.iss
+          if ($LASTEXITCODE -ne 0) { throw "Corporate iscc exit $LASTEXITCODE" }
+      - name: Verify candidate inventory
+        shell: pwsh
+        run: |
+          $expected = @(
+            'target\wix\nd300-x86_64-pc-windows-msvc.msi',
+            'target\wix\nd300-x86_64-pc-windows-msvc-corporate.msi',
+            'inno\Output\nd300-x86_64-pc-windows-msvc-setup.exe',
+            'inno\Output\nd300-x86_64-pc-windows-msvc-corporate-setup.exe'
+          )
+          foreach ($path in $expected) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing $path" }
+          }
+          $staging = Join-Path $env:RUNNER_TEMP 'nd300-candidate-upload'
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          foreach ($path in $expected) {
+            Copy-Item -LiteralPath $path -Destination $staging
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nd300-windows-candidate-installers
+          if-no-files-found: error
+          path: ${{ runner.temp }}/nd300-candidate-upload/*
+
+  origin-matrix:
+    name: ${{ matrix.origin }} (${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }})
+    needs: build-candidate
+    if: >-
+      always() &&
+      (needs.build-candidate.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && inputs.mode == 'public'))
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        origin:
+          - msi-global
+          - msi-corporate
+          - exe-global
+          - exe-corporate
+          - cargo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: origin-${{ matrix.origin }}
+      - name: Download candidate installers
+        if: github.event_name == 'pull_request' || inputs.mode == 'candidate'
+        uses: actions/download-artifact@v4
+        with:
+          name: nd300-windows-candidate-installers
+          path: ${{ runner.temp }}/nd300-candidate
+      - name: Exercise origin lifecycle
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_MODE: ${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }}
+          BASELINE_VERSION: ${{ github.event_name == 'pull_request' && '3.5.2' || inputs.baseline_version }}
+          EXPECTED_VERSION: ${{ github.event_name == 'pull_request' && needs.build-candidate.outputs.version || inputs.expected_version }}
+        run: |
+          & scripts\windows-origin-matrix.ps1 `
+            -Origin '${{ matrix.origin }}' `
+            -Mode $env:TEST_MODE `
+            -BaselineVersion $env:BASELINE_VERSION `
+            -ExpectedVersion $env:EXPECTED_VERSION `
+            -RepoRoot $env:GITHUB_WORKSPACE `
+            -CandidateDir (Join-Path $env:RUNNER_TEMP 'nd300-candidate') `
+            -Repository '${{ github.repository }}'
+      - name: Upload lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-origin-evidence-${{ matrix.origin }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/nd300-origin-evidence/*.json

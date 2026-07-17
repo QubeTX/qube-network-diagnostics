@@ -6,6 +6,37 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ND-300 (`nd300`) is a cross-platform CLI network diagnostics tool written in Rust. It runs 25+ diagnostic modules concurrently, supports user and technician modes, and includes a diagnostic-driven network recovery system (`nd300 fix` / `--fix`). Ships two binaries: `nd300` (main diagnostic) and `speedqx` (standalone speed test).
 
+For the v3.6.0 release handoff and later hardening, preserve each task's
+rationale and impact when updating its status, and attach exact-SHA/run evidence
+before marking a release gate done.
+
+## Task management system
+
+This repo uses the SHAUGHV `tasks-*` system. The board source of truth is
+`.tasks/TASKS.md`; milestones live in `.tasks/MILESTONES.md`, and each task's
+rich handoff lives at `.tasks/tasks/<id>.md` with its `## Verification`,
+`## Status`, and attributed `## Activity` entries kept current while work is
+in flight.
+
+Use indented checkbox subtasks for small required steps that must be visible
+and complete before their parent. Put reasoning, implementation context,
+impact, acceptance, and resume notes in the parent detail file. Work large
+enough to need its own status or owner is a top-level task linked with
+`(needs #id)`. Never complete a task over unchecked subtasks or open
+verification items; verify them or waive them with a dated reason. Never close
+a milestone over open child tasks.
+
+Never put secrets in task, detail, working-memory, or deep-memory files. Use
+environment variables, the OS keychain, or `.tasks/secure/` (gitignored). This
+board is shared through git: pull before board sessions, respect `(owner
+name)`, attribute Activity lines, and commit meaningful board changes.
+
+The live board port is per-repo. Resolve it from
+`.tasks/.board-server.json` or `node .tasks/board-server.mjs status` and verify
+the reported root; never assume port 4317. Relevant skills are `tasks-start`,
+`tasks-create`, `tasks-management`, `tasks-update`, `tasks-memory`,
+`tasks-boards`, and `tasks-remove`.
+
 ## Build & Run Commands
 
 ```bash
@@ -52,14 +83,14 @@ Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **25 
 ### Module Layout
 
 - **`src/cli.rs`** — Shared clap derive definitions (`Nd300Cli`, `SpeedQXCli`) used by both binaries and by `build.rs` for man page generation.
-- **`src/actions/`** — Exit-early operations (`fix`, `clear-dns`, `uninstall`, `dns`, `update` — each available as a bare subcommand and a legacy flag; plus the hidden `migrate-cleanup`). `dns` is *semi*-exit-early (exit on failure, fall through to diagnostics on success). The fix flow (`actions/fix/`) implements evidence-driven network recovery with VPN detection, connectivity checks between actions, Wi-Fi reconnection, state preservation, and report generation (`report.rs` saves Markdown to `~/Downloads/`). The updater (`actions/update.rs`) prefers `cargo install nd300 --force` (with post-install `--version` verify), cleans up shadowing non-Cargo installs when migrating users to Cargo, falls back to cargo-dist installers, and on Windows dispatches to the matching first-class installer (MSI/EXE × Global/Corporate) via a registry marker with SHA-256 sidecar verification. See "Windows Installer Matrix + Installer-Aware Self-Update" below.
-- **`src/actions/migrate.rs`** — Cross-method install cleanup, exposed as the **hidden** `nd300 migrate-cleanup` subcommand (`#[command(hide = true)]`). Invoked by the four Windows installers (and the silent self-update path) to consolidate to a single install: removes a shadowing older `cargo install` copy in `~\.cargo\bin` and/or the *other* Windows edition (Global perMachine ↔ Corporate perUser). It **reuses** the tested deletion primitives — `uninstall_path` / `is_sole_package_in_dir` / `OUR_BINARIES` from `uninstall.rs`, and `cargo_bin_dir` / `same_path` / `classify_install_path` / `current_install_shadows_cargo_install` / `current_exe_real_path` / `classify_shadow_cleanup` / `ShadowCleanupDecision` / `InstallOrigin` from `update.rs` (all `pub(crate)`) — and does NOT re-implement deletion. Flags: `--cargo-copy`, `--other-edition`, `--quiet`, `--dry-run`, `--json`, `--user-profile <path>`, `--cargo-home <path>`; no target flag = `--cargo-copy` only. Hard guarantees (unit-tested): only deletes `nd300.exe`/`speedqx.exe`; never cargo/rustup/the `.cargo\bin` PATH entry/`~/Downloads`/the running install; never escalates (needs-admin → report + continue); refuses shell-unsafe paths. **Always exits 0** except on a true internal error — cleanup is advisory and must never fail an installer.
-- **`src/diagnostics/`** — All diagnostic modules. Core modules export `pub async fn check() -> (DiagnosticResult, Option<DetailStruct>)`; deep (tech-mode) modules export `pub async fn collect() -> Option<DetailType>` (Skip = `None`, section omitted). Platform parsers are pure fns gated `#[cfg(any(target_os = "...", test))]` so they unit-test on all three CI OSes. `ping.rs` is the single home for ping invocation/parsing. `shared_cache.rs` pre-fetches subprocess outputs to deduplicate calls across tech-mode modules. `util.rs` provides the timeout wrappers (`run_with_timeout`, `lookup_host_timeout`), the `retry_probe`/`ping_budget`/`harvest_or` helpers, and the timeout classes (`RESOLVE`/`QUICK` 5s, `SLOW` 10s, `TRACE` 60s). Core verdicts require *consistent* failure (multi-burst gateway, 3-domain median DNS, dual-endpoint ports, ≥2-reachable latency) — see CLAUDE.md "Verdict stability".
-- **`src/speedtest/`** — Six-provider speed test engine (Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com + M-Lab MSAK + Apple networkQuality; the last two are speedqx-only, skippable via `--skip-msak`/`--skip-apple`; nd300's Diagnostic mode stays CF+NDT7). Provider clients: `cloudflare.rs`, `ndt7.rs`, `librespeed.rs`, `fastcom.rs`, `msak.rs`, `applenq.rs` (Ookla excluded for EULA reasons — rationale in `applenq.rs`). `statistics.rs` implements the accuracy pipeline (sanitize, trimean, IQR filter, slow-start discard, bootstrap CI); `mod.rs::aggregate` applies the K=4 minimum-sample floor + unknown-variance-gets-max rule before the capped inverse-variance merge and surfaces `confidence_intervals` + `merge_exclusions`. `adaptive.rs` sizes requests to ~2s at measured throughput. `display.rs` handles speedqx-specific progress rendering. Both binaries share this module.
+- **`src/actions/`** — Exit-early operations (`fix`, `clear-dns`, `uninstall`, `dns`, `update` — each available as a bare subcommand and a legacy flag; plus the hidden `migrate-cleanup`). `dns` is *semi*-exit-early (exit on failure, fall through to diagnostics on success). The fix flow (`actions/fix/`) implements evidence-driven recovery, LIFO restoration, exact macOS DNS/search rollback, and private invoking-user reports. The updater (`actions/update.rs` + Unix-only `unix_install.rs`) prefers a bounded invoking-user Cargo install, then on Unix verifies and transactionally installs the exact-tag two-binary archive. Windows resolves the running executable against Cargo location plus normalized HKCU/HKLM installer ownership before using marker/path fallbacks. Registered Windows uninstall delegates directly to the validated MSI product code or Inno uninstaller; Unix uninstall refuses unknown/package-manager-owned locations. See "Self-Update Implementation" and "Windows Installer Matrix" below.
+- **`src/actions/migrate.rs`** — Cross-method install cleanup, exposed as the **hidden** `nd300 migrate-cleanup` subcommand (`#[command(hide = true)]`). Invoked by the four Windows installers (and the silent self-update path) to consolidate to a single install: removes a shadowing older `cargo install` copy in `~\.cargo\bin` and/or the *other* Windows edition (Global perMachine ↔ Corporate perUser). It reuses `uninstall_path_files_only` / `OUR_BINARIES` and the updater's ownership/path helpers; it does not re-implement deletion. Publicly usable flags remain `--cargo-copy`, `--other-edition`, `--quiet`, `--dry-run`, `--json`, `--user-profile <path>`, `--cargo-home <path>`; installers additionally pass the hidden validated `--install-origin <msi-global|msi-corporate|exe-global|exe-corporate>` so custom locations are classifiable before final registration. Hard guarantees (unit-tested): only deletes `nd300.exe`/`speedqx.exe`; never cargo/rustup/PATH/ARP/receipts/the shared marker/`~/Downloads`/the running install; never escalates (needs-admin → report + continue); refuses shell-unsafe paths. **Always exits 0** except on a true internal error — cleanup is advisory and must never fail an active installer transaction.
+- **`src/diagnostics/`** — All diagnostic modules. Core modules export `pub async fn check() -> (DiagnosticResult, Option<DetailStruct>)`; deep (tech-mode) modules export `pub async fn collect() -> Option<DetailType>` (Skip = `None`, section omitted). Platform parsers are pure fns gated `#[cfg(any(target_os = "...", test))]` so they unit-test on all three CI OSes. `ping.rs` is the single home for ping invocation/parsing. `shared_cache.rs` pre-fetches subprocess outputs to deduplicate calls across tech-mode modules. On macOS, `interfaces.rs` builds the topology truth from route/flags/hardware-service mapping/addresses; `wifi.rs` uses bounded `system_profiler` only in technician mode; VPN, IPv6, TLS/DNSSEC, routing/listener/DHCP/protocol parsers use captured modern/legacy fixtures. `util.rs` provides timeout wrappers whose timed-out children are terminated, plus `retry_probe`/`ping_budget`/`harvest_or`. Core verdicts require *consistent* failure (multi-burst gateway, 3-domain median DNS, dual-endpoint ports, ≥2-reachable latency) — see CLAUDE.md "Verdict stability".
+- **`src/speedtest/`** — Shared Methodology v4 engine. Standalone speedqx has eight sources: Cloudflare, M-Lab NDT7, LibreSpeed, fast.com, M-Lab MSAK, Apple networkQuality, CacheFly, and Vultr; ND300 core stays Cloudflare + NDT7. Provider clients live beside `stat_primitives.rs`, `statistics.rs`, golden parity tests, adaptive transfer sizing, and display code. Ookla remains excluded for EULA reasons documented in `applenq.rs`.
 - **`src/render/`** — Output formatting. `table.rs` builds Unicode/ASCII box-drawing tables with ANSI-aware string functions (`visible_len`, `truncate_visible`). `color.rs` centralizes ANSI color output. `progress.rs` handles spinners.
 - **`src/config.rs`** — Config builder with fluent API. The Config object threads through the entire render pipeline.
 - **`src/error.rs`** — Unified `AppError` enum via `thiserror`.
-- **`src/platform/`** — OS detection and elevation checks.
+- **`src/platform/`** — OS detection/elevation plus Unix `invoking_user.rs`, which validates numeric `SUDO_UID`/passwd ownership and supplies the original user's home, Cargo paths, and privilege-dropping command setup.
 
 ### Key Patterns
 
@@ -67,7 +98,7 @@ Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **25 
 
 **Diagnostic module contract:** Every diagnostic module exports `pub async fn check() -> (DiagnosticResult, Option<DetailType>)`. DiagnosticResult carries status + summary; the optional detail struct carries rich data for rendering.
 
-**Subprocess timeouts:** All subprocess calls in the fix flow use explicit timeouts (`TIMEOUT_QUICK` 15s, `TIMEOUT_MEDIUM` 30s, `TIMEOUT_SLOW` 60s) defined in `actions/fix/cmd.rs`. All *diagnostic* subprocess and DNS-resolver calls are bounded by `diagnostics/util.rs` (`RESOLVE` 5s for `lookup_host`, `SLOW` 10s for network-touching probes like `ping`/`nslookup`/`dig`/`resolvectl`, `QUICK` 5s for local state queries). On timeout the wrapper returns `None`, which is identical to the pre-existing spawn-failure/`.ok()` == `None` path, so callers fall into their existing unreachable/empty branch — zero behavior change on a healthy network. `main.rs` additionally races `diagnostics::run_all` against a 90s wall-clock cap and `tokio::signal::ctrl_c` so the tool always returns promptly.
+**Subprocess timeouts:** All fix commands use explicit timeout classes from `actions/fix/cmd.rs`. Diagnostic subprocess/DNS calls are bounded by `diagnostics/util.rs`; a timed-out child is killed and reaped rather than left running. The Apple provider adds progress heartbeats, a whole-phase deadline, and capped exponential backoff with jitter. `run_all` returns partial results at its cap and `main.rs` retains the Ctrl-C race.
 
 **SharedCache (tech mode):** `diagnostics/shared_cache.rs` pre-fetches netstat, ipconfig, sysinfo::Networks, and default gateway data once, shared across 10+ tech-mode diagnostic modules. Built via `SharedCache::build_for_tech_mode()` before the tech diagnostic `tokio::join!`.
 
@@ -85,7 +116,9 @@ aarch64-apple-darwin, x86_64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unk
 
 ## Release Process
 
-Releases use **cargo-dist v0.31.0, tag-triggered**, plus a CI-gated crates.io publish — the **same build+deploy cycle as TR-300** (kept consistent on purpose). Four workflows: **`ci.yml`** (fmt/clippy/test/release-build on macOS + Linux + Windows with `-D warnings`, + `cargo-dist plan` + audit; every PR + main push), **`crates-publish.yml`** (publishes the `nd300` crate after `CI` succeeds on a `main` push — the ONLY crate publisher; idempotent), **`release.yml`** (cargo-dist, **fires on a `vX.Y.Z` tag push**; builds 6 targets + Global MSI + shell/PS installers + GitHub Release + `nd-300-installer` aliases; does NOT publish the crate), and **`windows-installers.yml`** (`workflow_run` after a tag-triggered Release → Corporate MSI + 2 Inno EXEs + sidecars → **28 assets**). **A deploy is two pushes: merge to `main` (→ crate) then push a `vX.Y.Z` tag (→ binaries/installers/release).** `wix/main.wxs` must include both `nd300.exe` and `speedqx.exe`.
+Releases use **cargo-dist v0.31.0, tag-triggered**, plus CI-gated crates.io publish. Four workflows: **`ci.yml`** (fmt/clippy/test/release build on macOS arm64 + Intel, Linux, and Windows with `-D warnings`, blocking audit, `dist plan`, read-only Mac smoke), **`crates-publish.yml`** (the only crate publisher after exact main-SHA CI), **`release.yml`** (six targets, Global MSI, shell/PS installers, GitHub Release, legacy aliases), and **`windows-installers.yml`** (Corporate MSI + two Inno EXEs + sidecars → **28 assets**). Mac arm64 uses `macos-15`; Intel uses `macos-15-intel`, retaining deployment floors 11.0/10.12. Tag publishing must sign both binaries for both Mac architectures with the pinned Developer ID fingerprint/Team ID/identifiers, require hardened runtime + timestamp and Apple notarization status `Accepted`, repack the exact signed bytes, regenerate checksums/manifest, and never publish unsigned fallback. Host attests the final post-signing artifacts; the later Windows assets receive separate attestations. Workflow defaults stay `contents: read`; only hosting gets write/id-token permission. **A deploy is two pushes: merge to `main` (→ crate), then push immutable `vX.Y.Z` (→ binaries/installers/release).**
+
+Mac release credentials are the repository secrets `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8_BASE64`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER_ID`, plus repository variables `APPLE_SIGNING_IDENTITY=739B04530883FF9B665C66BD464F98C622971B32` and `APPLE_TEAM_ID=M9D5379H93`. Never print or commit secret values. Release archives must include `man/`; macOS user docs install those pages under the user's home without `sudo`/`mandb`.
 
 ### Standard release workflow (run when shipping) — tag-push, consistent with TR-300
 
@@ -95,7 +128,7 @@ Triggers in user prompts: "release", "ship it", "deploy", "tag the release", "pu
 2. **Update `CHANGELOG.md` + `HUMAN_CHANGELOG.md`** in lockstep (every technical entry needs a plain-English counterpart). Date = the host's current date.
 3. **Update `README.md`** (user-visible flags/commands/behavior) and **`CLAUDE.md` / `AGENTS.md`** (architecture/workflow changes).
 4. **Bump the homepage version fallbacks** in `qube-machine-report-homepage` — `useGitHubVersion('QubeTX/qube-network-diagnostics', '<new>')` in `ND300Install.jsx`, `ND300Hero.jsx`, `ND300Footer.jsx`, `InstallGuideContent.jsx`. Own PR → merge to `main` → Vercel auto-deploys.
-5. **Local verification:** `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo publish --dry-run --locked --allow-dirty`, `cargo package --list --locked --allow-dirty`, `cargo build --release`. If installers changed, validate them locally (see "Installer build pitfalls").
+5. **Local verification:** `cargo fmt --all -- --check`, Rust 1.97 `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets`, `cargo build --release --locked`, `cargo package --locked --list`, `cargo publish --dry-run --locked`, `cargo audit`, `dist plan`, `actionlint .github/workflows/*.yml`, ShellCheck release scripts, archive/man inspection, updater fault tests, and read-only native Mac smokes. A one-time user-authorized active-Mac happy path passed under an independent root watchdog during v3.6.0 hardening, but it is supplementary only. Future service-cycle live tests require an offline watchdog on a disposable VM/service; never use an active control-dependent network.
 6. **Stage specific files** (never `git add -A`). **Commit** (`feat:`/`fix:`/`docs:`) with trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`. Open a PR; it runs `ci.yml` on macOS + Linux + Windows.
 7. **Merge the PR to `main`.** `ci.yml` → `crates-publish.yml` publishes the `nd300` crate (idempotent; a docs-only/unchanged-version merge safely skips).
 8. **Push the release tag:** `git fetch origin main && git tag vX.Y.Z origin/main && git push origin vX.Y.Z` → fires `release.yml` → chains `windows-installers.yml`. **Never reuse a tag** (forward only).
@@ -201,10 +234,10 @@ When the release CI fails:
 - **`action.rs`** — `Action`, `ActionId`, `Cost`, `Risk`, `Reversibility`, `RiskExplanation` types. The registry (`all_actions()`) returns every `Action` available on the current platform. `Action::apply(&self, config, restore: &RestoreRegistry)` dispatches to a free function per `ActionId` via match; destructive `apply_*` fns register their inverse op on the registry before mutating state. `Risk::High(RiskExplanation)` is a sealed enum variant: a high-risk Action *cannot* be constructed without a complete plain-language explanation.
 - **`triage.rs`** — Pure planning. `actionable_failures()`, `group_by_root_cause()` (walks the hardcoded dependency DAG), `hard_block_detected()`, `build_plan()`. No IO. Unit-tested via `cargo test --lib actions::fix::triage`.
 - **`session.rs`** — `Session` (per-run state: attempts, effectiveness, snapshots, action_log) + `Reporter` (plain-language output for stdout) + `FinalOutcome` (incl. `Interrupted` → exit 130) + the **`RestoreRegistry`** / `RestoreOp` / `restore_op` interrupt-safe restore machinery (see "Interrupt-safe restore"). `WALL_CLOCK_CAP = 240s`.
-- **`loop_runner.rs`** — `run_and_finalize(config) -> i32`: pre-flight elevation check, constructs `Session` + `RestoreRegistry`, races `run(config, &mut session, &restore)` against `tokio::signal::ctrl_c` with the loop wrapped in `catch_unwind`, then **always drains** the registry (90s outer cap) before persisting the report and returning the exit code. Ctrl-C → exit 130; caught panic → drain then `exit(101)`. Handles JSON via `print_json_outcome` (now with `interrupted` + `manual_recovery_needed`).
-- **`report.rs`** — Iteration-oriented Markdown report. Saves to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`. `save_session_report_with_recovery` adds a "Manual recovery needed" section for drain failures.
-- **`stages.rs`** — Platform primitives (`disable_interface`, `enable_interface`, `restart_services`, `platform_stage3`, `recreate_and_restore_macos_service`, etc.) — kept and `pub` so the action registry calls them directly. The legacy `run_stage1/2/3` orchestrators, their DNS fallback handlers, `wait_for_connectivity`/`verify_dns_stability`, and `StepResult` were **removed in v3.4.0**. The fix loop's diagnostic passes force `skip_speed`, re-confirm a failing baseline with a second pass before the first plan (intersection = actionable; symmetric difference = intermittent, no credit), and credit effectiveness only to the most recent successful action targeting the cleared key.
-- **`cmd.rs`** — `run_cmd` (legacy, returns `Result<Output, String>`) + `run_cmd_capture` (new, returns structured `CmdOutcome` with stdout/stderr/exit/duration). Reports render `CmdOutcome` payloads.
+- **`loop_runner.rs`** — `run_and_finalize(config) -> i32`: pre-flight elevation check, constructs `Session` + `RestoreRegistry`, races the caught-unwind loop against Ctrl-C, SIGTERM, and SIGHUP on Unix, then **always drains LIFO** under a dynamic outer budget of 30 seconds per pending inverse plus 5 seconds before persisting the report. Interrupt → exit 130; panic → drain then exit 101. JSON includes `interrupted` + `manual_recovery_needed`.
+- **`report.rs`** — Iteration-oriented Markdown report. Under `sudo`, it targets the validated invoking user's `~/Downloads`, refuses unsafe directory state, and atomically creates a mode-`0600` file with the correct ownership. Drain failures add "Manual recovery needed".
+- **`stages.rs`** — Platform repair primitives. macOS `DeepStackReset` is now a fail-closed, high-risk network-service **cycle**, never deletion/recreation: map exactly one enabled physical service, snapshot DNS servers/search domains, register `ReEnableMacosService` before disabling, cycle off/on, verify enabled state plus the expected physical route/reachability, then resolve the token. The production gate remains false until the ignored live acceptance test passes under root plus exact acknowledgements and an independent offline watchdog on a disposable VM/service. Do not test it on a Mac whose Codex/SSH control depends on the selected link. The old service snapshot/password/SSID/deletion code is forbidden by regression tests. DHCP renewal must first prove the selected service already uses DHCP; Manual/BootP/static/unknown modes are no-op.
+- **`cmd.rs`** — bounded read-only command helpers plus an owned mutation runner that serializes state changes and kills/reaps a timed-out or cancelled child before restoration. Paired down/up, off/on, release/renew, and stop/start supervisors always attempt the inverse and prevent a late first child from racing recovery. `run_cmd_capture` returns structured `CmdOutcome` payloads for reports.
 
 ### High-risk prompts
 
@@ -212,7 +245,7 @@ In interactive mode, every High-risk Action renders a multi-line block with `wha
 
 ### Interrupt-safe restore (v3.0.9+)
 
-`nd300 fix` is safe to cancel / time out / crash mid-repair. A **`RestoreRegistry`** (`session.rs`; `Arc<tokio::sync::Mutex<Vec<RegisteredOp>>>`, non-poisoning) threads through `Action::apply`. Destructive actions `register` a `RestoreOp` (`ReEnableInterface`, `ReEnableVpn`, or macOS-only `RecreateMacosService`) *before* mutating state and `mark_resolved` after restoring it on the normal path. `run_and_finalize` races the loop against `Ctrl-C` and wraps it in `catch_unwind`, then **always `drain()`s** the registry (90s outer cap, 30s per-op cap) on every terminal path — rolling back a disabled adapter, a disconnected VPN, or a removed macOS service. Anything the drain can't restore surfaces as "Manual recovery needed" (stdout + report; `manual_recovery_needed`/`interrupted` in JSON). The macOS `RestoreOp` variant + its `restore_op`/`label` arms are `#[cfg(target_os = "macos")]`; the matches are exhaustive per platform. Keep `kill_on_drop` at its default (false) on destructive commands.
+`nd300 fix` is safe to cancel / time out / crash mid-repair. A non-poisoning **`RestoreRegistry`** threads through `Action::apply`; every inverse is registered *before* mutation. `RestoreOp` includes `ReEnableInterface`, `ReEnableVpn`, and macOS-only `ReEnableMacosService`; there is no service-recreation restore. Pending operations drain newest-first after Ctrl-C/SIGTERM/SIGHUP/panic/normal termination, with a 30-second per-op timeout and an outer budget sized to the pending LIFO stack. Consumer VPN inverses are registered before disconnect and clear only after positive provider/OS state readback; enterprise VPNs are never touched. All supervised mutation children are serialized, terminated, and reaped before an inverse runs, so a late disconnect/down/stop/release cannot race recovery. A token is resolved, and `reverted: true` emitted, only after state verification.
 
 ### What to do when adding a new fix primitive
 
@@ -223,7 +256,7 @@ In interactive mode, every High-risk Action renders a multi-line block with `wha
 5. Triage planning picks it up automatically — no changes needed in `triage.rs`.
 6. If the primitive makes a destructive, restorable change: add a `RestoreOp` variant (cfg-gate platform-only types), exhaustive-per-platform `restore_op`/`label` arms, then `register` before mutating and `mark_resolved` after restoring.
 
-Enterprise VPNs (Cisco, Zscaler, Palo Alto / GlobalProtect, F5, Check Point, Juniper) are never auto-disabled. Fix reports always go to `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`.
+Enterprise VPNs (Cisco, Zscaler, Palo Alto / GlobalProtect, F5, Check Point, Juniper) are never auto-disabled. Fix reports go to the validated invoking user's `~/Downloads/nd300-fix-report-YYYYMMDD-HHMMSS.md`, never `/var/root` merely because `sudo` was used.
 
 ## Self-Update Implementation (`--update`)
 
@@ -244,22 +277,20 @@ The self-update feature lives in `src/actions/update.rs` and follows the same pa
 3. If current >= latest → print "Already on latest" → exit 0
 4. Build an ordered strategy list:
    - Cargo first when `cargo --version` succeeds.
-   - macOS/Linux fallback: cargo-dist shell installer via `curl`, then `wget`.
-   - Windows fallback: cargo-dist PowerShell installer via `powershell.exe`, then `pwsh.exe`.
-5. Cargo strategy: run `cargo install nd300 --force`.
-6. If Cargo succeeds while the running copy is outside Cargo's bin directory, remove the old installer-managed ND300 layout so it cannot shadow the new Cargo install.
-7. If Cargo reports an existing `nd300` or `speedqx` binary collision, run ND300's uninstall cleanup for the current install and retry Cargo once.
-8. Installer strategies:
-   - Windows: powershell -ExecutionPolicy ByPass -c "irm {PS_INSTALLER_URL} | iex"
-   - macOS/Linux: sh -c 'curl --proto "=https" --tlsv1.2 -LsSf {SHELL_INSTALLER_URL} | sh'
-9. Report success/failure → exit code
+   - macOS/Linux fallback: native exact-tag target archive + required SHA-256 sidecar.
+   - Windows paths unchanged: matching MSI/EXE or PowerShell → pwsh.
+5. Cargo strategy: run bounded `cargo install nd300 --force` as the validated invoking user; never run `rustup update`.
+6. Verify that user's explicit `~/.cargo/bin/nd300` and `speedqx` both report the exact expected version before cleaning a validated legacy origin.
+7. Unix archive strategy: bounded/size-limited download, in-Rust SHA-256, allowlist extraction of exactly two regular files (reject absolute/traversal/link/duplicate/unexpected entries), exact staged versions, and macOS pinned Developer ID/team/identifier/runtime/timestamp verification.
+8. Transactionally swap both binaries with backups; rollback both on every partial failure. Clean a known legacy origin only after post-install verification.
+9. Report success/failure → exit code.
 ```
 
 ### Key Constants (to customize per tool)
 
 ```rust
 const RELEASES_URL: &str = "https://api.github.com/repos/{OWNER}/{REPO}/releases/latest";
-const SHELL_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/download/nd300-installer.sh";
+const RELEASE_BASE: &str = "https://github.com/{OWNER}/{REPO}/releases/download";
 const PS_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/download/nd300-installer.ps1";
 ```
 
@@ -283,9 +314,9 @@ const PS_INSTALLER: &str = "https://github.com/{OWNER}/{REPO}/releases/latest/do
 ### Platform Notes
 
 - **Windows**: The running `.exe` cannot be replaced or deleted in place. The PowerShell installer from cargo-dist handles this correctly (downloads to temp, replaces after process exit). The uninstall/shadow-cleanup path likewise can only *schedule* deletion of the running copy (a background `cmd /C … del` that fires once the process exits), so `CleanupReport` distinguishes `binary_removed` (gone now) from `binary_removal_scheduled` (gone on exit). The updater's shadow-cleanup treats a scheduled removal as success **with an honest warning** (the new cargo binary wins in a new shell; manual cleanup instructions are printed if it doesn't), while the cargo-collision retry path treats a scheduled removal as Fatal **with instructions** (an immediate cargo retry needs the file gone *now*, so it asks the user to close this process and re-run `nd300 update`).
-- **macOS/Linux**: Shell installer can replace the running binary since Unix allows unlinking running executables; uninstall really removes the file (`binary_removed = true`, `binary_removal_scheduled` always `false`).
-- **Cargo**: `cargo install nd300 --force` installs the canonical crates.io package, but bare Cargo cannot run ND300-specific cleanup hooks for unrelated old install locations. `nd300 update` handles migration by removing a shadowing non-Cargo running copy after Cargo succeeds, and by retrying Cargo once after cleaning up the current install if Cargo reports an existing `nd300` or `speedqx` binary collision.
-- **`#[cfg(not(windows))]`** on the `SHELL_INSTALLER` constant to suppress dead code warnings on Windows builds.
+- **macOS/Linux**: `unix_install.rs` owns secure temporary directories, exact-tag archive download/verification, safe extraction, paired replacement/rollback/recovery markers, invoking-user Cargo execution, and origin classification. macOS requires the pinned Developer ID leaf/Team ID, per-binary identifier, hardened runtime, timestamp, and Gatekeeper install-policy acceptance with `source=Notarized Developer ID`. Release automation separately requires Apple notarization status `Accepted`; `spctl --type execute` and `codesign --check-notarization` are not accepted substitutes for bare CLIs.
+- **Unix uninstall**: Cargo origin → `cargo uninstall nd300`; ordinary invocation symlink → remove only the symlink; valid cargo-dist receipt → allow the matching managed files; package-manager/local-build/unknown → refuse. Never guess from location alone.
+- **Cargo**: bare Cargo cannot run ND300 cleanup hooks for unrelated installs. The updater may clean only an origin it can validate, after both explicit Cargo-bin versions match.
 
 ### JSON Output
 
@@ -294,8 +325,8 @@ Supports `--json` mode with structured output matching the uninstall pattern. On
 {
   "action": "update",
   "success": true,
-  "current_version": "3.0.11",
-  "latest_version": "3.1.0",
+  "current_version": "3.5.2",
+  "latest_version": "3.6.0",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",
@@ -314,23 +345,23 @@ ND-300 ships **four first-class Windows installers**, each packaging **both** `n
 | Global | EXE | `inno/global.iss` (Inno Setup) | perMachine (admin) | system (HKLM) | `C:\Program Files\nd300\bin\` | `exe-global` |
 | Corporate | EXE | `inno/corporate.iss` (Inno Setup) | perUser (no UAC) | user (HKCU) | `%LocalAppData%\Programs\nd300\bin\` | `exe-corporate` |
 
-The Global MSI is the cargo-dist base asset. The other **6 assets** (Corporate MSI + 2 EXEs + 3 `.sha256` sidecars) are built by `.github/workflows/windows-installers.yml`. **Two binaries:** every installer must keep BOTH `binary0`=nd300.exe and `binary1`=speedqx.exe (Inno: two `[Files]` lines). ND-300 has **no committed `LICENSE` file**, so the Inno scripts deliberately omit `LicenseFile=` (referencing a missing file would fail `iscc`).
+The Global MSI is the cargo-dist base asset. The other **6 assets** (Corporate MSI + 2 EXEs + 3 `.sha256` sidecars) are built by `.github/workflows/windows-installers.yml`. **Two binaries:** every installer must keep BOTH `binary0`=nd300.exe and `binary1`=speedqx.exe (Inno: two `[Files]` lines). Both Inno scripts show the committed root `LICENSE` in the wizard.
 
 ### Marker → update dispatch + the lockstep contract
 
-Each installer writes `HKCU\Software\ND300\InstallSource = <marker value>`. `src/actions/update.rs::read_install_source_marker()` reads it (authoritative); `classify_install_path()` is the path-based fallback (`\program files\nd300\` → MsiGlobal, `\appdata\local\programs\nd300\` → MsiCorporate, `\.cargo\bin\` → CargoOrInstaller). `build_strategy_list()` returns a **single** matching MSI/EXE strategy (no cross-fall-back between installer types — running a different product would create duplicate ARP entries). MSI/EXE strategies download the matching installer via async reqwest, **SHA-256-verify the `.sha256` sidecar** (`checksum_verdict`, refuse-on-mismatch), run it silently (`msiexec /i /passive /norestart`, handling 3010 reboot-required; EXE `/SILENT /SUPPRESSMSGBOXES /NORESTART`), then re-exec `--version`.
+Each installer writes `HKCU\Software\ND300\InstallSource = <marker value>`, but the marker is a hint rather than unconditional authority. `registered_install_owner()` scans both HKCU/HKLM uninstall views, requires the expected display/scope/format, normalizes `InstallLocation` against the running binary, and reduces the command to either a validated MSI product GUID or a known Inno uninstaller inside that location. A `.cargo\bin` path always wins; a unique proven owner wins over a contradictory marker; the marker is accepted only when its edition matches the path fallback. `build_strategy_list()` returns a **single** matching MSI/EXE strategy. Downloads remain SHA-256 verified and post-install version checked.
 
-**LOCKSTEP CONTRACT (do not break):** the install paths and marker values in `wix/main.wxs`, `wix-corporate/corporate.wxs`, `inno/global.iss`, `inno/corporate.iss` must stay in lockstep with `update.rs`'s `read_install_source_marker()` / `classify_install_path()` **and with `src/actions/migrate.rs`'s `edition_bin_dirs()`** (which hardcodes `%ProgramFiles%\nd300\bin` for Global and `%LocalAppData%\Programs\nd300\bin` for Corporate to pick the *other* edition to consolidate). If you change a path or marker in an installer, change the matching arm in `update.rs` (and the `install_origin` JSON id) **and `migrate.rs::edition_bin_dirs()`** in the same commit.
+**LOCKSTEP CONTRACT (do not break):** install paths, marker values, display names, MSI scope, and the two fixed Inno AppIds in all four installer files must stay aligned with `update.rs` ownership resolution, `InstallOrigin::json_id()`, `migrate.rs::edition_bin_dirs()`, and each installer's hidden `--install-origin` argument. All four must package both binaries. Run the installer lockstep reviewer after any change.
 
-**Consolidation (v3.2.0+) runs interactively AND on silent self-update.** All four installers ship two consent controls — Inno `[Tasks]` `cleancargo`/`cleanotheredition` (default-checked) + a conditioned `[Run]` calling `nd300 migrate-cleanup --quiet <flag>`; WiX `CLEANCARGO`/`CLEANOTHEREDITION` properties (default `1`) + a `ConsolidateDlg` (pre-checked) + two deferred `Impersonate='yes' Return='ignore'` `FileKey='exe0'` CAs conditioned `NOT Installed AND CLEAN…="1"`. Both default ON, so the **silent** self-update path consolidates too: `update.rs::try_msi_install` runs `msiexec /passive` (properties stay `1`) and `try_exe_install` runs Inno `/SILENT` with **no** `/MERGETASKS` suppression (default-checked tasks fire) — do not add property-disabling args or `/MERGETASKS` suppression to those, or you'll break silent consolidation. WiX uses `FileKey`/`ExeCommand` (not `WixUtilExtension`'s `WixQuietExec`) on purpose: `cargo wix` / the bare `candle`+`light` build only link `WixUIExtension`. The perMachine Global EXE does **not** pass `--user-profile` — Inno has no reliable pre-elevation user-profile constant (`{userprofile}` does not exist; passing it fails the `iscc` build — broke v3.2.0, fixed in v3.2.1), so it relies on `migrate-cleanup`'s process-env fallback. The perMachine MSI uses `Impersonate='yes'` so its CA runs as the invoking user. needs-admin targets are skipped + reported (exit 0), so silent consolidation never fails an update.
+**Consolidation (v3.2.0+) runs interactively AND on silent self-update.** All four installers keep their default-on consent controls and invoke `migrate-cleanup --quiet --install-origin <exact-origin> <target-flag>`. It is deliberately file-only because MSI calls it before InstallFinalize and Inno calls it inside Setup; nested product uninstallation is unsafe there. It never clears the newly written marker or claims PATH/ARP/receipt cleanup. Full post-finalize cross-edition unregistration remains tracked in `.tasks/` as a non-release-blocking follow-up. WiX keeps `FileKey`/`ExeCommand`, perMachine MSI keeps `Impersonate='yes'`, and needs-admin targets remain advisory/exit 0.
 
-The cargo path is unchanged except: `verify_cargo_post_install` re-execs `--version` **after** the shadow-cleanup success path (defeats the crates.io-lag "update available" loop), `rustup_update_stable_best_effort` runs first, and `is_newer` is prerelease-aware. JSON adds a Windows-only top-level `install_origin` field. New `strategy` json_ids: `msi_global`/`msi_corporate`/`exe_global`/`exe_corporate`. `sha2` + `winreg` are Windows-only deps; the 4 new `UpdateStrategy` variants carry `#[cfg_attr(not(windows), allow(dead_code))]` and the windows-only fns are `#[cfg(windows)]` (`checksum_verdict` is `#[cfg(any(windows, test))]` so its test runs everywhere).
+Top-level Windows uninstall uses the proven registered owner so both binaries, ARP registration, correct PATH hive, and marker leave together; raw registry command strings never go through a shell. Cargo/portable fallback retains the existing two-binary allowlist. JSON fields and strategy IDs remain compatible.
 
 ### `windows-installers.yml` — tag-triggered (consistent with TR-300)
 
 ND-300's `Release` workflow fires on a `vX.Y.Z` **tag push**, so a tag-triggered Release run has `head_branch == the tag name`. `windows-installers.yml`:
-- Triggers on `workflow_run: workflows:["Release"] types:[completed]` filtered to `conclusion=='success' && startsWith(head_branch,'v')`, plus `workflow_dispatch` (input `tag`, always runs).
-- **Resolves the tag** directly from `head_branch` (the tag); checks out `head_sha` (the tagged commit). Dispatch uses the provided tag.
+- Is a reusable `workflow_call` invoked by the tag-push Release job with its validated `tag` and `source_sha`; it no longer uses `workflow_run` (whose SHA is the default branch). Manual `workflow_dispatch` remains repair-only and must itself run at `--ref <tag>`.
+- **Resolves the immutable tag**, requires it to match the caller/manual SHA, and checks out that exact commit. The Release announcement requires this reusable job to succeed.
 - **Pre-flight + idempotency:** probes the release for `dist-manifest.json` + `nd300-x86_64-pc-windows-msvc.msi` (torn-release guard); if all 6 corporate/EXE assets are already attached on a non-dispatch run, logs and exits 0. `workflow_dispatch` always rebuilds (`--clobber`).
 - Keeps the WiX `candle`/`light -sice:ICE38 -sice:ICE64 -sice:ICE91` + Inno `iscc /DMyAppVersion=` mechanics. Final release carries the cargo-dist base assets + these 6 (28 total).
 
@@ -338,7 +369,7 @@ ND-300's `Release` workflow fires on a `vX.Y.Z` **tag push**, so a tag-triggered
 
 ### Installer build pitfalls + CI gate
 
-cargo-dist hides WiX `candle`'s real error (just "exit 104") and Inno only builds on the CI Windows runner — so validate all four installers **locally** before shipping: WiX 3.11 `candle`+`light` (`-ext WixUIExtension`; corporate adds `-sice:ICE38/64/91`) and Inno Setup 6 `iscc`, after `cargo build --release`. Pitfalls that bit v3.2.x: a WiX XML comment may NOT contain `--` (CNDL0104 — keep `--flags` out of `<!-- … -->`; they're fine in `ExeCommand=` *values*); Inno has no `{userprofile}` constant; the cleanup CA uses `FileKey`/`ExeCommand`, not `WixQuietExec` (only `WixUIExtension` is linked). Cross-platform tests use bare filenames — a `C:\…`-path test passes on Windows but fails on Linux (`\` isn't a separator, so `file_name()` returns the whole string); Windows-only helpers need `#[cfg(windows)]` or they trip `-D warnings` dead-code on macOS/Linux. `.github/workflows/ci.yml` now runs fmt/clippy/test/build on **macOS + Linux + Windows** (`RUSTFLAGS=-D warnings`) at PR time so these surface pre-merge; `release.yml` is the source of truth for the full 6-target matrix + the installer builds.
+cargo-dist hides WiX `candle`'s real error (just "exit 104"), so validate all four installers **locally** before shipping. `.github/workflows/ci.yml` runs fmt/clippy/test/build on macOS/Linux/Windows plus permanent aarch64 GNU and x86_64 musl release-target compile gates. `.github/workflows/windows-origin-matrix.yml` builds candidate installers once and exercises all five origins on separate hosted Windows VMs; dispatch it in `public` mode after release. `release.yml` remains the source of truth for signing/notarization, all six artifacts, exact-SHA attestations, and publication.
 
 **cargo-dist is installed from the prebuilt binary tarball, not `installer.sh`.** `ci.yml`'s `dist-plan` and `release.yml`'s `plan` job fetch `cargo-dist-x86_64-unknown-linux-gnu.tar.xz` (`curl --retry`) and extract `dist` directly (it needs `chmod +x`), because GitHub's release CDN has repeatedly 504'd the small `cargo-dist-installer.sh` asset while the `.tar.xz` stayed up — and `dist-plan` is not `continue-on-error`, so that flake blocks the crates.io publish (it held up v3.3.1 for hours; fixed in v3.3.2). Don't revert these to `curl installer.sh | sh` (a `dist generate` would; re-apply the tarball install if so). Per-target `build-local-artifacts` jobs still use cargo-dist's platform-detecting installer (each runner needs a different host tarball).
 

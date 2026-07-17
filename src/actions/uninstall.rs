@@ -23,6 +23,9 @@ pub(crate) struct CleanupReport {
     /// guard can tell "already gone" from "scheduled for removal on exit" and not
     /// be silently defeated by an optimistic "removed".
     pub(crate) binary_removal_scheduled: bool,
+    /// Unix symlink invocation: only the link was removed; the underlying
+    /// package-manager/Cargo/archive target remains installed.
+    pub(crate) target_retained: bool,
     pub(crate) sibling_removed: bool,
     pub(crate) receipt_removed: bool,
     pub(crate) path_cleaned: bool,
@@ -68,22 +71,36 @@ pub async fn run(config: &Config) -> i32 {
     }
 
     println!();
-    println!(
-        "  This will remove nd300 and speedqx from: {}",
-        color::cyan(
-            &real_path
-                .parent()
-                .unwrap_or(&real_path)
-                .display()
-                .to_string(),
-            config
+    #[cfg(unix)]
+    print_unix_uninstall_preview(&real_path, config);
+    #[cfg(windows)]
+    match super::update::registered_install_owner(&real_path) {
+        Some(owner) => println!(
+            "  This will start the registered {} uninstaller for: {}",
+            owner.origin.json_id(),
+            color::cyan(&owner.install_location.display().to_string(), config),
         ),
-    );
+        None => println!(
+            "  This will remove nd300 and speedqx from: {}",
+            color::cyan(
+                &real_path
+                    .parent()
+                    .unwrap_or(&real_path)
+                    .display()
+                    .to_string(),
+                config
+            ),
+        ),
+    }
 
     // Show what we'll clean up
     let receipt_dir = get_receipt_dir();
+    #[cfg(unix)]
+    let show_receipt = unix_uninstall_cleans_receipt();
+    #[cfg(windows)]
+    let show_receipt = true;
     if let Some(ref dir) = receipt_dir {
-        if dir.exists() {
+        if show_receipt && dir.exists() {
             println!(
                 "  Config/receipt directory:    {}",
                 color::cyan(&dir.display().to_string(), config),
@@ -107,17 +124,26 @@ pub async fn run(config: &Config) -> i32 {
     println!();
 
     if is_interactive(config) {
-        if !prompt_yes_no("  Are you sure you want to uninstall nd300 and speedqx? (y/N): ") {
+        #[cfg(unix)]
+        let prompt = "  Proceed with this origin-aware uninstall? (y/N): ";
+        #[cfg(windows)]
+        let prompt = "  Are you sure you want to uninstall nd300 and speedqx? (y/N): ";
+        if !prompt_yes_no(prompt) {
             println!("  Uninstall cancelled.");
             return 0;
         }
         println!();
     }
 
-    let report = uninstall_path(&real_path);
+    let report = execute_uninstall(&real_path).await;
 
     // Print results
-    if report.binary_removed {
+    if report.target_retained {
+        print_ok(
+            "Invocation symlink removed; target installation retained",
+            config,
+        );
+    } else if report.binary_removed {
         print_ok("nd300 binary removed", config);
     } else if report.binary_removal_scheduled {
         // Windows: the running exe is deleted by the spawned helper once we exit.
@@ -146,7 +172,17 @@ pub async fn run(config: &Config) -> i32 {
     }
 
     println!();
-    if report.binary_removed || report.binary_removal_scheduled {
+    if report.target_retained {
+        println!(
+            "  {} {}",
+            color::green(success_icon(config), config),
+            color::green(
+                "Invocation symlink removed; ND300 remains installed",
+                config
+            ),
+        );
+        0
+    } else if report.binary_removed || report.binary_removal_scheduled {
         println!(
             "  {} {}",
             color::green(success_icon(config), config),
@@ -163,13 +199,78 @@ pub async fn run(config: &Config) -> i32 {
     }
 }
 
+#[cfg(unix)]
+fn unix_uninstall_cleans_receipt() -> bool {
+    use super::unix_install::UnixOriginKind;
+    let Ok(user) = crate::platform::invoking_user::InvokingUser::detect() else {
+        return false;
+    };
+    super::unix_install::detect_origin(&user)
+        .ok()
+        .is_some_and(|origin| {
+            matches!(
+                origin.kind,
+                UnixOriginKind::Cargo | UnixOriginKind::ManagedArchive
+            ) && super::unix_install::cargo_dist_receipt_valid(&user)
+        })
+}
+
+#[cfg(unix)]
+fn print_unix_uninstall_preview(real_path: &Path, config: &Config) {
+    use super::unix_install::UnixOriginKind;
+
+    let origin = crate::platform::invoking_user::InvokingUser::detect()
+        .ok()
+        .and_then(|user| super::unix_install::detect_origin(&user).ok());
+    match origin {
+        Some(origin) if origin.kind == UnixOriginKind::Symlink => {
+            let link = origin.invocation_symlink.as_deref().unwrap_or(real_path);
+            println!(
+                "  This will remove only the invocation symlink: {}",
+                color::cyan(&link.display().to_string(), config)
+            );
+            println!("  The target installation will remain intact.");
+        }
+        Some(origin) if origin.kind == UnixOriginKind::Cargo => println!(
+            "  This will run `cargo uninstall nd300` for: {}",
+            color::cyan(&origin.executable.display().to_string(), config)
+        ),
+        Some(origin) if origin.kind == UnixOriginKind::ManagedArchive => println!(
+            "  This will remove the validated ND300 archive install from: {}",
+            color::cyan(
+                &origin
+                    .executable
+                    .parent()
+                    .unwrap_or(&origin.executable)
+                    .display()
+                    .to_string(),
+                config
+            )
+        ),
+        Some(origin) => println!(
+            "  ND300 will inspect and refuse this {} installation unless its original manager removes it: {}",
+            match origin.kind {
+                UnixOriginKind::PackageManager => "package-manager-owned",
+                UnixOriginKind::LocalBuild => "local-build",
+                _ => "unknown",
+            },
+            color::cyan(&origin.executable.display().to_string(), config)
+        ),
+        None => println!(
+            "  ND300 could not validate the install origin and will refuse removal: {}",
+            color::cyan(&real_path.display().to_string(), config)
+        ),
+    }
+}
+
 async fn run_json(exe_path: &Path, _config: &Config) -> i32 {
-    let report = uninstall_path(exe_path);
+    let report = execute_uninstall(exe_path).await;
 
     // `binary_removed` stays a literal "is it gone right now?" so existing
-    // scripts read the same field; `success` and the exit code key off the OR so
-    // a Windows scheduled-on-exit removal is reported as success.
-    let succeeded = report.binary_removed || report.binary_removal_scheduled;
+    // scripts read the same field; `success` and the exit code also accept a
+    // Windows scheduled removal or a Unix symlink-only removal.
+    let succeeded =
+        report.binary_removed || report.binary_removal_scheduled || report.target_retained;
     let output = serde_json::json!({
         "action": "uninstall",
         "success": succeeded,
@@ -193,27 +294,259 @@ async fn run_json(exe_path: &Path, _config: &Config) -> i32 {
     }
 }
 
+async fn execute_uninstall(_exe_path: &Path) -> CleanupReport {
+    #[cfg(unix)]
+    {
+        let user = match crate::platform::invoking_user::InvokingUser::detect() {
+            Ok(user) => user,
+            Err(error) => {
+                return CleanupReport {
+                    binary_removed: false,
+                    binary_removal_scheduled: false,
+                    target_retained: false,
+                    sibling_removed: false,
+                    receipt_removed: false,
+                    path_cleaned: false,
+                    notes: vec![format!("Could not identify invoking user: {error}")],
+                };
+            }
+        };
+        super::unix_install::uninstall_detected(&user).await
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(owner) = super::update::registered_install_owner(_exe_path) {
+            uninstall_registered_owner(&owner)
+        } else {
+            uninstall_path(_exe_path)
+        }
+    }
+}
+
+/// Launch the registry-proven MSI/Inno owner directly, without passing its raw
+/// registry command through cmd.exe or PowerShell. The current process returns
+/// immediately so the official uninstaller can remove the running executable,
+/// its sibling, ARP registration, the correct PATH hive, and InstallSource
+/// marker together.
+#[cfg(windows)]
+fn uninstall_registered_owner(owner: &super::update::RegisteredInstallOwner) -> CleanupReport {
+    use super::update::{InstallOrigin, RegisteredUninstall};
+
+    let mut report = empty_cleanup_report();
+    let command: Result<(PathBuf, Vec<String>), String> = match &owner.uninstall {
+        RegisteredUninstall::Msi { product_code } => system_msiexec_path().map(|program| {
+            (
+                program,
+                vec![
+                    "/x".to_string(),
+                    product_code.clone(),
+                    "/passive".to_string(),
+                    "/norestart".to_string(),
+                ],
+            )
+        }),
+        RegisteredUninstall::Inno { executable } => Ok((
+            executable.clone(),
+            vec![
+                "/VERYSILENT".to_string(),
+                "/SUPPRESSMSGBOXES".to_string(),
+                "/NORESTART".to_string(),
+                "/SP-".to_string(),
+            ],
+        )),
+    };
+    let (program, args) = match command {
+        Ok(command) => command,
+        Err(error) => {
+            report.notes.push(error);
+            return report;
+        }
+    };
+
+    let needs_elevation = matches!(
+        owner.origin,
+        InstallOrigin::MsiGlobal | InstallOrigin::ExeGlobal
+    );
+    let launch = if needs_elevation {
+        shell_execute_elevated(&program, &args)
+    } else {
+        spawn_uninstaller(&program, &args)
+    };
+
+    match launch {
+        Ok(()) => {
+            report.binary_removal_scheduled = true;
+            report.notes.push(format!(
+                "Registered {} uninstaller started; binaries, registration, PATH, and installer marker are removed after this process exits",
+                owner.origin.json_id()
+            ));
+            if let Some(receipt_dir) = get_receipt_dir() {
+                if receipt_dir.exists() {
+                    match std::fs::remove_dir_all(&receipt_dir) {
+                        Ok(()) => report.receipt_removed = true,
+                        Err(error) => report.notes.push(format!(
+                            "Could not remove receipt dir {}: {}",
+                            receipt_dir.display(),
+                            error
+                        )),
+                    }
+                }
+            }
+        }
+        Err(error) => report
+            .notes
+            .push(format!("Could not start registered uninstaller: {error}")),
+    }
+    report
+}
+
+/// Resolve a trusted Windows system executable from the kernel-provided system
+/// directory instead of PATH or the current working directory.
+#[cfg(windows)]
+fn system_executable_path(relative_path: &Path) -> Result<PathBuf, String> {
+    use std::os::windows::ffi::OsStringExt;
+    use winapi::um::sysinfoapi::GetSystemDirectoryW;
+
+    // System directories are bounded well below the extended Windows path
+    // ceiling. A large fixed buffer also avoids trusting mutable environment
+    // variables such as SystemRoot.
+    let mut buffer = vec![0_u16; 32_768];
+    // SAFETY: `buffer` is writable for exactly the capacity passed to Win32.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 {
+        return Err(format!(
+            "Could not resolve the trusted Windows system directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let length = length as usize;
+    if length >= buffer.len() {
+        return Err("Windows system directory exceeded the trusted path buffer".to_string());
+    }
+
+    let system_dir = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+    let executable = system_dir.join(relative_path);
+    if !system_dir.is_absolute() || !executable.is_file() {
+        return Err(format!(
+            "Trusted Windows system executable was not found at {}",
+            executable.display()
+        ));
+    }
+    Ok(executable)
+}
+
+/// A bare `msiexec.exe` passed to ShellExecuteW(`runas`) would permit
+/// executable-search hijacking before the user approves elevation.
+#[cfg(windows)]
+fn system_msiexec_path() -> Result<PathBuf, String> {
+    system_executable_path(Path::new("msiexec.exe"))
+}
+
+#[cfg(windows)]
+fn system_powershell_path() -> Result<PathBuf, String> {
+    system_executable_path(Path::new("WindowsPowerShell\\v1.0\\powershell.exe"))
+}
+
+#[cfg(windows)]
+fn spawn_uninstaller(program: &Path, args: &[String]) -> Result<(), String> {
+    std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("{}: {}", program.display(), error))
+}
+
+#[cfg(windows)]
+fn shell_execute_elevated(program: &Path, args: &[String]) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::um::shellapi::ShellExecuteW;
+    use winapi::um::winuser::SW_SHOWNORMAL;
+
+    let wide = |value: &std::ffi::OsStr| {
+        value
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
+    let verb = wide(std::ffi::OsStr::new("runas"));
+    let file = wide(program.as_os_str());
+    let parameters = args.join(" ");
+    let parameters = wide(std::ffi::OsStr::new(&parameters));
+    let directory = program.parent().filter(|path| !path.as_os_str().is_empty());
+    let directory_wide = directory.map(|path| wide(path.as_os_str()));
+    let directory_ptr = directory_wide
+        .as_ref()
+        .map_or(std::ptr::null(), |value| value.as_ptr());
+
+    // SAFETY: every pointer references a NUL-terminated UTF-16 buffer that lives
+    // through the call. The executable is registry-proven and the arguments are
+    // reconstructed from a validated product GUID or fixed Inno flags.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            parameters.as_ptr(),
+            directory_ptr,
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Windows rejected the elevated uninstall request (ShellExecute code {result})"
+        ))
+    }
+}
+
+#[cfg(windows)]
 pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
-    let mut report = CleanupReport {
+    uninstall_path_impl(exe_path, true)
+}
+
+/// Advisory installer migration removes only the allowlisted binary pair. It
+/// deliberately leaves receipt, PATH, ARP registration, and the shared marker
+/// untouched because it runs inside an active installer transaction.
+#[cfg(windows)]
+pub(crate) fn uninstall_path_files_only(exe_path: &Path) -> CleanupReport {
+    uninstall_path_impl(exe_path, false)
+}
+
+#[cfg(windows)]
+fn empty_cleanup_report() -> CleanupReport {
+    CleanupReport {
         binary_removed: false,
         binary_removal_scheduled: false,
+        target_retained: false,
         sibling_removed: false,
         receipt_removed: false,
         path_cleaned: false,
         notes: Vec::new(),
-    };
+    }
+}
+
+#[cfg(windows)]
+fn uninstall_path_impl(exe_path: &Path, full_cleanup: bool) -> CleanupReport {
+    let mut report = empty_cleanup_report();
 
     // Step 1: Remove the receipt/config directory
     // This is safe to do first since it's nd300-specific
-    if let Some(receipt_dir) = get_receipt_dir() {
-        if receipt_dir.exists() {
-            match std::fs::remove_dir_all(&receipt_dir) {
-                Ok(_) => report.receipt_removed = true,
-                Err(e) => report.notes.push(format!(
-                    "Could not remove receipt dir {}: {}",
-                    receipt_dir.display(),
-                    e
-                )),
+    if full_cleanup {
+        if let Some(receipt_dir) = get_receipt_dir() {
+            if receipt_dir.exists() {
+                match std::fs::remove_dir_all(&receipt_dir) {
+                    Ok(_) => report.receipt_removed = true,
+                    Err(e) => report.notes.push(format!(
+                        "Could not remove receipt dir {}: {}",
+                        receipt_dir.display(),
+                        e
+                    )),
+                }
             }
         }
     }
@@ -258,7 +591,7 @@ pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
     // Step 3: Clean up PATH on Windows
     // Only remove the bin dir from PATH if only our binaries were there
     #[cfg(windows)]
-    {
+    if full_cleanup {
         let bin_dir = exe_path.parent().map(|p| p.to_path_buf());
         if let Some(ref dir) = bin_dir {
             if is_sole_package_in_dir(dir) {
@@ -288,64 +621,59 @@ pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
 
     #[cfg(windows)]
     {
-        // On Windows, a running exe cannot be deleted directly.
-        // Spawn a background cmd that waits briefly, then deletes the file.
+        // On Windows, a running exe cannot be deleted directly. Spawn a trusted
+        // background PowerShell helper that retries until the process releases
+        // its image mapping. The path travels in an environment variable and is
+        // consumed with .NET LiteralPath-equivalent APIs, never shell-expanded.
         // The file is NOT gone yet, so we set `binary_removal_scheduled` (not
         // `binary_removed`) — the updater's shadow guard depends on the
         // distinction.
-        match build_delayed_delete_command(exe_path) {
-            Some(script) => {
-                match std::process::Command::new("cmd")
-                    .args(["/C", &script])
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    Ok(_) => report.binary_removal_scheduled = true,
-                    Err(e) => report
-                        .notes
-                        .push(format!("Failed to spawn cleanup process: {}", e)),
-                }
-            }
-            None => {
-                // The path contains characters that can't be safely embedded in a
-                // `cmd /C` string. Refuse rather than risk a malformed/dangerous
-                // command — neither flag is set, so this is reported as a failure.
-                report.notes.push(format!(
-                    "Could not schedule binary removal: path contains characters unsafe for a Windows shell command: {}",
-                    exe_path.display()
-                ));
-            }
+        match spawn_delayed_delete(exe_path) {
+            Ok(()) => report.binary_removal_scheduled = true,
+            Err(error) => report.notes.push(error),
         }
     }
 
     report
 }
 
-/// Build the `cmd /C` script that deletes `exe_path` shortly after the current
-/// process exits (Windows can't delete a running exe in place).
-///
-/// Returns `None` if the path contains any character that is either illegal in a
-/// real Windows path or unsafe to embed in a `cmd` command line — `"`, newline,
-/// carriage return, or any cmd metacharacter (`& ^ | < >`). All of these are
-/// already illegal in genuine Windows file paths, so `None` is an honest refusal
-/// rather than a real limitation. `%` is escaped to `%%` so `cmd`'s
-/// environment-variable expansion can't mangle a path containing a literal `%`.
 #[cfg(windows)]
-fn build_delayed_delete_command(exe_path: &Path) -> Option<String> {
-    let raw = exe_path.to_string_lossy();
+fn spawn_delayed_delete(exe_path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
 
-    // Reject anything that would break out of the quoted `del "..."` argument or
-    // that cmd would interpret as a metacharacter.
-    const FORBIDDEN: [char; 8] = ['"', '\n', '\r', '&', '^', '|', '<', '>'];
-    if raw.chars().any(|c| FORBIDDEN.contains(&c)) {
-        return None;
-    }
+    // `cmd /C <script>` has non-C argv parsing: ordinary Command::args quoting
+    // can corrupt an embedded quoted path, which left Cargo/portable nd300.exe
+    // behind even though the helper reported as spawned. Windows PowerShell
+    // accepts a constant command through argv, while the untrusted path is kept
+    // entirely out of command text.
+    const SCRIPT: &str = "$target=$env:ND300_DELETE_TARGET; for ($i=0; $i -lt 120; $i++) { try { [System.IO.File]::Delete($target) } catch {}; if (-not [System.IO.File]::Exists($target)) { exit 0 }; Start-Sleep -Seconds 1 }; exit 1";
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    // Escape `%` so cmd doesn't try to expand `%VAR%`-style sequences in the path.
-    let safe = raw.replace('%', "%%");
-    Some(format!("ping localhost -n 3 > nul & del \"{}\"", safe))
+    let powershell = system_powershell_path()?;
+    std::process::Command::new(&powershell)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            SCRIPT,
+        ])
+        .env("ND300_DELETE_TARGET", exe_path.as_os_str())
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "Failed to spawn trusted delayed-delete helper at {}: {}",
+                powershell.display(),
+                error
+            )
+        })
 }
 
 fn print_ok(label: &str, config: &Config) {
@@ -377,15 +705,19 @@ fn get_receipt_dir() -> Option<PathBuf> {
 
     #[cfg(not(windows))]
     {
-        let base = std::env::var("XDG_CONFIG_HOME")
+        crate::platform::invoking_user::InvokingUser::detect()
             .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".config"))
-            });
-        base.map(|b| b.join("nd300"))
+            .map(|user| {
+                let config_home = if !user.is_different_from_effective_user() {
+                    std::env::var_os("XDG_CONFIG_HOME")
+                        .map(PathBuf::from)
+                        .filter(|path| path.is_absolute())
+                        .unwrap_or_else(|| user.home().join(".config"))
+                } else {
+                    user.home().join(".config")
+                };
+                config_home.join("nd300")
+            })
     }
 }
 
@@ -541,45 +873,74 @@ mod tests {
         assert!(!path_entry_matches_target("   ", target));
     }
 
-    // ── L4: delayed-delete command is built safely or honestly refused ────────
     #[cfg(windows)]
     #[test]
-    fn build_delayed_delete_command_normal_path() {
-        let cmd = build_delayed_delete_command(Path::new(r"C:\Users\me\.cargo\bin\nd300.exe"))
-            .expect("a normal path yields a command");
-        assert!(cmd.contains(r#"del "C:\Users\me\.cargo\bin\nd300.exe""#));
-        assert!(cmd.starts_with("ping localhost -n 3 > nul & del \""));
+    fn msi_uninstall_resolves_an_absolute_system_executable() {
+        let msiexec = system_msiexec_path().expect("Windows Installer must exist in System32");
+        assert!(msiexec.is_absolute());
+        assert!(msiexec.is_file());
+        assert_eq!(
+            msiexec
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("msiexec.exe"),
+        );
+    }
+
+    // ── L4: delayed-delete helper is trusted and survives image locks ─────────
+    #[cfg(windows)]
+    #[test]
+    fn delayed_delete_resolves_an_absolute_system_powershell() {
+        let powershell =
+            system_powershell_path().expect("Windows PowerShell must exist below System32");
+        assert!(powershell.is_absolute());
+        assert!(powershell.is_file());
+        assert_eq!(
+            powershell
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("powershell.exe"),
+        );
     }
 
     #[cfg(windows)]
     #[test]
-    fn build_delayed_delete_command_escapes_percent() {
-        let cmd = build_delayed_delete_command(Path::new(r"C:\weird%path\nd300.exe"))
-            .expect("a percent in a path is escaped, not refused");
-        assert!(cmd.contains(r"C:\weird%%path\nd300.exe"));
-        // The single literal percent must not survive un-escaped.
-        assert!(!cmd.contains(r"weird%path"));
-    }
+    fn delayed_delete_retries_until_a_locked_file_is_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    #[cfg(windows)]
-    #[test]
-    fn build_delayed_delete_command_refuses_metacharacters() {
-        // Every cmd metacharacter / quote / newline yields a refusal (None).
-        for bad in [
-            r#"C:\a"b\nd300.exe"#,
-            r"C:\a&b\nd300.exe",
-            r"C:\a^b\nd300.exe",
-            r"C:\a|b\nd300.exe",
-            r"C:\a<b\nd300.exe",
-            r"C:\a>b\nd300.exe",
-            "C:\\a\nb\\nd300.exe",
-            "C:\\a\rb\\nd300.exe",
-        ] {
-            assert!(
-                build_delayed_delete_command(Path::new(bad)).is_none(),
-                "expected refusal for path: {:?}",
-                bad
-            );
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "nd300-delayed-delete-{}-{nonce}.exe",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"locked test file").expect("create locked test file");
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .expect("open test file without delete sharing");
+
+        let canonical_path = path.canonicalize().expect("canonicalize locked test file");
+        spawn_delayed_delete(&canonical_path).expect("spawn delayed-delete helper");
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            path.exists(),
+            "helper must not claim a locked file was deleted"
+        );
+        drop(lock);
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
         }
+        assert!(!path.exists(), "helper did not delete the released file");
     }
 }
