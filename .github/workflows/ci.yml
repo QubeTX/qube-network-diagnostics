@@ -238,7 +238,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck scripts/*.sh
+      - run: shellcheck -x scripts/*.sh
+      - name: Test macOS release metadata parser
+        shell: bash
+        run: bash scripts/test-macos-release-parsers.sh
       - name: Enforce macOS runner Bash 3 compatibility
         shell: bash
         run: |

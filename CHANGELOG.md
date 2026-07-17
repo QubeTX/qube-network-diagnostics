@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-07-17
+
+### Fixed
+- **Intel macOS release validation recognizes legacy deployment metadata.**
+  The release gate now validates both modern `LC_BUILD_VERSION` / `minos` and
+  legacy `LC_VERSION_MIN_MACOSX` / `version` output from `vtool`, with fixture
+  coverage for accepted and rejected forms. The immutable v3.6.0 attempt was
+  Apple-notarized but correctly stopped before hosting GitHub release artifacts
+  when this validator misread its valid 10.12 deployment floor; v3.6.1 is the
+  forward-only release.
+
 ## [3.6.0] - 2026-07-17
 
 macOS accuracy, repair safety, transactional Unix update/uninstall, and

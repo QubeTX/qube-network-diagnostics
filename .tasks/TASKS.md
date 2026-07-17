@@ -8,27 +8,16 @@
 - [ ] **Design safe post-finalize cross-edition Windows unregistration** - remove retained installer registrations without nesting MSI transactions (ms #p36) #arp
 
 ## To-Do
-- [ ] **Run pre-merge validation and Alienware smoke** - validate Rust, scripts, four installers, disposable Windows upgrades, and physical diagnostics (needs #prf, #win) (ms #v36) #val
-- [ ] **Merge exact-SHA candidate and publish the crate** - merge PR #18 only after every reviewed-head gate passes (needs #val) (ms #v36) #mrg
-- [ ] **Tag and verify the final ND-300 release** - publish an immutable version and verify trust, assets, and attestations (needs #mrg) (ms #v36) #rel
 - [ ] **Verify public Windows updates and upgrade the Alienware** - exercise all five origins against public artifacts (needs #rel) (ms #v36) #wup
 - [ ] **Merge and verify the ND-300 homepage update** - deploy the final public fallback version through Vercel (needs #wup) (ms #v36) #web
 - [ ] **Close release documentation with exact evidence** - record SHAs, runs, publishing, trust, and smoke results (needs #web) (ms #v36) #doc
 - [ ] **Clean merged branches and worktrees in both repositories** - preserve unique work, prune stale refs, and enable automatic merged-branch deletion (needs #doc) (ms #v36) #cln
 
 ## Active
-- [ ] **Repair PR #18 release and cross-platform blockers** - fix observed CI failures, provenance, and missing release-target gates (ms #v36) (owner codex) #prf
-  - [x] Migrate the root Mac handoff into the tracked SHAUGHV board
-    > Preserve every ND36 task's rationale, impact, acceptance, and safety constraints in task detail files.
-  - [x] Fix Windows/Linux cfg and Clippy blockers
-  - [x] Fix ShellCheck trap-handler diagnostics
-  - [x] Bind Windows artifact attestations to the tag-push caller SHA
-  - [x] Add Linux ARM and musl pre-tag compile gates
-- [ ] **Harden Windows install ownership and uninstall lifecycle** - eliminate stale-marker routing while preserving advisory migration safety (ms #v36) (owner codex) #win
-  - [x] Implement Cargo/registered-owner/marker precedence
-  - [x] Delegate registered uninstall without shell-expanding registry commands
-  - [x] Pass a validated hidden origin from all four installers
-  - [x] Keep installer-internal migration advisory and file-only
-  - [ ] Prove all five origins on disposable hosted Windows VMs
+- [ ] **Tag and verify the final ND-300 release** - fix forward from the immutable v3.6.0 validator failure and verify v3.6.1 trust, assets, and attestations (ms #v36) (owner codex) #rel
 
 ## Done
+- [x] **Repair PR #18 release and cross-platform blockers** - exact head `4b2c623` passed every PR gate and both specialist reviews (ms #v36) #prf
+- [x] **Harden Windows install ownership and uninstall lifecycle** - candidate run `29601781683` passed all five disposable origins (ms #v36) #win
+- [x] **Run pre-merge validation and Alienware smoke** - local, installer, candidate VM, and non-mutating physical checks passed (ms #v36) #val
+- [x] **Merge exact-SHA candidate and publish the crate** - merge `2dd0f92`, exact-main CI, and public crates.io 3.6.0 all passed (ms #v36) #mrg
