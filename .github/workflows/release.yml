@@ -17,8 +17,9 @@
 # Tag-triggered. To cut a release: bump Cargo.toml version, merge to main
 # (CI runs → crates-publish.yml publishes the crate), then push a `vX.Y.Z` tag
 # (this workflow builds the 6 cargo-dist targets + Global MSI + shell/PS
-# installers and creates the GitHub Release; windows-installers.yml then chains
-# off it to add the Corporate MSI + the two Inno EXEs + sidecars). The crate is
+# installers and creates the GitHub Release; it then calls
+# windows-installers.yml with the same tag-push context to add the Corporate MSI
+# + the two Inno EXEs + sidecars). The crate is
 # published by crates-publish.yml (NOT here) to avoid double-publishing.
 
 name: Release
@@ -537,15 +538,34 @@ jobs:
             "$RELEASE_VERSION" \
             --require-trust
 
+  # Build, attest, upload, and verify the six Windows add-on assets inside the
+  # tag-push caller context. This keeps the OIDC source digest bound to the
+  # release SHA even if main advances while the release is running.
+  windows-installers:
+    name: Windows installer add-ons
+    needs:
+      - plan
+      - host
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/windows-installers.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+      source_sha: ${{ needs.plan.outputs.release-sha }}
+
   announce:
     needs:
       - plan
       - host
       - verify-published-macos
+      - windows-installers
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && needs.verify-published-macos.result == 'success' }}
+    if: ${{ always() && needs.host.result == 'success' && needs.verify-published-macos.result == 'success' && needs.windows-installers.result == 'success' }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

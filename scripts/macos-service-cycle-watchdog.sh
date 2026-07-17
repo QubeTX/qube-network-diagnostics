@@ -171,7 +171,9 @@ fully_restored() {
         && default_route_matches
 }
 
-# shellcheck disable=SC2329 # Invoked asynchronously by the trap below.
+# ShellCheck cannot see trap-dispatched functions as reachable. Keep both
+# indirect-call diagnostics scoped to this handler only.
+# shellcheck disable=SC2317,SC2329
 on_signal() {
     log "watchdog received a signal; forcing one final local restore"
     restore_once || true

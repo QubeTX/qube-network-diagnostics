@@ -106,8 +106,8 @@ Root: HKCU; Subkey: "Software\ND300"; Flags: uninsdeletekeyifempty
 ; %LocalAppData% — no --user-profile needed. The "other edition" here is the
 ; Global perMachine copy in Program Files; a perUser process can't delete it, so
 ; migrate-cleanup reports "needs admin: <path>" and exits 0 (graceful skip).
-Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --cargo-copy"; Flags: runhidden waituntilterminated; Tasks: cleancargo; StatusMsg: "Removing older Cargo-installed copy..."
-Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --other-edition"; Flags: runhidden waituntilterminated; Tasks: cleanotheredition; StatusMsg: "Removing the other edition..."
+Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --install-origin exe-corporate --cargo-copy"; Flags: runhidden waituntilterminated; Tasks: cleancargo; StatusMsg: "Removing older Cargo-installed copy..."
+Filename: "{app}\bin\{#MyAppExeName}"; Parameters: "migrate-cleanup --quiet --install-origin exe-corporate --other-edition"; Flags: runhidden waituntilterminated; Tasks: cleanotheredition; StatusMsg: "Removing the other edition..."
 
 [Code]
 {

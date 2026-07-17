@@ -178,13 +178,13 @@
              uninstall/repair. CLEANCARGO/CLEANOTHEREDITION (default 1) gate it. -->
         <CustomAction Id='CleanCargoCopy'
             FileKey='exe0'
-            ExeCommand='migrate-cleanup --quiet --cargo-copy'
+            ExeCommand='migrate-cleanup --quiet --install-origin msi-corporate --cargo-copy'
             Execute='deferred'
             Impersonate='yes'
             Return='ignore'/>
         <CustomAction Id='CleanOtherEdition'
             FileKey='exe0'
-            ExeCommand='migrate-cleanup --quiet --other-edition'
+            ExeCommand='migrate-cleanup --quiet --install-origin msi-corporate --other-edition'
             Execute='deferred'
             Impersonate='yes'
             Return='ignore'/>

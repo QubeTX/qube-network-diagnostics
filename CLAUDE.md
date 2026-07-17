@@ -6,9 +6,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ND-300 (`nd300`) is a cross-platform CLI network diagnostics tool written in Rust. It runs 25+ diagnostic modules concurrently, supports user and technician modes, and includes a diagnostic-driven network recovery system (`--fix`). Ships two binaries: `nd300` (main diagnostic) and `speedqx` (standalone speed test).
 
-For the v3.6.0 release handoff and later hardening, treat root `TASKS.md` as the
-tracked task board. Preserve each item's rationale and impact when updating its
-status, and attach exact-SHA/run evidence before marking a release gate done.
+For the v3.6.0 release handoff and later hardening, preserve each task's
+rationale and impact when updating its status, and attach exact-SHA/run evidence
+before marking a release gate done.
+
+## Task management system
+
+This repo uses the SHAUGHV `tasks-*` system. The board source of truth is
+`.tasks/TASKS.md`; milestones live in `.tasks/MILESTONES.md`, and each task's
+rich handoff lives at `.tasks/tasks/<id>.md` with its `## Verification`,
+`## Status`, and attributed `## Activity` entries kept current while work is
+in flight.
+
+Use indented checkbox subtasks for small required steps that must be visible
+and complete before their parent. Put reasoning, implementation context,
+impact, acceptance, and resume notes in the parent detail file. Work large
+enough to need its own status or owner is a top-level task linked with
+`(needs #id)`. Never complete a task over unchecked subtasks or open
+verification items; verify them or waive them with a dated reason. Never close
+a milestone over open child tasks.
+
+Never put secrets in task, detail, working-memory, or deep-memory files. Use
+environment variables, the OS keychain, or `.tasks/secure/` (gitignored). This
+board is shared through git: pull before board sessions, respect `(owner
+name)`, attribute Activity lines, and commit meaningful board changes.
+
+The live board port is per-repo. Resolve it from
+`.tasks/.board-server.json` or `node .tasks/board-server.mjs status` and verify
+the reported root; never assume port 4317. Relevant skills are `tasks-start`,
+`tasks-create`, `tasks-management`, `tasks-update`, `tasks-memory`,
+`tasks-boards`, and `tasks-remove`.
 
 ## Build & Run Commands
 
@@ -58,8 +85,8 @@ Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **25 
 ### Module Layout
 
 - **`src/cli.rs`** — Shared clap derive definitions (`Nd300Cli`, `SpeedQXCli`) used by both binaries and by `build.rs` for man page generation.
-- **`src/actions/`** — Exit-early operations (`fix`, `clear-dns`, `uninstall`, `dns`, `update` — each available as a bare subcommand and a legacy flag; plus hidden `migrate-cleanup`). `dns` is semi-exit-early. The fix flow implements evidence-driven recovery, LIFO verified restoration, exact macOS DNS/search rollback, and invoking-user-owned private reports. The updater (`update.rs` + Unix-only `unix_install.rs`) tries bounded invoking-user Cargo first, then on Unix verifies and transactionally installs an exact-tag two-binary archive; Windows keeps the four installer-aware paths. Unix uninstall is origin-aware and refuses unknown/package-manager/local-build locations.
-- **`src/actions/migrate.rs`** — Cross-method install cleanup, exposed as the **hidden** `nd300 migrate-cleanup` subcommand (`#[command(hide = true)]`). Invoked by the four Windows installers (and the silent self-update path) to consolidate to a single install: it removes a shadowing older `cargo install` copy in `~\.cargo\bin` and/or the *other* Windows edition (Global perMachine ↔ Corporate perUser). It **reuses** the tested deletion primitives — `uninstall_path` / `is_sole_package_in_dir` / `OUR_BINARIES` from `uninstall.rs`, and `cargo_bin_dir` / `same_path` / `classify_install_path` / `current_install_shadows_cargo_install` / `current_exe_real_path` / `classify_shadow_cleanup` / `ShadowCleanupDecision` / `InstallOrigin` from `update.rs` (all widened to `pub(crate)`) — and does NOT re-implement deletion. Flags: `--cargo-copy`, `--other-edition`, `--quiet`, `--dry-run`, `--json`, `--user-profile <path>`, `--cargo-home <path>`; no target flag = `--cargo-copy` only. Hard guarantees (unit-tested): only deletes `nd300.exe`/`speedqx.exe`; never cargo/rustup/the `.cargo\bin` PATH entry/`~/Downloads`/the running install; never escalates (needs-admin → report + continue); refuses shell-unsafe paths. **Always exits 0** except on a true internal error — cleanup is advisory and must never fail an installer. Adding a new fix primitive does not affect this; adding a new install path DOES (see the LOCKSTEP contract below).
+- **`src/actions/`** — Exit-early operations (`fix`, `clear-dns`, `uninstall`, `dns`, `update` — each available as a bare subcommand and a legacy flag; plus hidden `migrate-cleanup`). `dns` is semi-exit-early. The fix flow implements evidence-driven recovery, LIFO verified restoration, exact macOS DNS/search rollback, and invoking-user-owned private reports. The updater (`update.rs` + Unix-only `unix_install.rs`) tries bounded invoking-user Cargo first, then on Unix verifies and transactionally installs an exact-tag two-binary archive. Windows resolves Cargo location plus normalized HKCU/HKLM installer ownership before marker/path fallbacks. Registered Windows uninstall delegates directly to the validated MSI product code or Inno executable; Unix uninstall refuses unknown/package-manager/local-build locations.
+- **`src/actions/migrate.rs`** — Cross-method install cleanup, exposed as hidden `nd300 migrate-cleanup`. Installers pass `--install-origin <msi-global|msi-corporate|exe-global|exe-corporate>` so custom locations remain classifiable before registration finalizes. It reuses `uninstall_path_files_only` and updater ownership/path helpers. Because it runs inside active MSI/Inno transactions, it touches only the allowlisted `nd300.exe`/`speedqx.exe` pair: never Cargo/Rustup, PATH, ARP, receipts, the shared marker, Downloads, or the running install. Needs-admin stays advisory and it exits 0 except for a true internal error.
 - **`src/diagnostics/`** — All diagnostic modules. Core/deep contracts and pure fixture parsers remain. On macOS, `interfaces.rs` builds one topology truth from default route + current flags + hardware-port/service mapping + addresses; `wifi.rs` uses bounded `system_profiler` only in technician mode; VPN requires correlated configuration/state/address/route evidence; IPv6 separates ULA and verifies both stacks; TLS/DNSSEC are evidence-qualified. Modern/legacy fixtures cover route/listener/connection/DHCP/protocol/Wi-Fi/service/VPN formats. `util.rs` timeout wrappers kill and reap expired child processes.
 - **`src/speedtest/`** — Shared Methodology v4 engine. Standalone speedqx has eight sources: Cloudflare, M-Lab NDT7, LibreSpeed, fast.com, M-Lab MSAK, Apple networkQuality, CacheFly, and Vultr; ND300 core stays Cloudflare + NDT7. Provider clients live beside `stat_primitives.rs`, `statistics.rs`, golden parity tests, adaptive transfer sizing, and display code. Ookla remains excluded for EULA reasons documented in `applenq.rs`.
 - **`src/render/`** — Output formatting. `table.rs` builds Unicode/ASCII box-drawing tables with ANSI-aware string functions (`visible_len`, `truncate_visible`). `color.rs` centralizes ANSI color output. `progress.rs` handles spinners.
@@ -391,23 +418,23 @@ ND-300 ships **four first-class Windows installers**, each packaging **both** `n
 | Global | EXE | `inno/global.iss` (Inno Setup) | perMachine (admin) | system (HKLM) | `C:\Program Files\nd300\bin\` | `exe-global` |
 | Corporate | EXE | `inno/corporate.iss` (Inno Setup) | perUser (no UAC) | user (HKCU) | `%LocalAppData%\Programs\nd300\bin\` | `exe-corporate` |
 
-The Global MSI is the cargo-dist base asset. The other **6 assets** (Corporate MSI + 2 EXEs + 3 `.sha256` sidecars) are built by `.github/workflows/windows-installers.yml`. **Two binaries:** every installer must keep BOTH `binary0`=nd300.exe and `binary1`=speedqx.exe (Inno: two `[Files]` lines). ND-300 has **no committed `LICENSE` file**, so the Inno scripts deliberately omit `LicenseFile=` (referencing a missing file would fail `iscc`).
+The Global MSI is the cargo-dist base asset. The other **6 assets** (Corporate MSI + 2 EXEs + 3 `.sha256` sidecars) are built by `.github/workflows/windows-installers.yml`. **Two binaries:** every installer must keep BOTH `binary0`=nd300.exe and `binary1`=speedqx.exe (Inno: two `[Files]` lines). Both Inno scripts show the committed root `LICENSE` in the wizard.
 
 ### Marker → update dispatch + the lockstep contract
 
-Each installer writes `HKCU\Software\ND300\InstallSource = <marker value>`. `src/actions/update.rs::read_install_source_marker()` reads it (authoritative); `classify_install_path()` is the path-based fallback (`\program files\nd300\` → MsiGlobal, `\appdata\local\programs\nd300\` → MsiCorporate, `\.cargo\bin\` → CargoOrInstaller). `build_strategy_list()` returns a **single** matching MSI/EXE strategy (no cross-fall-back between installer types — running a different product would create duplicate ARP entries). MSI/EXE strategies download the matching installer via async reqwest, **SHA-256-verify the `.sha256` sidecar** (`checksum_verdict`, refuse-on-mismatch), run it silently (`msiexec /i /passive /norestart`, handling 3010 reboot-required; EXE `/SILENT /SUPPRESSMSGBOXES /NORESTART`), then re-exec `--version`.
+Each installer writes `HKCU\Software\ND300\InstallSource = <marker value>`, but the marker is a hint rather than unconditional authority. `registered_install_owner()` scans both HKCU/HKLM uninstall views, requires expected display/scope/format, normalizes `InstallLocation` against the running binary, and reduces uninstall to a validated MSI product GUID or known Inno executable. A `.cargo\bin` path always wins; a unique proven owner wins over a contradictory marker; a marker is accepted only when its edition matches the path fallback. Update still selects one matching installer, verifies its sidecar, runs it, and re-checks the installed version.
 
-**LOCKSTEP CONTRACT (do not break):** the install paths and marker values in `wix/main.wxs`, `wix-corporate/corporate.wxs`, `inno/global.iss`, `inno/corporate.iss` must stay in lockstep with `update.rs`'s `read_install_source_marker()` / `classify_install_path()` **and with `src/actions/migrate.rs`'s `edition_bin_dirs()`** (which hardcodes `%ProgramFiles%\nd300\bin` for Global and `%LocalAppData%\Programs\nd300\bin` for Corporate to pick the *other* edition to consolidate). If you change a path or marker in an installer, change the matching arm in `update.rs` (and the `install_origin` JSON id) **and `migrate.rs::edition_bin_dirs()`** in the same commit.
+**LOCKSTEP CONTRACT (do not break):** install paths, marker values, display names, MSI scope, and the two fixed Inno AppIds in all four installer files must stay aligned with `update.rs` ownership resolution, `InstallOrigin::json_id()`, `migrate.rs::edition_bin_dirs()`, and each installer's hidden `--install-origin` argument. All four package both binaries. Run the installer lockstep reviewer after any change.
 
-**Consolidation (v3.2.0+) runs interactively AND on silent self-update.** All four installers ship two consent controls — Inno `[Tasks]` `cleancargo`/`cleanotheredition` (default-checked) + a conditioned `[Run]` calling `nd300 migrate-cleanup --quiet <flag>`; WiX `CLEANCARGO`/`CLEANOTHEREDITION` properties (default `1`) + a `ConsolidateDlg` (pre-checked) + two deferred `Impersonate='yes' Return='ignore'` `FileKey='exe0'` CAs conditioned `NOT Installed AND CLEAN…="1"`. Both default ON, so the **silent** self-update path consolidates too: `update.rs::try_msi_install` runs `msiexec /passive` (properties stay `1`) and `try_exe_install` runs Inno `/SILENT` with **no** `/MERGETASKS` suppression (default-checked tasks fire) — do not add property-disabling args or `/MERGETASKS` suppression to those, or you'll break silent consolidation. WiX uses `FileKey`/`ExeCommand` (not `WixUtilExtension`'s `WixQuietExec`) on purpose: `cargo wix` / the bare `candle`+`light` build only link `WixUIExtension`. The perMachine Global EXE does **not** pass `--user-profile` — Inno has no reliable pre-elevation user-profile constant (`{userprofile}` does not exist; passing it fails the `iscc` build — this broke v3.2.0, fixed in v3.2.1), so it relies on `migrate-cleanup`'s process-env fallback (`CARGO_HOME`, then `%USERPROFILE%`/`%LocalAppData%`) — correct for an admin self-elevating, fail-safe otherwise. The perMachine MSI uses `Impersonate='yes'` so its CA runs as the invoking user. needs-admin targets are skipped + reported (exit 0), so silent consolidation never fails an update.
+**Consolidation runs interactively and on silent self-update.** All four installers keep default-on consent controls and call `migrate-cleanup --quiet --install-origin <exact-origin> <target-flag>`. It remains advisory/file-only inside the active transaction, never clears the new marker, and never claims PATH/ARP/receipt removal. Full safe post-finalize cross-edition unregistration is a tracked non-release-blocking `.tasks/` follow-up. WiX retains `FileKey`/`ExeCommand`, perMachine MSI retains impersonation, and needs-admin remains exit 0.
 
-The Windows marker/installer dispatch remains unchanged. Cargo is bounded and checks both explicit Cargo-bin binaries at the exact version; no update path runs `rustup update`. JSON retains the Windows-only `install_origin` field and stable installer strategy IDs. Windows-only checksum/registry helpers remain cfg-gated for strict cross-platform clippy.
+Top-level Windows uninstall uses the proven owner so both binaries, ARP registration, correct PATH hive, and marker leave together; raw registry command strings never go through a shell. Cargo/portable fallback retains the two-binary allowlist. JSON fields and strategy IDs remain compatible.
 
 ### `windows-installers.yml` — tag-triggered (consistent with TR-300)
 
 ND-300's `Release` workflow fires on a `vX.Y.Z` **tag push**, so a tag-triggered Release run has `head_branch == the tag name`. `windows-installers.yml`:
-- Triggers on `workflow_run: workflows:["Release"] types:[completed]` filtered to `conclusion=='success' && startsWith(head_branch,'v')`, plus `workflow_dispatch` (input `tag`, always runs).
-- **Resolves the tag** directly from `head_branch` (the tag); checks out `head_sha` (the tagged commit). Dispatch uses the provided tag.
+- Is a reusable `workflow_call` invoked by the tag-push Release job with validated `tag` and `source_sha`; it no longer uses `workflow_run`, whose SHA is the default branch. Manual repair remains `workflow_dispatch` and must itself run at `--ref <tag>`.
+- **Resolves the immutable tag**, requires it to match the caller/manual SHA, checks out that commit, and blocks Release announcement until success.
 - **Pre-flight + idempotency:** probes the release for `dist-manifest.json` + `nd300-x86_64-pc-windows-msvc.msi` (torn-release guard); if all 6 corporate/EXE assets are already attached on a non-dispatch run, logs and exits 0. `workflow_dispatch` always rebuilds (`--clobber`).
 - Keeps the WiX `candle`/`light -sice:ICE38 -sice:ICE64 -sice:ICE91` + Inno `iscc /DMyAppVersion=` mechanics. Final release carries the cargo-dist base assets + these 6 (28 total).
 
@@ -415,7 +442,7 @@ ND-300's `Release` workflow fires on a `vX.Y.Z` **tag push**, so a tag-triggered
 
 ### Installer build pitfalls — validate locally before shipping
 
-cargo-dist **suppresses** WiX `candle`'s real error (you only see "candle failed, exit 104"), and the Inno builds only run on the CI `windows-2022` runner — so installer bugs surface only at release. Install the toolsets locally and build all four installers before pushing (this caught both v3.2.x installer breaks; needs `cargo build --release` first for the `File`/`[Files]` source):
+cargo-dist **suppresses** WiX `candle`'s real error (you only see "candle failed, exit 104"), so build all four installers locally before pushing. CI also runs permanent aarch64 GNU and x86_64 musl release-target compile gates. `.github/workflows/windows-origin-matrix.yml` builds candidate installers once and tests Global/Corporate MSI, Global/Corporate EXE, and Cargo on five fresh hosted Windows VMs; dispatch `public` mode after release.
 - **WiX:** `wix311-binaries.zip` → `candle -arch x64 "-dVersion=X" "-dCargoTargetBinDir=target\release" -ext WixUIExtension main.wxs` then `light -ext WixUIExtension` (corporate adds `-sice:ICE38 -sice:ICE64 -sice:ICE91`). **Quote `-d…` args** (PowerShell splits `3.2.0` on the dots otherwise).
 - **Inno:** install Inno Setup 6 (`is.exe /CURRENTUSER /VERYSILENT`) → `iscc "/DMyAppVersion=X" inno\global.iss` (+ `corporate.iss`).
 - **CNDL0104:** a WiX XML comment may NOT contain `--`. Never write CLI flag names (`--user-profile`) inside `<!-- … -->` — they're fine inside `ExeCommand=` attribute *values*.

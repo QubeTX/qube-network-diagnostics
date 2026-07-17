@@ -29,7 +29,7 @@ Never repeat it on a host whose Codex/SSH control depends on the selected link.
   notarization for both architectures, exact-SHA hosted CI, crates.io, 28 assets
   plus attestations, update-from-v3.5.2, and Alienware smoke are pending release
   acceptance gates until independently evidenced.
-- `TASKS.md` is the authoritative Windows-readable handoff board. It records
+- `.tasks/TASKS.md` is the authoritative Windows-readable handoff board. It records
   each remaining gate with its rationale, impact, commands, and acceptance
   criteria.
 
@@ -43,7 +43,7 @@ Never repeat it on a host whose Codex/SSH control depends on the selected link.
   AWDL/LLW/dormant/link-local-only interfaces remain visible as detail. A
   default-route VPN and its physical carrier are reported separately. Sharing
   one immutable snapshot across the independently collected interface, VPN,
-  route, DHCP, and Wi-Fi sections is recorded as follow-up in `TASKS.md`.
+  route, DHCP, and Wi-Fi sections is recorded as follow-up in `.tasks/TASKS.md`.
 - macOS core mode never waits for optional Wi-Fi metadata. Technician mode uses
   bounded `system_profiler` JSON with an older-text fallback, reads only the
   connected network, handles redacted SSIDs, and uses the reported band.
@@ -118,7 +118,7 @@ Never repeat it on a host whose Codex/SSH control depends on the selected link.
 - `.github/workflows/release.yml`: tag build, signing/notary, attestation/host.
 - `.github/workflows/windows-installers.yml`: later Windows assets/attestation.
 - `docs/architecture-decisions.md`: durable safety/release rationale.
-- `TASKS.md`: Windows-ready release/follow-up board with rationale and impact.
+- `.tasks/TASKS.md`: Windows-ready release/follow-up board with rationale and impact.
 
 ## Required Validation
 
@@ -186,7 +186,10 @@ Generated from the current workspace (excluding `.git`, build output, and
 ├── METHODOLOGY.md
 ├── ND300-Project-Plan.md
 ├── README.md
-├── TASKS.md
+├── .tasks
+│   ├── TASKS.md
+│   ├── MILESTONES.md
+│   └── tasks
 ├── build.rs
 ├── docs
 │   └── architecture-decisions.md

@@ -98,6 +98,23 @@ and update and release handling now fail closed when trust cannot be proved.
   one, recognizes a managed archive only through its valid receipt, and refuses
   unknown or operating-system package locations.
 
+**Safer Windows updates and removal**
+- Windows no longer trusts one leftover settings value by itself when deciding
+  how the running program was installed. It first recognizes a Rust/Cargo copy
+  or proves which Add/Remove Programs entry owns the exact folder. That prevents
+  an old marker from sending a surviving Cargo copy through the wrong installer.
+- When an MSI or EXE installer owns the program, the built-in uninstall command
+  starts that real registered uninstaller from validated information. This lets
+  Windows remove both commands, the Add/Remove Programs entry, the right user or
+  computer PATH entry, and the marker together. MSI removal always starts the
+  copy Windows reports from its protected system directory, never a same-named
+  program in the current folder. Cargo and portable installs still remove only
+  the two ND300 programs and leave the Rust toolchain alone.
+- Fresh throwaway Windows machines now test all four installer choices plus
+  Cargo from the previous release through upgrade and uninstall. They also
+  deliberately recreate a stale marker and prove a Cargo copy still chooses the
+  Cargo path.
+
 **Behind the scenes — Apple release trust**
 - Every Mac release must now have both programs signed with the expected Apple
   developer identity, hardened runtime, and timestamp, then be accepted by
@@ -109,6 +126,13 @@ and update and release handling now fail closed when trust cannot be proved.
   machines are used, and the command manuals now ship in the archives.
 - Mac users can install those manuals in their own account without changing
   system folders or running a manual database command.
+- The later Windows installer build now stays inside the original tag release
+  job instead of waking from an event whose identity can point at a newer main
+  branch. Release attestations are checked against the exact tagged commit, and
+  Linux ARM and fully static Linux builds are compiled before a tag can be made.
+- The published Rust package now uses a root-only file list, preventing local
+  task-board or assistant notes from being bundled just because they share a
+  familiar filename such as `README.md`.
 
 **Release checks still to complete**
 - The supervised disposable-Mac service-cycle test, native and translated Intel
@@ -116,10 +140,10 @@ and update and release handling now fail closed when trust cannot be proved.
   hosted multi-platform checks, public package/release verification, update from
   the previous release, and an Alienware smoke test are release requirements.
   They are deliberately listed here as pending rather than claimed as done.
-- A new root-level `TASKS.md` makes those remaining checks actionable from the
-  user's Windows machine. Each item explains why it matters, what changes for
-  users when it is completed, what risk remains if it is deferred, and exactly
-  what evidence closes it.
+- A new live, shared task board makes those remaining checks actionable from
+  the user's Windows machine. Each item explains why it matters, what changes
+  for users when it is completed, what risk remains if it is deferred, and
+  exactly what evidence closes it.
 
 ## July 6, 2026 (late evening) — no more contradictory agreement line
 

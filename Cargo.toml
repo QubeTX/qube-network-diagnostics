@@ -10,16 +10,16 @@ repository = "https://github.com/QubeTX/qube-network-diagnostics"
 keywords = ["cli", "network", "diagnostic", "cross-platform"]
 categories = ["command-line-utilities"]
 include = [
-    "Cargo.toml",
-    "Cargo.lock",
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md",
-    "build.rs",
-    "man/**",
-    "src/**",
-    "wix-corporate/**",
-    "inno/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/build.rs",
+    "/man/**",
+    "/src/**",
+    "/wix-corporate/**",
+    "/inno/**",
 ]
 
 [package.metadata.wix]
@@ -72,7 +72,7 @@ x509-parser = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 wmi = "0.14"
-winapi = { version = "0.3", features = ["consoleapi", "wincon", "iphlpapi", "tcpmib", "udpmib", "ifdef", "winsock2", "ws2def", "ws2tcpip", "netioapi", "iptypes"] }
+winapi = { version = "0.3", features = ["consoleapi", "wincon", "iphlpapi", "tcpmib", "udpmib", "ifdef", "winsock2", "ws2def", "ws2tcpip", "netioapi", "iptypes", "shellapi", "winuser", "sysinfoapi"] }
 ipconfig = "0.3"
 # HKCU\Software\ND300\InstallSource registry marker read by the updater to pick
 # the matching installer (MSI/EXE × Global/Corporate) for in-place upgrades.

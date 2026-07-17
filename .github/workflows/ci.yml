@@ -15,6 +15,7 @@ name: CI
 #   clippy     — strict clippy on Linux, macOS ARM/Intel, and Windows
 #   test       — cargo test (Linux glibc + macOS ARM/Intel + Windows)
 #   build      — cargo build --release + run both binaries' --version, per OS
+#   linux-targets — compile the two non-host Linux release targets before tagging
 #   audit      — blocking cargo-audit using the checked-in advisory policy
 #   dist-plan  — verify the cargo-dist plan parses (catches dist config errors)
 #
@@ -146,6 +147,48 @@ jobs:
                   if key not in payload:
                       raise SystemExit(f"missing JSON key {key!r} for {' '.join(args)}")
           PY
+
+  linux-targets:
+    name: Release Target Compile (${{ matrix.name }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux aarch64 GNU
+            target: aarch64-unknown-linux-gnu
+            packages: gcc-aarch64-linux-gnu
+            cc: aarch64-linux-gnu-gcc
+            ar: aarch64-linux-gnu-ar
+          - name: Linux x86_64 musl
+            target: x86_64-unknown-linux-musl
+            packages: musl-tools
+            cc: musl-gcc
+            ar: ar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross toolchain
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ${{ matrix.packages }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Compile release target
+        shell: bash
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_aarch64_unknown_linux_gnu: ${{ matrix.cc }}
+          AR_aarch64_unknown_linux_gnu: ${{ matrix.ar }}
+          CC_x86_64_unknown_linux_musl: ${{ matrix.cc }}
+          AR_x86_64_unknown_linux_musl: ${{ matrix.ar }}
+        run: cargo build --locked --release --workspace --bins
 
   audit:
     name: Security audit

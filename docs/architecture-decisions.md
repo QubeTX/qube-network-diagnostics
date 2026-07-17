@@ -66,7 +66,7 @@ This evidence answers whether the happy path can complete and whether the
 watchdog can restore the observed configuration. It does not answer every
 failure-transition question on a disposable service. Consequently the
 production constant remains false; availability requires the separate matrix
-recorded in `TASKS.md`.
+recorded in `.tasks/TASKS.md`.
 
 ### Consequences
 

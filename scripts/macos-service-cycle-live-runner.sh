@@ -45,7 +45,9 @@ record_status() {
     mv "$status_tmp" "$status_file"
 }
 
-# shellcheck disable=SC2329 # Invoked asynchronously by the trap below.
+# ShellCheck cannot see trap-dispatched functions as reachable. Keep both
+# indirect-call diagnostics scoped to this handler only.
+# shellcheck disable=SC2317,SC2329
 on_signal() {
     record_status 130
     exit 130

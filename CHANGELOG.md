@@ -21,11 +21,11 @@ existing serialized field shapes remain compatible.
   loopback, AWDL/LLW, dormant tunnels, and link-local-only devices remain
   available as detail without inflating the headline. A default-route VPN is
   reported as the logical tunnel over its physical uplink.
-- **A git-tracked v3.6.0 handoff board.** `TASKS.md` gives a Windows/Alienware
-  operator exact remaining release and smoke commands, plus the reason, impact,
-  and acceptance criteria for every deferred item. It also records the
-  non-destructive follow-up to share one immutable topology object across the
-  independently collected interface, VPN, route, DHCP, and Wi-Fi sections.
+- **A live, git-tracked v3.6.0 task board.** `.tasks/TASKS.md` gives a
+  Windows/Alienware operator exact remaining release and smoke work, while
+  per-task detail files preserve the reason, impact, acceptance, verification,
+  status, and activity for every release gate and deferred item. The bundled
+  localhost dashboard keeps that evidence visible throughout the release.
 - **Modern bounded macOS Wi-Fi collection.** Core mode uses the topology cache
   and never waits for optional radio metadata. Technician mode uses bounded
   `system_profiler SPAirPortDataType` JSON with a legacy text fallback, parses
@@ -55,6 +55,10 @@ existing serialized field shapes remain compatible.
   an invoked symlink removes only that symlink, validated cargo-dist receipts
   permit the matching managed layout, and package-manager-owned or unknown
   locations are refused.
+- **Disposable Windows origin lifecycle matrix.** Fresh hosted Windows VMs now
+  exercise Global/Corporate MSI, Global/Corporate Inno EXE, and Cargo from
+  v3.5.2 through candidate or public v3.6.0 upgrade, dry-run migration,
+  ownership, uninstall, and surviving-Cargo stale-marker behavior.
 
 ### Changed
 - **IPv6 and VPN semantics are stricter.** ULA addresses are classified
@@ -97,6 +101,14 @@ existing serialized field shapes remain compatible.
 - **macOS release archives include `man/`.** User-writable man-page installation
   is documented for macOS without `mandb`; Linux system-wide installation
   remains available.
+- **Windows install ownership is proven before update or uninstall.** A Cargo
+  path or matching HKCU/HKLM Add/Remove Programs record overrides a
+  contradictory marker. Registered installs delegate uninstall to a validated
+  MSI product code or Inno executable without shell-expanding registry command
+  text; the MSI launcher is resolved from the Win32 system directory rather
+  than executable search. Installer-internal migration receives a validated
+  hidden origin for custom locations and remains advisory/file-only inside
+  active transactions.
 
 ### Fixed
 - **macOS 26 diagnostic regressions:** physical interfaces no longer appear as
@@ -110,6 +122,14 @@ existing serialized field shapes remain compatible.
   path and never reports the replacement cycle restored until verification.
 - **Elevated user paths no longer drift to `/var/root`.** Reports, Cargo paths,
   updates, and uninstall decisions use the validated invoking user.
+- **Cross-platform PR blockers are gated correctly.** macOS-only constants and
+  bindings no longer compile on Windows/Linux, Linux mutation imports and
+  parser placement are target-correct, and ShellCheck's trap-dispatch warning
+  suppression is scoped to the two affected handlers. Linux ARM GNU and x86_64
+  musl release-target builds are permanent pre-tag CI gates.
+- **Published crate contents stay at the repository root.** Cargo's package
+  allowlist is root-anchored so nested task-board or assistant documentation
+  with familiar names cannot enter the crates.io archive accidentally.
 
 ### Security
 - **Developer ID signing and notarization fail closed for both Mac binaries and
@@ -124,6 +144,11 @@ existing serialized field shapes remain compatible.
   `contents: read`; write/id-token permissions are granted only to hosting and
   attestation jobs. The later Windows-installer assets are attested separately,
   and `cargo audit` is a blocking gate.
+- **Windows attestations retain the immutable tag context.** The Release workflow
+  now calls the Windows installer builder as a reusable workflow with its
+  validated tag and source SHA, blocks announcement on that job, and verifies
+  every published attestation against the exact tag digest and repository
+  signer. Manual repair dispatch remains tag-bound.
 - **macOS runners are current.** arm64 cargo-dist builds use `macos-15` and Intel
   uses `macos-15-intel`, while deployment floors remain macOS 11.0 arm64 and
   10.12 Intel.
@@ -135,7 +160,7 @@ existing serialized field shapes remain compatible.
   unavailable if that evidence is absent.
 - Cross-module collection still takes independently timed snapshots. A rare
   route/VPN transition can therefore make two otherwise-correct report sections
-  briefly disagree; `TASKS.md` records the shared immutable topology follow-up,
+  briefly disagree; `.tasks/TASKS.md` records the shared immutable topology follow-up,
   its impact, and fixture acceptance criteria. This is diagnostic consistency
   work, not a mutation or repair-safety defect.
 - Native arm64 and Rosetta x86_64 smokes, quarantined-artifact trust checks,

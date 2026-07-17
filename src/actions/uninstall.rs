@@ -74,17 +74,24 @@ pub async fn run(config: &Config) -> i32 {
     #[cfg(unix)]
     print_unix_uninstall_preview(&real_path, config);
     #[cfg(windows)]
-    println!(
-        "  This will remove nd300 and speedqx from: {}",
-        color::cyan(
-            &real_path
-                .parent()
-                .unwrap_or(&real_path)
-                .display()
-                .to_string(),
-            config
+    match super::update::registered_install_owner(&real_path) {
+        Some(owner) => println!(
+            "  This will start the registered {} uninstaller for: {}",
+            owner.origin.json_id(),
+            color::cyan(&owner.install_location.display().to_string(), config),
         ),
-    );
+        None => println!(
+            "  This will remove nd300 and speedqx from: {}",
+            color::cyan(
+                &real_path
+                    .parent()
+                    .unwrap_or(&real_path)
+                    .display()
+                    .to_string(),
+                config
+            ),
+        ),
+    }
 
     // Show what we'll clean up
     let receipt_dir = get_receipt_dir();
@@ -309,13 +316,200 @@ async fn execute_uninstall(_exe_path: &Path) -> CleanupReport {
 
     #[cfg(windows)]
     {
-        uninstall_path(_exe_path)
+        if let Some(owner) = super::update::registered_install_owner(_exe_path) {
+            uninstall_registered_owner(&owner)
+        } else {
+            uninstall_path(_exe_path)
+        }
+    }
+}
+
+/// Launch the registry-proven MSI/Inno owner directly, without passing its raw
+/// registry command through cmd.exe or PowerShell. The current process returns
+/// immediately so the official uninstaller can remove the running executable,
+/// its sibling, ARP registration, the correct PATH hive, and InstallSource
+/// marker together.
+#[cfg(windows)]
+fn uninstall_registered_owner(owner: &super::update::RegisteredInstallOwner) -> CleanupReport {
+    use super::update::{InstallOrigin, RegisteredUninstall};
+
+    let mut report = empty_cleanup_report();
+    let command: Result<(PathBuf, Vec<String>), String> = match &owner.uninstall {
+        RegisteredUninstall::Msi { product_code } => system_msiexec_path().map(|program| {
+            (
+                program,
+                vec![
+                    "/x".to_string(),
+                    product_code.clone(),
+                    "/passive".to_string(),
+                    "/norestart".to_string(),
+                ],
+            )
+        }),
+        RegisteredUninstall::Inno { executable } => Ok((
+            executable.clone(),
+            vec![
+                "/VERYSILENT".to_string(),
+                "/SUPPRESSMSGBOXES".to_string(),
+                "/NORESTART".to_string(),
+                "/SP-".to_string(),
+            ],
+        )),
+    };
+    let (program, args) = match command {
+        Ok(command) => command,
+        Err(error) => {
+            report.notes.push(error);
+            return report;
+        }
+    };
+
+    let needs_elevation = matches!(
+        owner.origin,
+        InstallOrigin::MsiGlobal | InstallOrigin::ExeGlobal
+    );
+    let launch = if needs_elevation {
+        shell_execute_elevated(&program, &args)
+    } else {
+        spawn_uninstaller(&program, &args)
+    };
+
+    match launch {
+        Ok(()) => {
+            report.binary_removal_scheduled = true;
+            report.notes.push(format!(
+                "Registered {} uninstaller started; binaries, registration, PATH, and installer marker are removed after this process exits",
+                owner.origin.json_id()
+            ));
+            if let Some(receipt_dir) = get_receipt_dir() {
+                if receipt_dir.exists() {
+                    match std::fs::remove_dir_all(&receipt_dir) {
+                        Ok(()) => report.receipt_removed = true,
+                        Err(error) => report.notes.push(format!(
+                            "Could not remove receipt dir {}: {}",
+                            receipt_dir.display(),
+                            error
+                        )),
+                    }
+                }
+            }
+        }
+        Err(error) => report
+            .notes
+            .push(format!("Could not start registered uninstaller: {error}")),
+    }
+    report
+}
+
+/// Resolve Windows Installer from the kernel-provided system directory instead
+/// of PATH or the current working directory. A bare `msiexec.exe` passed to
+/// ShellExecuteW(`runas`) would otherwise permit executable-search hijacking
+/// before the user approves elevation.
+#[cfg(windows)]
+fn system_msiexec_path() -> Result<PathBuf, String> {
+    use std::os::windows::ffi::OsStringExt;
+    use winapi::um::sysinfoapi::GetSystemDirectoryW;
+
+    // System directories are bounded well below the extended Windows path
+    // ceiling. A large fixed buffer also avoids trusting mutable environment
+    // variables such as SystemRoot.
+    let mut buffer = vec![0_u16; 32_768];
+    // SAFETY: `buffer` is writable for exactly the capacity passed to Win32.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 {
+        return Err(format!(
+            "Could not resolve the trusted Windows system directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let length = length as usize;
+    if length >= buffer.len() {
+        return Err("Windows system directory exceeded the trusted path buffer".to_string());
+    }
+
+    let system_dir = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+    let msiexec = system_dir.join("msiexec.exe");
+    if !system_dir.is_absolute() || !msiexec.is_file() {
+        return Err(format!(
+            "Trusted Windows Installer executable was not found at {}",
+            msiexec.display()
+        ));
+    }
+    Ok(msiexec)
+}
+
+#[cfg(windows)]
+fn spawn_uninstaller(program: &Path, args: &[String]) -> Result<(), String> {
+    std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("{}: {}", program.display(), error))
+}
+
+#[cfg(windows)]
+fn shell_execute_elevated(program: &Path, args: &[String]) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::um::shellapi::ShellExecuteW;
+    use winapi::um::winuser::SW_SHOWNORMAL;
+
+    let wide = |value: &std::ffi::OsStr| {
+        value
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
+    let verb = wide(std::ffi::OsStr::new("runas"));
+    let file = wide(program.as_os_str());
+    let parameters = args.join(" ");
+    let parameters = wide(std::ffi::OsStr::new(&parameters));
+    let directory = program.parent().filter(|path| !path.as_os_str().is_empty());
+    let directory_wide = directory.map(|path| wide(path.as_os_str()));
+    let directory_ptr = directory_wide
+        .as_ref()
+        .map_or(std::ptr::null(), |value| value.as_ptr());
+
+    // SAFETY: every pointer references a NUL-terminated UTF-16 buffer that lives
+    // through the call. The executable is registry-proven and the arguments are
+    // reconstructed from a validated product GUID or fixed Inno flags.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            parameters.as_ptr(),
+            directory_ptr,
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Windows rejected the elevated uninstall request (ShellExecute code {result})"
+        ))
     }
 }
 
 #[cfg(windows)]
 pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
-    let mut report = CleanupReport {
+    uninstall_path_impl(exe_path, true)
+}
+
+/// Advisory installer migration removes only the allowlisted binary pair. It
+/// deliberately leaves receipt, PATH, ARP registration, and the shared marker
+/// untouched because it runs inside an active installer transaction.
+#[cfg(windows)]
+pub(crate) fn uninstall_path_files_only(exe_path: &Path) -> CleanupReport {
+    uninstall_path_impl(exe_path, false)
+}
+
+#[cfg(windows)]
+fn empty_cleanup_report() -> CleanupReport {
+    CleanupReport {
         binary_removed: false,
         binary_removal_scheduled: false,
         target_retained: false,
@@ -323,19 +517,26 @@ pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
         receipt_removed: false,
         path_cleaned: false,
         notes: Vec::new(),
-    };
+    }
+}
+
+#[cfg(windows)]
+fn uninstall_path_impl(exe_path: &Path, full_cleanup: bool) -> CleanupReport {
+    let mut report = empty_cleanup_report();
 
     // Step 1: Remove the receipt/config directory
     // This is safe to do first since it's nd300-specific
-    if let Some(receipt_dir) = get_receipt_dir() {
-        if receipt_dir.exists() {
-            match std::fs::remove_dir_all(&receipt_dir) {
-                Ok(_) => report.receipt_removed = true,
-                Err(e) => report.notes.push(format!(
-                    "Could not remove receipt dir {}: {}",
-                    receipt_dir.display(),
-                    e
-                )),
+    if full_cleanup {
+        if let Some(receipt_dir) = get_receipt_dir() {
+            if receipt_dir.exists() {
+                match std::fs::remove_dir_all(&receipt_dir) {
+                    Ok(_) => report.receipt_removed = true,
+                    Err(e) => report.notes.push(format!(
+                        "Could not remove receipt dir {}: {}",
+                        receipt_dir.display(),
+                        e
+                    )),
+                }
             }
         }
     }
@@ -380,7 +581,7 @@ pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
     // Step 3: Clean up PATH on Windows
     // Only remove the bin dir from PATH if only our binaries were there
     #[cfg(windows)]
-    {
+    if full_cleanup {
         let bin_dir = exe_path.parent().map(|p| p.to_path_buf());
         if let Some(ref dir) = bin_dir {
             if is_sole_package_in_dir(dir) {
@@ -665,6 +866,22 @@ mod tests {
         assert!(!path_entry_matches_target(r"C:\x", target));
         assert!(!path_entry_matches_target("", target));
         assert!(!path_entry_matches_target("   ", target));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn msi_uninstall_resolves_an_absolute_system_executable() {
+        let msiexec = system_msiexec_path().expect("Windows Installer must exist in System32");
+        assert!(msiexec.is_absolute());
+        assert!(msiexec.is_file());
+        assert_eq!(
+            msiexec
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("msiexec.exe"),
+        );
     }
 
     // ── L4: delayed-delete command is built safely or honestly refused ────────

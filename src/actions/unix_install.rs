@@ -30,7 +30,9 @@ const MAX_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 256;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const CARGO_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+#[cfg(target_os = "macos")]
 const MACOS_TEAM_ID: &str = "M9D5379H93";
+#[cfg(target_os = "macos")]
 const MACOS_LEAF_SHA1: &str = "739B04530883FF9B665C66BD464F98C622971B32";
 const TRANSACTION_MARKER: &str = ".nd300-update-transaction-v1";
 const COMMIT_MARKER_STAGE: &str = ".nd300-update-transaction-v1-commit";
@@ -1099,10 +1101,10 @@ async fn verify_installed_archive_pair(
     user: &InvokingUser,
 ) -> Result<(), String> {
     directory.ensure_public_binding()?;
-    let nd300 = directory.path.join("nd300");
-    let speedqx = directory.path.join("speedqx");
     #[cfg(target_os = "macos")]
     {
+        let nd300 = directory.path.join("nd300");
+        let speedqx = directory.path.join("speedqx");
         verify_macos_trust(&nd300, "com.qubetx.nd300").await?;
         verify_macos_trust(&speedqx, "com.qubetx.speedqx").await?;
     }

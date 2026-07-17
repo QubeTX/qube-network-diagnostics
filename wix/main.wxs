@@ -241,13 +241,13 @@
              defaulted-on for silent /passive self-updates. -->
         <CustomAction Id='CleanCargoCopy'
             FileKey='exe0'
-            ExeCommand='migrate-cleanup --quiet --cargo-copy'
+            ExeCommand='migrate-cleanup --quiet --install-origin msi-global --cargo-copy'
             Execute='deferred'
             Impersonate='yes'
             Return='ignore'/>
         <CustomAction Id='CleanOtherEdition'
             FileKey='exe0'
-            ExeCommand='migrate-cleanup --quiet --other-edition'
+            ExeCommand='migrate-cleanup --quiet --install-origin msi-global --other-edition'
             Execute='deferred'
             Impersonate='yes'
             Return='ignore'/>

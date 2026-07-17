@@ -11,35 +11,37 @@
 //     (`C:\Program Files\nd300\bin`) and Corporate perUser
 //     (`%LocalAppData%\Programs\nd300\bin`).
 //
-// Operator policy: there should be exactly ONE version/edition installed at a
-// time. `migrate-cleanup` consolidates aggressively — interactively (from the
+// Operator policy: there should be exactly one runnable binary pair at a time.
+// `migrate-cleanup` consolidates the allowlisted files — interactively (from the
 // installer's "Remove older copy" checkboxes) AND on a silent self-update
 // (`nd300 update` re-runs the installer with the cleanup tasks/properties
-// defaulted ON). Mac/Linux is already safe (the shell installer overwrites the
-// same `~/.cargo/bin`), so this is a Windows-only consolidation; on other
-// platforms it is a no-op that exits 0.
+// defaulted ON). It intentionally leaves old registration/PATH metadata for a
+// normal post-transaction uninstall. Mac/Linux is already safe (the shell
+// installer overwrites the same `~/.cargo/bin`), so this is a Windows-only
+// consolidation; on other platforms it is a no-op that exits 0.
 //
 // DESIGN (hybrid): the installer owns the CONSENT UX (checkboxes / MSI
 // properties / Inno tasks); this binary owns the DELETION LOGIC by reusing the
-// already-tested primitives from `uninstall.rs` (`uninstall_path`,
-// `is_sole_package_in_dir`, `OUR_BINARIES`) and `update.rs` (`cargo_bin_dir`,
-// `same_path`, `classify_install_path`, `current_install_shadows_cargo_install`,
-// `current_exe_real_path`, `classify_shadow_cleanup`). It does NOT re-implement
-// deletion.
+// already-tested primitives from `uninstall.rs`
+// (`uninstall_path_files_only`, `OUR_BINARIES`) and `update.rs`
+// (`cargo_bin_dir`, `same_path`, `detect_install_origin_for_path`,
+// `current_install_shadows_cargo_install`, `current_exe_real_path`,
+// `classify_shadow_cleanup`). It does NOT re-implement deletion.
 //
 // HARD SAFETY GUARANTEES (see unit tests at the bottom of this file):
 //   1. Only ever deletes files whose stem is in `OUR_BINARIES`
 //      (`nd300.exe` / `speedqx.exe`). Never `cargo.exe`, `rustup.exe`, or any
-//      non-allowlisted file. (`uninstall_path` only ever touches OUR_BINARIES.)
-//   2. Never removes the `.cargo\bin` PATH entry — `uninstall_path` only edits
-//      PATH when `is_sole_package_in_dir` is true, and `.cargo\bin` always also
-//      contains cargo.exe/rustup.exe, so its PATH entry is left intact.
+//      non-allowlisted file. (`uninstall_path_files_only` only ever touches
+//      OUR_BINARIES.)
+//   2. Never changes PATH, ARP registration, receipts, or the shared marker.
+//      Installer-internal cleanup is intentionally file-limited because it runs
+//      inside an active MSI/Inno transaction.
 //   3. Never touches `~/Downloads` (no path this module computes is under it).
 //   4. Never deletes the RUNNING install — every candidate is `same_path`-checked
 //      against the running exe's directory and skipped if it matches.
 //   5. Never escalates privileges. If a target needs admin we don't have, it
 //      reports "needs admin: <path>" and CONTINUES; exit code stays 0.
-//   6. Refuses shell-unsafe paths (delegated to `uninstall_path`'s
+//   6. Refuses shell-unsafe paths (delegated to the file-only helper's
 //      `build_delayed_delete_command`, which returns None for cmd
 //      metacharacters; that surfaces here as a NotRemoved -> reported, exit 0).
 //
@@ -51,6 +53,8 @@ use crate::config::Config;
 use std::path::{Path, PathBuf};
 
 use crate::cli::MigrateArgs;
+#[cfg(windows)]
+use crate::cli::MigrateInstallOrigin;
 
 // The primitives we reuse, so the intent ("we delete via uninstall, we classify
 // via update") is legible at this module's top. `OUR_BINARIES` backs the
@@ -58,12 +62,13 @@ use crate::cli::MigrateArgs;
 // on the Windows consolidation path, so its import is Windows-gated to avoid an
 // unused-import warning on macOS/Linux.
 #[cfg(windows)]
-use super::uninstall::uninstall_path;
+use super::uninstall::uninstall_path_files_only;
 use super::uninstall::OUR_BINARIES;
 #[cfg(windows)]
 use super::update::{
-    cargo_bin_dir, classify_install_path, classify_shadow_cleanup, current_exe_real_path,
-    current_install_shadows_cargo_install, same_path, InstallOrigin, ShadowCleanupDecision,
+    cargo_bin_dir, classify_shadow_cleanup, current_exe_real_path,
+    current_install_shadows_cargo_install, detect_install_origin_for_path, same_path,
+    InstallOrigin, ShadowCleanupDecision,
 };
 
 /// A single cleanup target after deletion has been attempted (or skipped).
@@ -312,6 +317,16 @@ fn execute_cargo_copy(
 
 // ─── Other-edition target ────────────────────────────────────────────────────
 
+#[cfg(windows)]
+fn migrate_install_origin(origin: MigrateInstallOrigin) -> InstallOrigin {
+    match origin {
+        MigrateInstallOrigin::MsiGlobal => InstallOrigin::MsiGlobal,
+        MigrateInstallOrigin::MsiCorporate => InstallOrigin::MsiCorporate,
+        MigrateInstallOrigin::ExeGlobal => InstallOrigin::ExeGlobal,
+        MigrateInstallOrigin::ExeCorporate => InstallOrigin::ExeCorporate,
+    }
+}
+
 /// The two Windows install editions and their bin directories.
 /// Global perMachine -> `%ProgramFiles%\nd300\bin`.
 /// Corporate perUser  -> `%LocalAppData%\Programs\nd300\bin`.
@@ -358,10 +373,13 @@ fn execute_other_edition(
 
     let (global_bin, corporate_bin) = edition_bin_dirs(args);
 
-    // Which edition is the running install? Use the authoritative classification
-    // (registry marker first, then path) on the running exe, falling back to a
-    // path compare against the two edition dirs.
-    let running_origin = classify_install_path(&running.to_string_lossy());
+    // Installer-supplied origin is authoritative here because the freshly
+    // installed binary may live in a custom location before its ARP record is
+    // finalized. Interactive/manual calls use the normal ownership resolver.
+    let running_origin = args
+        .install_origin
+        .map(migrate_install_origin)
+        .unwrap_or_else(|| detect_install_origin_for_path(running));
 
     // The "other" edition's bin dir is the one the running install is NOT in.
     let other_bin: Option<PathBuf> = match running_origin {
@@ -414,15 +432,15 @@ fn execute_other_edition(
     delete_target(id, label, &other_exe, args.dry_run)
 }
 
-// ─── Deletion (delegated to uninstall_path) ──────────────────────────────────
+// ─── Deletion (delegated to a file-only uninstall primitive) ─────────────────
 
 /// Execute (or, in `--dry-run`, describe) the deletion of `exe` via the tested
-/// `uninstall_path` primitive, mapping the `CleanupReport` to a `TargetOutcome`.
+/// file-only primitive, mapping the `CleanupReport` to a `TargetOutcome`.
 ///
-/// Guard 1 (allowlist) and guard 2 (`.cargo\bin` PATH preserved) are enforced
-/// INSIDE `uninstall_path`: it only ever removes `OUR_BINARIES`, and only edits
-/// PATH when `is_sole_package_in_dir` is true. We additionally pre-assert the
-/// filename is allowlisted as defense-in-depth.
+/// This installer-internal path deliberately leaves PATH, ARP registration,
+/// receipts, and the shared InstallSource marker untouched. It runs before MSI
+/// InstallFinalize / inside Inno Setup, where nested uninstallation is unsafe.
+/// We additionally pre-assert the filename is allowlisted as defense-in-depth.
 #[cfg(windows)]
 fn delete_target(id: &'static str, label: String, exe: &Path, dry_run: bool) -> TargetReport {
     // Defense-in-depth guard 1: refuse anything not on the allowlist. This should
@@ -449,7 +467,7 @@ fn delete_target(id: &'static str, label: String, exe: &Path, dry_run: bool) -> 
     }
 
     // Pre-flight permission probe: if we can't open the file for writing, treat it
-    // as needs-admin rather than letting uninstall_path schedule a doomed delete.
+    // as needs-admin rather than letting the file-only helper schedule a doomed delete.
     // (A perUser process can't delete a perMachine Program Files copy.) This keeps
     // the "needs admin -> skip + report, exit 0" contract honest.
     if let Some(reason) = needs_admin_for(exe) {
@@ -461,7 +479,7 @@ fn delete_target(id: &'static str, label: String, exe: &Path, dry_run: bool) -> 
         };
     }
 
-    let report = uninstall_path(exe);
+    let report = uninstall_path_files_only(exe);
     let outcome = match classify_shadow_cleanup(&report) {
         ShadowCleanupDecision::Removed => TargetOutcome::Removed,
         ShadowCleanupDecision::Scheduled => TargetOutcome::Scheduled,

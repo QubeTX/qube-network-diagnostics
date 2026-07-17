@@ -1,7 +1,9 @@
+#[cfg(target_os = "linux")]
+use super::cmd::run_owned_mutation;
 #[allow(unused_imports)]
 use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
 #[cfg(any(windows, target_os = "linux"))]
-use super::cmd::{run_owned_mutation, run_owned_mutation_pair, MutationPairOutput};
+use super::cmd::{run_owned_mutation_pair, MutationPairOutput};
 
 #[cfg(any(windows, target_os = "linux"))]
 fn mutation_failure(result: &Result<std::process::Output, String>) -> Option<String> {

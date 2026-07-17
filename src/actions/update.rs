@@ -166,7 +166,7 @@ impl InstallOrigin {
     /// String form for JSON output. Matches the registry marker values written
     /// by the installers; `cargo-or-installer` / `unknown` are synthesized by the
     /// path-based fallback.
-    fn json_id(self) -> &'static str {
+    pub(crate) fn json_id(self) -> &'static str {
         match self {
             InstallOrigin::MsiGlobal => "msi-global",
             InstallOrigin::MsiCorporate => "msi-corporate",
@@ -176,6 +176,35 @@ impl InstallOrigin {
             InstallOrigin::Unknown => "unknown",
         }
     }
+
+    fn from_marker(value: &str) -> Option<Self> {
+        match value {
+            "msi-global" => Some(InstallOrigin::MsiGlobal),
+            "msi-corporate" => Some(InstallOrigin::MsiCorporate),
+            "exe-global" => Some(InstallOrigin::ExeGlobal),
+            "exe-corporate" => Some(InstallOrigin::ExeCorporate),
+            _ => None,
+        }
+    }
+}
+
+/// A registry-proven Windows installer command. Registry command strings are
+/// never handed to a shell: MSI entries are reduced to a validated product GUID,
+/// and Inno entries to a validated uninstaller executable inside InstallLocation.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RegisteredUninstall {
+    Msi { product_code: String },
+    Inno { executable: PathBuf },
+}
+
+/// The registered installer that owns the running executable.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegisteredInstallOwner {
+    pub(crate) origin: InstallOrigin,
+    pub(crate) install_location: PathBuf,
+    pub(crate) uninstall: RegisteredUninstall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1413,49 +1442,74 @@ fn try_exe_install(_url: &str, _latest: &str) -> Result<(), StrategyError> {
 // ─── Windows install-origin detection (v3.1.0+) ──────────────────────────────
 
 /// Read the `HKCU\Software\ND300\InstallSource` registry value written by the
-/// four first-class installers on install. Authoritative when present. Returns
-/// `None` if the key is missing, the value is missing, the value type isn't a
-/// string, or the value content doesn't match a known variant.
+/// four first-class installers on install. The marker is a hint, not proof of
+/// ownership: registered uninstall metadata and a running `.cargo\bin` path take
+/// precedence over it.
 #[cfg(windows)]
-fn read_install_source_marker() -> Option<InstallOrigin> {
+pub(crate) fn read_install_source_marker() -> Option<InstallOrigin> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let key = hkcu.open_subkey("Software\\ND300").ok()?;
     let value: String = key.get_value("InstallSource").ok()?;
-    match value.as_str() {
-        "msi-global" => Some(InstallOrigin::MsiGlobal),
-        "msi-corporate" => Some(InstallOrigin::MsiCorporate),
-        "exe-global" => Some(InstallOrigin::ExeGlobal),
-        "exe-corporate" => Some(InstallOrigin::ExeCorporate),
-        _ => None,
-    }
+    InstallOrigin::from_marker(value.trim())
 }
 
 /// Determine how this binary was installed on Windows.
 ///
-/// 1. Read the `HKCU\Software\ND300\InstallSource` marker. Authoritative when
-///    present. All four first-class installers write this marker on install.
-/// 2. If no marker, fall back to path-based detection on the running binary's
-///    location. Handles the cargo install / PowerShell installer path (which
-///    doesn't write a marker), and any pre-marker legacy installs.
-///
-/// The path fallback maps Program Files → `MsiGlobal` and LocalAppData\Programs
-/// → `MsiCorporate` (it can't distinguish MSI vs EXE when the marker is missing
-/// because both installer formats target the same paths within each edition —
-/// that's by design). When the marker IS present, the EXE vs MSI distinction is
-/// preserved.
+/// Ownership precedence is deliberate: a `.cargo\bin` executable always wins;
+/// then a unique HKCU/HKLM Add/Remove Programs record whose normalized
+/// InstallLocation owns the executable; then a marker compatible with the
+/// path's edition; finally the path-only fallback. This prevents a stale marker
+/// from steering a surviving Cargo copy to an unrelated installer.
 #[cfg(windows)]
 fn detect_install_origin() -> InstallOrigin {
-    if let Some(origin) = read_install_source_marker() {
-        return origin;
-    }
-
     let Ok(exe) = std::env::current_exe() else {
         return InstallOrigin::Unknown;
     };
-    classify_install_path(&exe.to_string_lossy())
+    detect_install_origin_for_path(&exe)
+}
+
+#[cfg(windows)]
+pub(crate) fn detect_install_origin_for_path(exe: &Path) -> InstallOrigin {
+    let path_origin = classify_install_path(&exe.to_string_lossy());
+
+    // A Cargo install can legitimately survive an installer uninstall. The
+    // shared HKCU marker may still be stale for a few moments (or may have been
+    // left by an older release), so never let it override this unambiguous path.
+    if path_origin == InstallOrigin::CargoOrInstaller {
+        return path_origin;
+    }
+
+    let owner_origin = registered_install_owner(exe).map(|owner| owner.origin);
+    resolve_install_origin(path_origin, read_install_source_marker(), owner_origin)
+}
+
+#[cfg(windows)]
+fn resolve_install_origin(
+    path_origin: InstallOrigin,
+    marker: Option<InstallOrigin>,
+    registered_owner: Option<InstallOrigin>,
+) -> InstallOrigin {
+    if path_origin == InstallOrigin::CargoOrInstaller {
+        return path_origin;
+    }
+    if let Some(owner) = registered_owner {
+        return owner;
+    }
+
+    match (path_origin, marker) {
+        (
+            InstallOrigin::MsiGlobal,
+            Some(marker @ (InstallOrigin::MsiGlobal | InstallOrigin::ExeGlobal)),
+        ) => marker,
+        (
+            InstallOrigin::MsiCorporate,
+            Some(marker @ (InstallOrigin::MsiCorporate | InstallOrigin::ExeCorporate)),
+        ) => marker,
+        _ => path_origin,
+    }
 }
 
 /// Pure-function half of `detect_install_origin()` for unit testing. Lowercased
@@ -1468,15 +1522,197 @@ fn detect_install_origin() -> InstallOrigin {
 #[cfg(windows)]
 pub(crate) fn classify_install_path(exe_path: &str) -> InstallOrigin {
     let lower = exe_path.to_lowercase();
-    if lower.contains("\\program files\\nd300\\") {
+    if lower.contains("\\.cargo\\bin\\") {
+        InstallOrigin::CargoOrInstaller
+    } else if lower.contains("\\program files\\nd300\\") {
         InstallOrigin::MsiGlobal
     } else if lower.contains("\\appdata\\local\\programs\\nd300\\") {
         InstallOrigin::MsiCorporate
-    } else if lower.contains("\\.cargo\\bin\\") {
-        InstallOrigin::CargoOrInstaller
     } else {
         InstallOrigin::Unknown
     }
+}
+
+/// Resolve the registered MSI/Inno owner of `exe_path`, if exactly one proven
+/// Add/Remove Programs record owns its normalized install directory. If both
+/// formats are genuinely registered to the same directory, the marker may
+/// disambiguate only between those proven candidates; otherwise we refuse to
+/// guess.
+#[cfg(windows)]
+pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInstallOwner> {
+    use winreg::enums::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+    };
+    use winreg::RegKey;
+
+    const UNINSTALL_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
+    let roots = [
+        (RegKey::predef(HKEY_CURRENT_USER), false),
+        (RegKey::predef(HKEY_LOCAL_MACHINE), true),
+    ];
+    let views = [KEY_READ | KEY_WOW64_64KEY, KEY_READ | KEY_WOW64_32KEY];
+    let mut candidates = Vec::new();
+
+    for (root, machine_scope) in roots {
+        for flags in views {
+            let Ok(uninstall_root) = root.open_subkey_with_flags(UNINSTALL_KEY, flags) else {
+                continue;
+            };
+            for key_name in uninstall_root.enum_keys().filter_map(Result::ok) {
+                let Ok(key) = uninstall_root.open_subkey_with_flags(&key_name, flags) else {
+                    continue;
+                };
+                let Ok(display_name) = key.get_value::<String, _>("DisplayName") else {
+                    continue;
+                };
+                let expected_name = if machine_scope {
+                    "nd300"
+                } else {
+                    "nd300 (Corporate Edition)"
+                };
+                if !display_name.trim().eq_ignore_ascii_case(expected_name) {
+                    continue;
+                }
+
+                let Ok(location_text) = key.get_value::<String, _>("InstallLocation") else {
+                    continue;
+                };
+                let install_location = PathBuf::from(location_text.trim());
+                if install_location.as_os_str().is_empty()
+                    || !install_location_owns_executable(&install_location, exe_path)
+                {
+                    continue;
+                }
+
+                let owner = if let Some(origin) = inno_origin_for_key(&key_name, machine_scope) {
+                    let Ok(raw_uninstall) = key.get_value::<String, _>("UninstallString") else {
+                        continue;
+                    };
+                    let Some(executable) =
+                        validated_inno_uninstaller(&raw_uninstall, &install_location)
+                    else {
+                        continue;
+                    };
+                    if !executable.is_file() {
+                        continue;
+                    }
+                    RegisteredInstallOwner {
+                        origin,
+                        install_location,
+                        uninstall: RegisteredUninstall::Inno { executable },
+                    }
+                } else {
+                    let windows_installer = key
+                        .get_value::<u32, _>("WindowsInstaller")
+                        .unwrap_or_default()
+                        == 1;
+                    let Some(product_code) = normalize_product_code(&key_name) else {
+                        continue;
+                    };
+                    if !windows_installer {
+                        continue;
+                    }
+                    RegisteredInstallOwner {
+                        origin: if machine_scope {
+                            InstallOrigin::MsiGlobal
+                        } else {
+                            InstallOrigin::MsiCorporate
+                        },
+                        install_location,
+                        uninstall: RegisteredUninstall::Msi { product_code },
+                    }
+                };
+
+                if !candidates.contains(&owner) {
+                    candidates.push(owner);
+                }
+            }
+        }
+    }
+
+    if candidates.len() == 1 {
+        return candidates.pop();
+    }
+    let marker = read_install_source_marker()?;
+    let mut matching = candidates
+        .into_iter()
+        .filter(|candidate| candidate.origin == marker);
+    let selected = matching.next()?;
+    if matching.next().is_none() {
+        Some(selected)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn install_location_owns_executable(install_location: &Path, exe_path: &Path) -> bool {
+    let Some(file_name) = exe_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !matches!(
+        file_name.to_ascii_lowercase().as_str(),
+        "nd300.exe" | "speedqx.exe"
+    ) {
+        return false;
+    }
+    let Some(exe_dir) = exe_path.parent() else {
+        return false;
+    };
+    same_path(exe_dir, install_location) || same_path(exe_dir, &install_location.join("bin"))
+}
+
+#[cfg(windows)]
+fn inno_origin_for_key(key_name: &str, machine_scope: bool) -> Option<InstallOrigin> {
+    const GLOBAL: &str = "{13F102E1-E08D-4C4E-ABA6-7D77604DFECD}_IS1";
+    const CORPORATE: &str = "{B6A0E3BD-BDD8-44A3-B524-C226B2A116A9}_IS1";
+    let upper = key_name.trim().to_ascii_uppercase();
+    match (upper.as_str(), machine_scope) {
+        (GLOBAL, true) => Some(InstallOrigin::ExeGlobal),
+        (CORPORATE, false) => Some(InstallOrigin::ExeCorporate),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn validated_inno_uninstaller(raw: &str, install_location: &Path) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    let path_text = if let Some(quoted) = trimmed.strip_prefix('"') {
+        &quoted[..quoted.find('"')?]
+    } else {
+        trimmed.split_whitespace().next()?
+    };
+    let executable = PathBuf::from(path_text);
+    let file_name = executable
+        .file_name()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    if !file_name.starts_with("unins") || !file_name.ends_with(".exe") {
+        return None;
+    }
+    if !same_path(executable.parent()?, install_location) {
+        return None;
+    }
+    Some(executable)
+}
+
+#[cfg(windows)]
+fn normalize_product_code(raw: &str) -> Option<String> {
+    let upper = raw.trim().to_ascii_uppercase();
+    let bytes = upper.as_bytes();
+    if bytes.len() != 38 || bytes[0] != b'{' || bytes[37] != b'}' {
+        return None;
+    }
+    for (index, byte) in bytes.iter().enumerate().take(37).skip(1) {
+        if matches!(index, 9 | 14 | 19 | 24) {
+            if *byte != b'-' {
+                return None;
+            }
+        } else if !byte.is_ascii_hexdigit() {
+            return None;
+        }
+    }
+    Some(upper)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -1874,5 +2110,84 @@ mod tests {
             "cargo-or-installer"
         );
         assert_eq!(InstallOrigin::Unknown.json_id(), "unknown");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cargo_path_overrides_stale_installer_marker_and_owner() {
+        assert_eq!(
+            resolve_install_origin(
+                InstallOrigin::CargoOrInstaller,
+                Some(InstallOrigin::ExeGlobal),
+                Some(InstallOrigin::MsiGlobal),
+            ),
+            InstallOrigin::CargoOrInstaller,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn registered_owner_overrides_contradictory_marker() {
+        assert_eq!(
+            resolve_install_origin(
+                InstallOrigin::MsiGlobal,
+                Some(InstallOrigin::ExeGlobal),
+                Some(InstallOrigin::MsiGlobal),
+            ),
+            InstallOrigin::MsiGlobal,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn marker_is_used_only_when_its_scope_matches_the_path() {
+        assert_eq!(
+            resolve_install_origin(
+                InstallOrigin::MsiGlobal,
+                Some(InstallOrigin::ExeGlobal),
+                None,
+            ),
+            InstallOrigin::ExeGlobal,
+        );
+        assert_eq!(
+            resolve_install_origin(
+                InstallOrigin::MsiGlobal,
+                Some(InstallOrigin::ExeCorporate),
+                None,
+            ),
+            InstallOrigin::MsiGlobal,
+        );
+        assert_eq!(
+            resolve_install_origin(InstallOrigin::Unknown, Some(InstallOrigin::MsiGlobal), None,),
+            InstallOrigin::Unknown,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn product_code_validation_accepts_only_a_bare_guid() {
+        assert_eq!(
+            normalize_product_code("{95739c02-d3ee-45f5-a3b1-7bf1fc4fea59}").as_deref(),
+            Some("{95739C02-D3EE-45F5-A3B1-7BF1FC4FEA59}"),
+        );
+        assert_eq!(normalize_product_code("msiexec /x {bad}"), None);
+        assert_eq!(
+            normalize_product_code("{95739C02-D3EE-45F5-A3B1-7BF1FC4FEA5Z}"),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inno_uninstaller_must_live_under_registered_install_location() {
+        let root = Path::new(r"C:\Program Files\nd300");
+        assert_eq!(
+            validated_inno_uninstaller(r#""C:\Program Files\nd300\unins000.exe""#, root,),
+            Some(root.join("unins000.exe")),
+        );
+        assert_eq!(
+            validated_inno_uninstaller(r#""C:\Windows\System32\cmd.exe" /c whoami"#, root),
+            None,
+        );
     }
 }

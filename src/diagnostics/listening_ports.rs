@@ -209,6 +209,22 @@ fn parse_addr_port(s: &str) -> Option<(String, u16)> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn parse_ss_process(s: &str) -> (Option<u32>, Option<String>) {
+    if let Some(start) = s.find("pid=") {
+        let after = &s[start + 4..];
+        let pid_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let pid = pid_str.parse().ok();
+        let pname = s.find("((\"").map(|ns| {
+            let after = &s[ns + 3..];
+            after.chars().take_while(|c| *c != '"').collect()
+        });
+        (pid, pname)
+    } else {
+        (None, None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,21 +271,5 @@ mod tests {
         assert_eq!(listeners[0].protocol, "TCP4");
         assert_eq!(listeners[1].protocol, "TCP6");
         assert_eq!(listeners[0].port, listeners[1].port);
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn parse_ss_process(s: &str) -> (Option<u32>, Option<String>) {
-    if let Some(start) = s.find("pid=") {
-        let after = &s[start + 4..];
-        let pid_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        let pid = pid_str.parse().ok();
-        let pname = s.find("((\"").map(|ns| {
-            let after = &s[ns + 3..];
-            after.chars().take_while(|c| *c != '"').collect()
-        });
-        (pid, pname)
-    } else {
-        (None, None)
     }
 }

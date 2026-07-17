@@ -21,7 +21,7 @@ cargo-dist hosting and the chained Windows installers. A release is not complete
 until Apple accepts both Mac architectures, the post-signing artifacts and later
 Windows assets are attested, and all 28 assets are verified.
 
-The remaining release and follow-up work is tracked in root `TASKS.md`, with
+The remaining release and follow-up work is tracked in `.tasks/TASKS.md`, with
 Windows-ready commands plus the rationale, user impact, and acceptance evidence
 for every item. Update that board rather than relying on this Mac session.
 
