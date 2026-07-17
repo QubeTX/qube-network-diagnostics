@@ -6,6 +6,15 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 17, 2026 — Release checks accept harmless spacing and still catch damage
+
+**Fixed — the final download check no longer mistakes an empty separator for a broken checksum**
+- All downloads and their proof records were correct, but an extra blank line
+  in the generated checksum list stopped the final announcement. The checker
+  now skips only empty spacing while still rejecting damaged files, bad proof
+  lines, missing entries, and unsafe names. Those good and bad cases now run on
+  Windows before a release begins.
+
 ## July 17, 2026 — Intel Mac release checks understand older deployment metadata
 
 **Fixed — a valid Intel Mac build no longer stops at the final release check**

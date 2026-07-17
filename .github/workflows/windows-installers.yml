@@ -414,42 +414,7 @@ jobs:
             --dir $downloadDir
           if ($LASTEXITCODE -ne 0) { throw "Could not download the complete release for verification" }
 
-          foreach ($sidecar in Get-ChildItem -LiteralPath $downloadDir -Filter "*.sha256" -File) {
-            $line = [System.IO.File]::ReadAllText($sidecar.FullName).Trim()
-            if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)$') {
-              throw "Malformed SHA-256 sidecar: $($sidecar.Name)"
-            }
-            $expectedHash = $Matches[1].ToLowerInvariant()
-            $targetName = $Matches[2]
-            if ($targetName -ne $sidecar.Name.Substring(0, $sidecar.Name.Length - 7)) {
-              throw "Sidecar $($sidecar.Name) names unexpected target $targetName"
-            }
-            $targetPath = Join-Path $downloadDir $targetName
-            if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
-              throw "Sidecar target is missing: $targetName"
-            }
-            $actualHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actualHash -ne $expectedHash) {
-              throw "SHA-256 mismatch for $targetName"
-            }
-          }
-
-          foreach ($line in [System.IO.File]::ReadAllLines((Join-Path $downloadDir "sha256.sum"))) {
-            if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)$') {
-              throw "Malformed sha256.sum entry"
-            }
-            $expectedHash = $Matches[1].ToLowerInvariant()
-            $targetName = $Matches[2]
-            $targetPath = Join-Path $downloadDir $targetName
-            if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
-              throw "sha256.sum target is missing: $targetName"
-            }
-            $actualHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actualHash -ne $expectedHash) {
-              throw "sha256.sum mismatch for $targetName"
-            }
-          }
-          Write-Host "Verified every published SHA-256 sidecar and sha256.sum entry."
+          & "$PWD/scripts/verify-release-checksums.ps1" -Directory $downloadDir
 
           $pending = @(Get-ChildItem -LiteralPath $downloadDir -File | Select-Object -ExpandProperty FullName)
           for ($attempt = 1; $attempt -le 6 -and $pending.Count -gt 0; $attempt++) {

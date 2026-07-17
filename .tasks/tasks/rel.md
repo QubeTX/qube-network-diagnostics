@@ -21,10 +21,14 @@ All release jobs succeed; both Mac archives are Developer ID signed, Apple accep
 - [ ] Public binaries/installers report the final release version
 
 ## Status
-Active. Tag v3.6.0 correctly points to merge `2dd0f92`, but run `29603383832` stopped before hosting because the validator only recognized modern `minos` metadata. Apple notarization and Gatekeeper both accepted the Intel binary before that local false rejection. Fix forward to v3.6.1; never move or reuse v3.6.0.
+Active. v3.6.0 correctly remains at `2dd0f92`; its Intel metadata-parser failure was closed in v3.6.1. Tag v3.6.1 correctly remains at `d8e246e`; run `29606285691` passed both Apple/public trust lanes and published all 28 valid assets, but announcement stopped because the checksum verifier rejected cargo-dist's whitespace-only separator. Fix forward to v3.6.2; never move or reuse either prior tag.
 
 ## Activity
 - 2026-07-17 10:18 — imported ND36-004 and incorporated the exact-source workflow correction (agent: codex)
 - 2026-07-17 13:19 — pushed immutable v3.6.0 at exact green main `2dd0f92`; release run `29603383832` started (agent: codex)
 - 2026-07-17 13:26 — run stopped after Intel Apple `Accepted` and Gatekeeper success because valid legacy `LC_VERSION_MIN_MACOSX/version 10.12` output was rejected by a modern-only parser; v3.6.1 fix-forward opened (agent: codex)
 - 2026-07-17 13:36 — v3.6.1 shared metadata parser and positive/negative fixtures passed LF-exact ShellCheck, actionlint, strict Clippy, 312 tests, release build, audit, 102-file package, publish dry-run, and all four local installer builds with exit 0 (agent: codex)
+- 2026-07-17 13:58 — PR #19 exact head `a908e00` passed CI `29604943619` and five-origin candidate matrix `29604943583`; merge `d8e246e` passed main CI `29605809330` and crates publish `29606164285` (agent: codex)
+- 2026-07-17 14:19 — v3.6.1 run `29606285691` passed Intel/arm64 notarization and public Gatekeeper, hosted exactly 28 assets, then rejected a trailing blank `sha256.sum` line before announcement (agent: codex)
+- 2026-07-17 14:22 — downloaded the public v3.6.1 set and independently verified 11 sidecars, eight nonblank aggregate entries, and all 28 attestations against source `d8e246e` and the repository signer; v3.6.2 shared verifier/fixtures started (agent: codex)
+- 2026-07-17 14:32 — v3.6.2 shared verifier passed blank-separator, malformed-entry, empty-manifest, corruption, and public-v3.6.1 replay fixtures; actionlint, strict Clippy, 312 Rust tests, release build, audit, 102-file package, publish dry-run, and all four installer builds passed (agent: codex)

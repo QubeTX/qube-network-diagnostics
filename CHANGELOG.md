@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.2] - 2026-07-17
+
+### Fixed
+- **Release checksum verification handles cargo-dist separators without
+  weakening validation.** The shared PowerShell verifier now ignores only
+  whitespace-only `sha256.sum` lines, requires at least one aggregate entry,
+  rejects malformed nonblank lines and non-local targets, and still verifies
+  every referenced hash. Windows CI covers valid blank separators, malformed
+  entries, empty manifests, and corrupted artifacts. The immutable v3.6.1
+  release published all 28 correctly checksummed and exact-source-attested
+  assets, but announcement was blocked by the prior blank-line false negative;
+  v3.6.2 is the forward-only release.
+
 ## [3.6.1] - 2026-07-17
 
 ### Fixed
