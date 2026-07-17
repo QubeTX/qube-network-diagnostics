@@ -72,6 +72,48 @@ function Invoke-Checked {
     }
 }
 
+function Invoke-Captured {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$ArgumentList,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    # GitHub's PowerShell runner promotes non-zero native exits to terminating
+    # errors. A direct invocation can therefore abort before $LASTEXITCODE or
+    # captured diagnostics are inspected. Use Process directly so every failure
+    # retains stdout, stderr, and its real exit code in the job log.
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.WorkingDirectory = (Get-Location).Path
+    foreach ($argument in $ArgumentList) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+    try {
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+    } catch {
+        throw "$Label could not start $FilePath`: $($_.Exception.Message)"
+    }
+    if (-not $process) { throw "$Label could not start $FilePath" }
+
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $stdout = $stdoutTask.GetAwaiter().GetResult().Trim()
+    $stderr = $stderrTask.GetAwaiter().GetResult().Trim()
+    if ($stdout) { Write-Host $stdout }
+    if ($stderr) { Write-Host $stderr }
+
+    return [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        StdOut = $stdout
+        StdErr = $stderr
+    }
+}
+
 function Normalize-PathText {
     param([Parameter(Mandatory)][string]$Path)
     return $Path.Trim().TrimEnd([char[]]@('\', '/')).ToLowerInvariant()
@@ -153,12 +195,9 @@ function Assert-Version {
     if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
         throw "Expected executable is missing: $Executable"
     }
-    $lines = @(& $Executable --version 2>&1)
-    $code = $LASTEXITCODE
-    $text = $lines -join "`n"
-    Write-Host $text
-    if ($code -ne 0 -or $text -notmatch "(?<![0-9])$([regex]::Escape($Version))(?![0-9])") {
-        throw "$Executable did not report expected version $Version (exit=$code, output=$text)"
+    $result = Invoke-Captured $Executable @('--version') "Read $Executable version"
+    if ($result.ExitCode -ne 0 -or $result.StdOut -notmatch "(?<![0-9])$([regex]::Escape($Version))(?![0-9])") {
+        throw "$Executable did not report expected version $Version (exit=$($result.ExitCode), output=$($result.StdOut))"
     }
 }
 
@@ -306,12 +345,9 @@ function Assert-CargoOverridesStaleMarker {
     param([Parameter(Mandatory)][string]$CargoExe)
     New-Item -ItemType Directory -Force -Path 'HKCU:\Software\ND300' | Out-Null
     Set-ItemProperty -LiteralPath 'HKCU:\Software\ND300' -Name InstallSource -Value 'msi-global' -Type String
-    $lines = @(& $CargoExe update --json 2>&1)
-    $code = $LASTEXITCODE
-    $text = $lines -join "`n"
-    Write-Host $text
-    if ($code -ne 0) { throw "Cargo stale-marker update probe failed with exit $code" }
-    $payload = $text | ConvertFrom-Json
+    $result = Invoke-Captured $CargoExe @('update', '--json') 'Probe Cargo ownership with a stale marker'
+    if ($result.ExitCode -ne 0) { throw "Cargo stale-marker update probe failed with exit $($result.ExitCode)" }
+    $payload = $result.StdOut | ConvertFrom-Json
     if ($payload.install_origin -ne 'cargo-or-installer') {
         throw "Stale marker won over Cargo path: install_origin=$($payload.install_origin)"
     }
@@ -352,10 +388,8 @@ if ($Mode -eq 'candidate') {
         Install-Artifact $candidateAsset 'Upgrade to locally built candidate artifact'
     }
 } else {
-    $lines = @(& $installedNd300 update --json 2>&1)
-    $code = $LASTEXITCODE
-    $lines | ForEach-Object { Write-Host $_ }
-    if ($code -ne 0) { throw "Public nd300 update failed with exit $code" }
+    $result = Invoke-Captured $installedNd300 @('update', '--json') 'Run public nd300 update'
+    if ($result.ExitCode -ne 0) { throw "Public nd300 update failed with exit $($result.ExitCode)" }
 }
 
 Assert-InstallState $ExpectedVersion
@@ -364,12 +398,9 @@ Write-Snapshot 'upgraded'
 # 3. Hidden migration interface must be dry-run safe and accept all origins.
 $migrationArgs = @('migrate-cleanup', '--json', '--dry-run', '--cargo-copy', '--other-edition')
 if ($Origin -ne 'cargo') { $migrationArgs += @('--install-origin', $Origin) }
-$migrationLines = @(& $installedNd300 @migrationArgs 2>&1)
-$migrationCode = $LASTEXITCODE
-$migrationText = $migrationLines -join "`n"
-Write-Host $migrationText
-if ($migrationCode -ne 0) { throw "Dry-run migration failed with exit $migrationCode" }
-$migration = $migrationText | ConvertFrom-Json
+$migrationResult = Invoke-Captured $installedNd300 $migrationArgs 'Run dry-run migration'
+if ($migrationResult.ExitCode -ne 0) { throw "Dry-run migration failed with exit $($migrationResult.ExitCode)" }
+$migration = $migrationResult.StdOut | ConvertFrom-Json
 if (-not $migration.dry_run) { throw 'Migration report did not preserve dry_run=true' }
 Assert-InstallState $ExpectedVersion
 
@@ -382,10 +413,8 @@ if ($Origin -ne 'cargo') {
     if ($Mode -eq 'candidate') { Install-CargoCandidate } else { Install-CargoRelease $ExpectedVersion 'Install surviving Cargo copy' }
     Assert-Version $cargoNd300 $ExpectedVersion
 
-    $uninstallLines = @(& $installedNd300 uninstall --json 2>&1)
-    $uninstallCode = $LASTEXITCODE
-    $uninstallLines | ForEach-Object { Write-Host $_ }
-    if ($uninstallCode -ne 0) { throw "Registered uninstall launch failed with exit $uninstallCode" }
+    $uninstallResult = Invoke-Captured $installedNd300 @('uninstall', '--json') 'Uninstall registered origin'
+    if ($uninstallResult.ExitCode -ne 0) { throw "Registered uninstall launch failed with exit $($uninstallResult.ExitCode)" }
 
     Wait-Until {
         $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -409,10 +438,8 @@ Assert-CargoOverridesStaleMarker $cargoNd300
 Write-Snapshot 'cargo-survivor'
 
 # 5. Cargo/portable uninstall remains allowlisted and leaves the toolchain.
-$cargoUninstallLines = @(& $cargoNd300 uninstall --json 2>&1)
-$cargoUninstallCode = $LASTEXITCODE
-$cargoUninstallLines | ForEach-Object { Write-Host $_ }
-if ($cargoUninstallCode -ne 0) { throw "Cargo uninstall failed with exit $cargoUninstallCode" }
+$cargoUninstallResult = Invoke-Captured $cargoNd300 @('uninstall', '--json') 'Uninstall Cargo origin'
+if ($cargoUninstallResult.ExitCode -ne 0) { throw "Cargo uninstall failed with exit $($cargoUninstallResult.ExitCode)" }
 Wait-Until {
     -not (Test-Path -LiteralPath $cargoNd300 -PathType Leaf) -and
     -not (Test-Path -LiteralPath $cargoSpeedqx -PathType Leaf)
