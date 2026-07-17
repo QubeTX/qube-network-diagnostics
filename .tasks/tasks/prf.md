@@ -30,3 +30,4 @@ Implementation is complete locally. Rust 1.97.0 is selected; strict Windows Clip
 - 2026-07-17 11:42 — local Rust 1.97.0 actionlint, strict Clippy, targeted tests, and diff checks passed; hosted exact-head gates remain (agent: codex)
 - 2026-07-17 12:21 — required cfg reviewer found no current-tree findings; final 28-asset verification now constrains both exact tag digest and repository signer (agent: codex)
 - 2026-07-17 12:31 — required installer reviewer returned `LOCKSTEP OK`; exact pushed-head CI remains the only merge gate (agent: installer-lockstep-reviewer)
+- 2026-07-17 12:38 — first exact-head Linux ARM gate exposed missing cross-libc headers because `--no-install-recommends` omitted them; added explicit `libc6-dev-arm64-cross` rather than weakening the new gate (agent: codex)

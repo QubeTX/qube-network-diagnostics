@@ -157,7 +157,10 @@ jobs:
         include:
           - name: Linux aarch64 GNU
             target: aarch64-unknown-linux-gnu
-            packages: gcc-aarch64-linux-gnu
+            # --no-install-recommends omits the target libc headers that GCC's
+            # stdint.h needs while compiling ring/lzma C sources, so request
+            # the cross libc development package explicitly.
+            packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
             cc: aarch64-linux-gnu-gcc
             ar: aarch64-linux-gnu-ar
           - name: Linux x86_64 musl
