@@ -401,12 +401,10 @@ fn uninstall_registered_owner(owner: &super::update::RegisteredInstallOwner) -> 
     report
 }
 
-/// Resolve Windows Installer from the kernel-provided system directory instead
-/// of PATH or the current working directory. A bare `msiexec.exe` passed to
-/// ShellExecuteW(`runas`) would otherwise permit executable-search hijacking
-/// before the user approves elevation.
+/// Resolve a trusted Windows system executable from the kernel-provided system
+/// directory instead of PATH or the current working directory.
 #[cfg(windows)]
-fn system_msiexec_path() -> Result<PathBuf, String> {
+fn system_executable_path(relative_path: &Path) -> Result<PathBuf, String> {
     use std::os::windows::ffi::OsStringExt;
     use winapi::um::sysinfoapi::GetSystemDirectoryW;
 
@@ -428,14 +426,26 @@ fn system_msiexec_path() -> Result<PathBuf, String> {
     }
 
     let system_dir = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
-    let msiexec = system_dir.join("msiexec.exe");
-    if !system_dir.is_absolute() || !msiexec.is_file() {
+    let executable = system_dir.join(relative_path);
+    if !system_dir.is_absolute() || !executable.is_file() {
         return Err(format!(
-            "Trusted Windows Installer executable was not found at {}",
-            msiexec.display()
+            "Trusted Windows system executable was not found at {}",
+            executable.display()
         ));
     }
-    Ok(msiexec)
+    Ok(executable)
+}
+
+/// A bare `msiexec.exe` passed to ShellExecuteW(`runas`) would permit
+/// executable-search hijacking before the user approves elevation.
+#[cfg(windows)]
+fn system_msiexec_path() -> Result<PathBuf, String> {
+    system_executable_path(Path::new("msiexec.exe"))
+}
+
+#[cfg(windows)]
+fn system_powershell_path() -> Result<PathBuf, String> {
+    system_executable_path(Path::new("WindowsPowerShell\\v1.0\\powershell.exe"))
 }
 
 #[cfg(windows)]
@@ -611,64 +621,59 @@ fn uninstall_path_impl(exe_path: &Path, full_cleanup: bool) -> CleanupReport {
 
     #[cfg(windows)]
     {
-        // On Windows, a running exe cannot be deleted directly.
-        // Spawn a background cmd that waits briefly, then deletes the file.
+        // On Windows, a running exe cannot be deleted directly. Spawn a trusted
+        // background PowerShell helper that retries until the process releases
+        // its image mapping. The path travels in an environment variable and is
+        // consumed with .NET LiteralPath-equivalent APIs, never shell-expanded.
         // The file is NOT gone yet, so we set `binary_removal_scheduled` (not
         // `binary_removed`) — the updater's shadow guard depends on the
         // distinction.
-        match build_delayed_delete_command(exe_path) {
-            Some(script) => {
-                match std::process::Command::new("cmd")
-                    .args(["/C", &script])
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    Ok(_) => report.binary_removal_scheduled = true,
-                    Err(e) => report
-                        .notes
-                        .push(format!("Failed to spawn cleanup process: {}", e)),
-                }
-            }
-            None => {
-                // The path contains characters that can't be safely embedded in a
-                // `cmd /C` string. Refuse rather than risk a malformed/dangerous
-                // command — neither flag is set, so this is reported as a failure.
-                report.notes.push(format!(
-                    "Could not schedule binary removal: path contains characters unsafe for a Windows shell command: {}",
-                    exe_path.display()
-                ));
-            }
+        match spawn_delayed_delete(exe_path) {
+            Ok(()) => report.binary_removal_scheduled = true,
+            Err(error) => report.notes.push(error),
         }
     }
 
     report
 }
 
-/// Build the `cmd /C` script that deletes `exe_path` shortly after the current
-/// process exits (Windows can't delete a running exe in place).
-///
-/// Returns `None` if the path contains any character that is either illegal in a
-/// real Windows path or unsafe to embed in a `cmd` command line — `"`, newline,
-/// carriage return, or any cmd metacharacter (`& ^ | < >`). All of these are
-/// already illegal in genuine Windows file paths, so `None` is an honest refusal
-/// rather than a real limitation. `%` is escaped to `%%` so `cmd`'s
-/// environment-variable expansion can't mangle a path containing a literal `%`.
 #[cfg(windows)]
-fn build_delayed_delete_command(exe_path: &Path) -> Option<String> {
-    let raw = exe_path.to_string_lossy();
+fn spawn_delayed_delete(exe_path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
 
-    // Reject anything that would break out of the quoted `del "..."` argument or
-    // that cmd would interpret as a metacharacter.
-    const FORBIDDEN: [char; 8] = ['"', '\n', '\r', '&', '^', '|', '<', '>'];
-    if raw.chars().any(|c| FORBIDDEN.contains(&c)) {
-        return None;
-    }
+    // `cmd /C <script>` has non-C argv parsing: ordinary Command::args quoting
+    // can corrupt an embedded quoted path, which left Cargo/portable nd300.exe
+    // behind even though the helper reported as spawned. Windows PowerShell
+    // accepts a constant command through argv, while the untrusted path is kept
+    // entirely out of command text.
+    const SCRIPT: &str = "$target=$env:ND300_DELETE_TARGET; for ($i=0; $i -lt 120; $i++) { try { [System.IO.File]::Delete($target) } catch {}; if (-not [System.IO.File]::Exists($target)) { exit 0 }; Start-Sleep -Seconds 1 }; exit 1";
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    // Escape `%` so cmd doesn't try to expand `%VAR%`-style sequences in the path.
-    let safe = raw.replace('%', "%%");
-    Some(format!("ping localhost -n 3 > nul & del \"{}\"", safe))
+    let powershell = system_powershell_path()?;
+    std::process::Command::new(&powershell)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            SCRIPT,
+        ])
+        .env("ND300_DELETE_TARGET", exe_path.as_os_str())
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "Failed to spawn trusted delayed-delete helper at {}: {}",
+                powershell.display(),
+                error
+            )
+        })
 }
 
 fn print_ok(label: &str, config: &Config) {
@@ -884,45 +889,58 @@ mod tests {
         );
     }
 
-    // ── L4: delayed-delete command is built safely or honestly refused ────────
+    // ── L4: delayed-delete helper is trusted and survives image locks ─────────
     #[cfg(windows)]
     #[test]
-    fn build_delayed_delete_command_normal_path() {
-        let cmd = build_delayed_delete_command(Path::new(r"C:\Users\me\.cargo\bin\nd300.exe"))
-            .expect("a normal path yields a command");
-        assert!(cmd.contains(r#"del "C:\Users\me\.cargo\bin\nd300.exe""#));
-        assert!(cmd.starts_with("ping localhost -n 3 > nul & del \""));
+    fn delayed_delete_resolves_an_absolute_system_powershell() {
+        let powershell =
+            system_powershell_path().expect("Windows PowerShell must exist below System32");
+        assert!(powershell.is_absolute());
+        assert!(powershell.is_file());
+        assert_eq!(
+            powershell
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("powershell.exe"),
+        );
     }
 
     #[cfg(windows)]
     #[test]
-    fn build_delayed_delete_command_escapes_percent() {
-        let cmd = build_delayed_delete_command(Path::new(r"C:\weird%path\nd300.exe"))
-            .expect("a percent in a path is escaped, not refused");
-        assert!(cmd.contains(r"C:\weird%%path\nd300.exe"));
-        // The single literal percent must not survive un-escaped.
-        assert!(!cmd.contains(r"weird%path"));
-    }
+    fn delayed_delete_retries_until_a_locked_file_is_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    #[cfg(windows)]
-    #[test]
-    fn build_delayed_delete_command_refuses_metacharacters() {
-        // Every cmd metacharacter / quote / newline yields a refusal (None).
-        for bad in [
-            r#"C:\a"b\nd300.exe"#,
-            r"C:\a&b\nd300.exe",
-            r"C:\a^b\nd300.exe",
-            r"C:\a|b\nd300.exe",
-            r"C:\a<b\nd300.exe",
-            r"C:\a>b\nd300.exe",
-            "C:\\a\nb\\nd300.exe",
-            "C:\\a\rb\\nd300.exe",
-        ] {
-            assert!(
-                build_delayed_delete_command(Path::new(bad)).is_none(),
-                "expected refusal for path: {:?}",
-                bad
-            );
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "nd300-delayed-delete-{}-{nonce}.exe",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"locked test file").expect("create locked test file");
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .expect("open test file without delete sharing");
+
+        let canonical_path = path.canonicalize().expect("canonicalize locked test file");
+        spawn_delayed_delete(&canonical_path).expect("spawn delayed-delete helper");
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            path.exists(),
+            "helper must not claim a locked file was deleted"
+        );
+        drop(lock);
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
         }
+        assert!(!path.exists(), "helper did not delete the released file");
     }
 }

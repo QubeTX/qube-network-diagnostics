@@ -174,6 +174,7 @@ function Write-Snapshot {
         Get-ArpRecords | ForEach-Object {
             [ordered]@{
                 key = Get-PropertyValue -InputObject $_ -Name 'PSChildName'
+                registry_path = Get-PropertyValue -InputObject $_ -Name 'PSPath'
                 display_name = Get-PropertyValue -InputObject $_ -Name 'DisplayName'
                 display_version = Get-PropertyValue -InputObject $_ -Name 'DisplayVersion'
                 install_location = Get-PropertyValue -InputObject $_ -Name 'InstallLocation'
@@ -387,10 +388,14 @@ if ($Origin -ne 'cargo') {
     if ($uninstallCode -ne 0) { throw "Registered uninstall launch failed with exit $uninstallCode" }
 
     Wait-Until {
+        $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         -not (Test-Path -LiteralPath $installedNd300 -PathType Leaf) -and
         @(Get-ArpRecords).Count -eq 0 -and
-        -not (Get-Marker)
-    } 'registered uninstaller to remove binaries, ARP, and marker'
+        -not (Get-Marker) -and
+        -not (Test-PathListContains $machinePath $installBin) -and
+        -not (Test-PathListContains $userPath $installBin)
+    } 'registered uninstaller to remove binaries, ARP, marker, and PATH ownership'
 
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')

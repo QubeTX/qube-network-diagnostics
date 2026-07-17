@@ -1553,7 +1553,7 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
     let views = [KEY_READ | KEY_WOW64_64KEY, KEY_READ | KEY_WOW64_32KEY];
     let mut candidates = Vec::new();
 
-    for (root, machine_scope) in roots {
+    for (root, machine_hive) in roots {
         for flags in views {
             let Ok(uninstall_root) = root.open_subkey_with_flags(UNINSTALL_KEY, flags) else {
                 continue;
@@ -1565,14 +1565,11 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
                 let Ok(display_name) = key.get_value::<String, _>("DisplayName") else {
                     continue;
                 };
-                let expected_name = if machine_scope {
-                    "nd300"
-                } else {
-                    "nd300 (Corporate Edition)"
-                };
-                if !display_name.trim().eq_ignore_ascii_case(expected_name) {
+                let Some(msi_origin) =
+                    msi_origin_for_registered_record(&display_name, machine_hive)
+                else {
                     continue;
-                }
+                };
 
                 let Ok(location_text) = key.get_value::<String, _>("InstallLocation") else {
                     continue;
@@ -1584,7 +1581,15 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
                     continue;
                 }
 
-                let owner = if let Some(origin) = inno_origin_for_key(&key_name, machine_scope) {
+                let owner = if let Some(origin) = inno_origin_for_key(&key_name) {
+                    let expected_msi_origin = match origin {
+                        InstallOrigin::ExeGlobal => InstallOrigin::MsiGlobal,
+                        InstallOrigin::ExeCorporate => InstallOrigin::MsiCorporate,
+                        _ => continue,
+                    };
+                    if msi_origin != expected_msi_origin {
+                        continue;
+                    }
                     let Ok(raw_uninstall) = key.get_value::<String, _>("UninstallString") else {
                         continue;
                     };
@@ -1613,11 +1618,7 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
                         continue;
                     }
                     RegisteredInstallOwner {
-                        origin: if machine_scope {
-                            InstallOrigin::MsiGlobal
-                        } else {
-                            InstallOrigin::MsiCorporate
-                        },
+                        origin: msi_origin,
                         install_location,
                         uninstall: RegisteredUninstall::Msi { product_code },
                     }
@@ -1645,6 +1646,27 @@ pub(crate) fn registered_install_owner(exe_path: &Path) -> Option<RegisteredInst
     }
 }
 
+/// Determine the MSI edition represented by an exact ARP display name and
+/// registry hive. Global ownership is accepted only from protected HKLM.
+/// Corporate ownership normally lives in HKCU, but Windows Installer may expose
+/// a per-user-managed/elevated registration from protected HKLM; both are safe
+/// because the exact Corporate identity and owned install location are still
+/// required. A user-writable HKCU record can never claim the Global edition.
+#[cfg(windows)]
+fn msi_origin_for_registered_record(
+    display_name: &str,
+    machine_hive: bool,
+) -> Option<InstallOrigin> {
+    let display_name = display_name.trim();
+    if machine_hive && display_name.eq_ignore_ascii_case("nd300") {
+        Some(InstallOrigin::MsiGlobal)
+    } else if display_name.eq_ignore_ascii_case("nd300 (Corporate Edition)") {
+        Some(InstallOrigin::MsiCorporate)
+    } else {
+        None
+    }
+}
+
 #[cfg(windows)]
 fn install_location_owns_executable(install_location: &Path, exe_path: &Path) -> bool {
     let Some(file_name) = exe_path.file_name().and_then(|name| name.to_str()) else {
@@ -1663,13 +1685,13 @@ fn install_location_owns_executable(install_location: &Path, exe_path: &Path) ->
 }
 
 #[cfg(windows)]
-fn inno_origin_for_key(key_name: &str, machine_scope: bool) -> Option<InstallOrigin> {
+fn inno_origin_for_key(key_name: &str) -> Option<InstallOrigin> {
     const GLOBAL: &str = "{13F102E1-E08D-4C4E-ABA6-7D77604DFECD}_IS1";
     const CORPORATE: &str = "{B6A0E3BD-BDD8-44A3-B524-C226B2A116A9}_IS1";
     let upper = key_name.trim().to_ascii_uppercase();
-    match (upper.as_str(), machine_scope) {
-        (GLOBAL, true) => Some(InstallOrigin::ExeGlobal),
-        (CORPORATE, false) => Some(InstallOrigin::ExeCorporate),
+    match upper.as_str() {
+        GLOBAL => Some(InstallOrigin::ExeGlobal),
+        CORPORATE => Some(InstallOrigin::ExeCorporate),
         _ => None,
     }
 }
@@ -2135,6 +2157,78 @@ mod tests {
                 Some(InstallOrigin::MsiGlobal),
             ),
             InstallOrigin::MsiGlobal,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn registered_record_scope_accepts_corporate_but_protects_global() {
+        assert_eq!(
+            msi_origin_for_registered_record("nd300 (Corporate Edition)", false),
+            Some(InstallOrigin::MsiCorporate),
+        );
+        assert_eq!(
+            msi_origin_for_registered_record("nd300 (Corporate Edition)", true),
+            Some(InstallOrigin::MsiCorporate),
+        );
+        assert_eq!(
+            msi_origin_for_registered_record("nd300", true),
+            Some(InstallOrigin::MsiGlobal),
+        );
+        assert_eq!(msi_origin_for_registered_record("nd300", false), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn corporate_msi_hkcu_record_owns_its_installed_binary() {
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_WOW64_32KEY, KEY_WRITE};
+        use winreg::RegKey;
+
+        const PRODUCT_CODE: &str = "{A1111111-B222-4CCC-8DDD-E55555555555}";
+        const UNINSTALL_ROOT: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
+
+        let install_location =
+            std::env::temp_dir().join(format!("nd300-corporate-owner-test-{}", std::process::id()));
+        let bin_dir = install_location.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create test install directory");
+        let executable = bin_dir.join("nd300.exe");
+        std::fs::write(&executable, b"test").expect("create test executable");
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key_path = format!("{UNINSTALL_ROOT}\\{PRODUCT_CODE}");
+        let _ = hkcu.delete_subkey_with_flags(&key_path, KEY_WOW64_32KEY);
+        let (key, _) = hkcu
+            .create_subkey_with_flags(&key_path, KEY_WRITE | KEY_WOW64_32KEY)
+            .expect("create test ARP record");
+        key.set_value("DisplayName", &"nd300 (Corporate Edition)")
+            .expect("write DisplayName");
+        key.set_value(
+            "InstallLocation",
+            &install_location.to_string_lossy().as_ref(),
+        )
+        .expect("write InstallLocation");
+        key.set_value("WindowsInstaller", &1_u32)
+            .expect("write WindowsInstaller");
+        drop(key);
+
+        let executable = executable
+            .canonicalize()
+            .expect("canonicalize test executable");
+        let owner = registered_install_owner(&executable);
+
+        hkcu.delete_subkey_with_flags(&key_path, KEY_WOW64_32KEY)
+            .expect("remove test ARP record");
+        std::fs::remove_dir_all(&install_location).expect("remove test install directory");
+
+        assert_eq!(
+            owner,
+            Some(RegisteredInstallOwner {
+                origin: InstallOrigin::MsiCorporate,
+                install_location,
+                uninstall: RegisteredUninstall::Msi {
+                    product_code: PRODUCT_CODE.to_string(),
+                },
+            })
         );
     }
 
