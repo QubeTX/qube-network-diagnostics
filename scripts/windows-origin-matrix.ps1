@@ -48,8 +48,25 @@ function Invoke-Checked {
     )
 
     Write-Host "`n==> $Label"
-    & $FilePath @ArgumentList
-    $code = $LASTEXITCODE
+    # PowerShell can return immediately for Windows GUI-subsystem executables
+    # such as msiexec and Inno Setup, leaving $LASTEXITCODE stale while the
+    # installer is still writing files. Use a process handle and wait explicitly;
+    # ArgumentList also preserves paths without shell re-parsing.
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.WorkingDirectory = (Get-Location).Path
+    foreach ($argument in $ArgumentList) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+    try {
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+    } catch {
+        throw "$Label could not start $FilePath`: $($_.Exception.Message)"
+    }
+    if (-not $process) { throw "$Label could not start $FilePath" }
+    $process.WaitForExit()
+    $code = $process.ExitCode
     if ($code -ne 0) {
         throw "$Label failed with exit code $code"
     }
@@ -100,6 +117,16 @@ function Get-Marker {
     }
 }
 
+function Get-PropertyValue {
+    param(
+        [Parameter(Mandatory)][object]$InputObject,
+        [Parameter(Mandatory)][string]$Name
+    )
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $null
+}
+
 function Get-ArpRecords {
     $roots = @(
         'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -108,7 +135,10 @@ function Get-ArpRecords {
     )
     return @(
         Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |
-            Where-Object { $_.DisplayName -in @('nd300', 'nd300 (Corporate Edition)') }
+            Where-Object {
+                (Get-PropertyValue -InputObject $_ -Name 'DisplayName') -in
+                    @('nd300', 'nd300 (Corporate Edition)')
+            }
     )
 }
 
@@ -143,11 +173,11 @@ function Write-Snapshot {
     $arp = @(
         Get-ArpRecords | ForEach-Object {
             [ordered]@{
-                key = $_.PSChildName
-                display_name = $_.DisplayName
-                display_version = $_.DisplayVersion
-                install_location = $_.InstallLocation
-                windows_installer = $_.WindowsInstaller
+                key = Get-PropertyValue -InputObject $_ -Name 'PSChildName'
+                display_name = Get-PropertyValue -InputObject $_ -Name 'DisplayName'
+                display_version = Get-PropertyValue -InputObject $_ -Name 'DisplayVersion'
+                install_location = Get-PropertyValue -InputObject $_ -Name 'InstallLocation'
+                windows_installer = Get-PropertyValue -InputObject $_ -Name 'WindowsInstaller'
             }
         }
     )
@@ -300,6 +330,10 @@ if ($Origin -eq 'cargo') {
 } else {
     $baselineAsset = Download-BaselineAsset
     Install-Artifact $baselineAsset 'Install published baseline artifact'
+    Wait-Until {
+        (Test-Path -LiteralPath $installedNd300 -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $installBin 'speedqx.exe') -PathType Leaf)
+    } 'baseline installer to materialize both binaries' 60
 }
 Assert-InstallState $BaselineVersion
 Write-Snapshot 'baseline'
