@@ -97,7 +97,7 @@ try {
         'releases/download/v$app_version',
         'install-takeover --target standalone --scope all',
         'nd300.exe", "speedqx.exe',
-        'migrate-cleanup --quiet --retired-update',
+        "@('migrate-cleanup', '--quiet', '--retired-update')",
         'rollback also failed',
         'throw $install_error'
     )) {
@@ -166,7 +166,9 @@ try {
         )
         lib_paths = @()
     }
+    $global:LASTEXITCODE = 0
     Invoke-Installer $artifacts $successDest $successLib
+    Assert-True ($LASTEXITCODE -eq 0) 'Advisory retired-image cleanup leaked its native exit code'
     Assert-True (-not $liveProcess.HasExited) 'Installer terminated the running old image'
     Assert-True (Test-Path -LiteralPath (Join-Path $successDest 'nd300.update-old-9.8.7.exe')) 'Old running image was not retired'
     Assert-True ((Get-FileHash (Join-Path $successDest 'nd300.exe')).Hash -eq (Get-FileHash "$env:SystemRoot\System32\where.exe").Hash) 'New nd300.exe was not installed'

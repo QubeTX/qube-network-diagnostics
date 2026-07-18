@@ -385,9 +385,15 @@ $endReplacement = @'
     $cleanup_binary = Join-Path "$dest_dir" "nd300.exe"
     if (Test-Path -LiteralPath $cleanup_binary -PathType Leaf) {
       try {
-        & $cleanup_binary migrate-cleanup --quiet --retired-update
-        if ($LASTEXITCODE -ne 0) {
-          Write-Warning "The update completed, but retired-image cleanup exited $LASTEXITCODE"
+        $cleanup_process = Start-Process `
+          -FilePath $cleanup_binary `
+          -ArgumentList @('migrate-cleanup', '--quiet', '--retired-update') `
+          -NoNewWindow `
+          -Wait `
+          -PassThru `
+          -ErrorAction Stop
+        if ($cleanup_process.ExitCode -ne 0) {
+          Write-Warning "The update completed, but retired-image cleanup exited $($cleanup_process.ExitCode)"
         }
       } catch {
         Write-Warning "The update completed, but retired-image cleanup could not run: $_"
