@@ -44,15 +44,19 @@ checks. A section remains explicitly pending until its evidence exists.
 
 ## Physical Alienware result
 
-Pending operator approval. The installed 3.7.2 Global MSI correctly selected
-only `msi-global`, downloaded and verified the exact public 3.7.3 MSI, and
-failed safely with Windows Installer code 1602 when UAC was canceled. A later
-independent launch re-verified SHA-256
-`733290aa08fa3b4f09385ef39560c4faea4f6e98cb41d10329ca16bcb1b76c12`
-against the public sidecar but was also canceled before `msiexec` started. No
-installation state changed. Final fresh-shell version, ARP, marker, machine
-PATH, paired-binary, and already-latest updater proof must be appended after one
-approved UAC run.
+The installed 3.7.2 Global MSI selected only `msi-global`, downloaded and
+verified the exact public 3.7.3 MSI, received operator-approved UAC, and
+completed the real `nd300 update --json` transaction with exit 0. The updater's
+one-object response reported 3.7.2 -> 3.7.3, strategy `msi_global`, no remaining
+user action, and no cross-channel fallback. Fresh processes then proved:
+
+- `nd300` and `speedqx` both report 3.7.3 from `C:\Program Files\nd300\bin`.
+- Their SHA-256 digests are `35776ED3BEE3E3149DA705E7FDB35D6768A98BA65112A13C4AA69E5189C14D93` and `DF366B4158C337BF536FFF4FEF81AA1AAC078A870BA602C6EC8B4F9B36FA6E71`, byte-identical to the independently downloaded public Windows archive.
+- Exactly one machine-wide ARP record remains: product `{D0AD3FD5-B99F-4D4A-98B8-C088355E6437}`, version 3.7.3, under `C:\Program Files\nd300\`. Marker `msi-global` and exactly one expandable machine-PATH entry remain; no user-PATH duplicate exists.
+- The install directory contains only the two expected binaries. No Cargo copy, retired/update-old sibling, staged updater MSI, or active Windows Installer transaction remains.
+- Both `nd300 update --json` and `speedqx update --json` emit exactly one object, exit 0, report current/latest 3.7.3, preserve `msi-global`, and require no action. Migration dry-run finds neither a Cargo copy nor another edition.
+- Installed core JSON, technician JSON, and ASCII smokes all exit 0 with empty stderr. JSON parses with the required core/technician structures; ASCII contains no Unicode box drawing. The result identifies exactly one active Intel Wi-Fi 7 BE202 at 866 Mbps and the reachable default gateway while disconnected Wi-Fi Direct, Bluetooth, and Ethernet adapters do not inflate the active count.
+- High-confidence credential-value scans are empty. No `fix`, uninstall, service cycle, adapter change, or network mutation was run.
 
 ## Physical Mac result
 
