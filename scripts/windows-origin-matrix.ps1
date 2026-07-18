@@ -940,7 +940,15 @@ try {
             Assert-NoRetiredImages 'Successful candidate installer cleanup'
         }
     } else {
-        $result = Invoke-Captured $baselineNd300 @('update', '--json') 'Run public nd300 update'
+        # v2.9 predates clap subcommands but already supports the legacy
+        # --update action flag. Current baselines exercise the preferred form;
+        # the legacy case must invoke the interface that binary actually ships.
+        $updateArgs = if ($LegacyGlobalBaseline) {
+            @('--update', '--json')
+        } else {
+            @('update', '--json')
+        }
+        $result = Invoke-Captured $baselineNd300 $updateArgs 'Run public nd300 update'
         $result | ConvertTo-Json | Set-Content `
             -LiteralPath (Join-Path $EvidenceDir "$Origin-public-update-process.json") `
             -Encoding utf8NoBOM
