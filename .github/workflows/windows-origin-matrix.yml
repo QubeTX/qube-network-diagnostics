@@ -37,7 +37,7 @@ on:
         description: 'Expected public version (public mode only)'
         required: true
         type: string
-        default: '3.7.2'
+        default: '3.7.3'
 
 permissions:
   contents: read

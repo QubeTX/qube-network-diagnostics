@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the universal, signed, notarized ND-300 PKG-in-DMG distribution.
+# Build the preferred universal PKG and the legacy-compatible PKG-in-DMG.
 # Runs only on an ephemeral native macOS GitHub runner.
 
 set -euo pipefail
@@ -251,9 +251,26 @@ xcrun stapler staple "$pkg"
 xcrun stapler validate "$pkg"
 spctl --assess --type install --verbose=4 "$pkg"
 
+# The signed, notarized, stapled PKG is the direct native-installer artifact. The
+# legacy DMG below contains these exact same bytes so already-released clients
+# that request the DMG remain update-compatible.
+public_pkg="${output_dir}/nd300-universal-apple-darwin.pkg"
+cp "$pkg" "$public_pkg"
+public_signature=$(pkgutil --check-signature "$public_pkg")
+grep -Fq 'Signed with a trusted timestamp' <<< "$public_signature"
+grep -Fq "$APPLE_INSTALLER_SIGNING_IDENTITY" <<< "$public_signature"
+xcrun stapler validate "$public_pkg"
+spctl --assess --type install --verbose=4 "$public_pkg"
+pkg_sha=$(shasum -a 256 "$public_pkg" | awk '{print $1}')
+printf '%s *%s\n' "$pkg_sha" "$(basename "$public_pkg")" > "${public_pkg}.sha256"
+(
+    cd "$output_dir"
+    shasum -a 256 -c "$(basename "$public_pkg").sha256"
+)
+
 dmg_root="${work_dir}/dmg-root"
 mkdir "$dmg_root"
-cp "$pkg" "${dmg_root}/nd300.pkg"
+cp "$public_pkg" "${dmg_root}/nd300.pkg"
 cat > "${dmg_root}/README.txt" <<'EOF'
 ND-300 installer
 
@@ -281,4 +298,5 @@ printf '%s *%s\n' "$sha" "$(basename "$dmg")" > "${dmg}.sha256"
     shasum -a 256 -c "$(basename "$dmg").sha256"
 )
 
-echo "Built signed, notarized, stapled universal DMG: $dmg"
+echo "Built direct signed, notarized, stapled universal PKG: $public_pkg"
+echo "Built legacy-compatible signed, notarized, stapled universal DMG: $dmg"

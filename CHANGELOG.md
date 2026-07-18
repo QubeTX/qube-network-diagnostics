@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.3] - 2026-07-18
+
+### Changed
+- **The native macOS installer now downloads and updates through the signed universal PKG directly.**
+  `nd300-universal-apple-darwin.pkg` is a versionless Developer ID
+  Installer-signed, notarized, stapled, Gatekeeper-assessed release asset with
+  its own checksum and exact-source attestation. Receipt-proven package updates
+  pin that PKG and sidecar to the resolved tag, verify its identity, timestamp,
+  ticket, policy, payload, metadata, and version, then open Apple Installer
+  without mounting a disk image. The public JSON strategy and installed receipt
+  channel identifiers remain stable for compatibility.
+- **The legacy DMG remains available for immutable older updaters.** Releases
+  retain the signed/notarized/stapled versionless DMG and sidecar because
+  v3.7.1 and v3.7.2 request that asset. Native Intel and Apple Silicon gates
+  install immutable v3.7.2, prove the new DMG's nested package is byte-for-byte
+  the direct public PKG, and verify the compatibility package upgrades the
+  receipt-bound pair without duplicates. Publishing and attestation therefore
+  qualify an exact 32-asset inventory.
+
 ## [3.7.2] - 2026-07-18
 
 ### Fixed

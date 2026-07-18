@@ -10,7 +10,7 @@
 ## To-Do
 
 ## Active
-- [ ] **Begin the native macOS PKG channel** - add the signed/notarized package path while the testing Mac is available, batching physical validation (ms #p36) (owner codex) #pkg
+- [ ] **Ship the direct native macOS PKG channel** - keep command-first installs, publish the versionless direct package, preserve legacy DMG updates, and finish hosted/physical release evidence (ms #p36) (owner codex) #pkg
 
 ## Done
 - [x] **Clean merged branches and worktrees in both repositories** - audited and pruned refs/worktrees, preserved user files, enabled automatic deletion, and left only main (ms #v36) #cln

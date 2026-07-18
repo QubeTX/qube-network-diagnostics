@@ -6,6 +6,22 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 18, 2026 — Mac downloads open Apple Installer directly
+
+**Improved — the native Mac installer is now the package itself**
+- The optional universal Mac installer is a normal, Apple-approved package.
+  Opening it goes straight to Apple Installer instead of first mounting a disk
+  image and asking you to open the package inside. Updates from an existing Mac
+  package use that same direct route and still verify the exact download before
+  showing Apple's normal authorization prompts.
+- The older disk-image download remains attached behind the scenes so Macs
+  running either of the two earlier package-aware versions can still update.
+  Every release proves that the package inside that compatibility image is
+  exactly the same package offered as the direct installer download, and both
+  Mac processor families install an earlier version before crossing that
+  compatibility bridge. The versionless terminal command remains the
+  recommended Mac/Linux install path.
+
 ## July 18, 2026 — Automated Windows updates return clean structured results
 
 **Fixed — installer progress no longer mixes into JSON output**
