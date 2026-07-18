@@ -599,7 +599,7 @@ In `--json` mode, the response includes `"strategy"` (the precise variant that r
   "action": "update",
   "success": true,
   "current_version": "3.5.2",
-  "latest_version": "3.7.0",
+  "latest_version": "3.7.1",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",

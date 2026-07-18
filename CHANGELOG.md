@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.1] - 2026-07-18
+
+### Fixed
+- **The tag-triggered macOS package workflow now binds every GitHub Release
+  operation to the repository explicitly.** The v3.7.0 release built and
+  published its six target archives and Windows installers, but its reusable
+  macOS job stopped safely before checkout because `gh release view` could not
+  infer a repository in the clean runner workspace. Release lookup, download,
+  upload, and inventory commands now all pass the exact repository, so the
+  signed/notarized PKG-in-DMG path can run from a reusable workflow without
+  ambient Git state. v3.7.0 remains immutable; v3.7.1 is the forward-only
+  package-channel release.
+
 ## [3.7.0] - 2026-07-18
 
 ### Added

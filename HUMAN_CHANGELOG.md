@@ -6,6 +6,16 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 18, 2026 — The new Mac installer can finish publishing
+
+**Fixed — release automation no longer expects a checked-out folder too early**
+- The first release containing the new Mac package stopped safely before it
+  downloaded or changed any Mac installer files. Its release lookup expected a
+  checked-out project folder even though this security check deliberately runs
+  before checkout. Every release operation now names the project directly, so
+  the same signed and tested Apple installer can finish publishing. The earlier
+  release is left untouched; this corrected release moves forward normally.
+
 ## July 18, 2026 — Mac installation now uses the familiar Apple Installer
 
 **Added — one preferred Mac download for Apple Silicon and Intel**

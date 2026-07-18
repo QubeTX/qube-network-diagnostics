@@ -78,7 +78,7 @@ an attempted automatic reset. That is the intended fail-safe behavior.
 ## ADR-0002: Self-update preserves the proven channel and uses immutable transactions
 
 - **Date:** 2026-07-18
-- **Status:** Accepted; extended for v3.7.0
+- **Status:** Accepted; extended for v3.7.1
 
 ### Context
 
@@ -170,7 +170,7 @@ by a versionless fresh installer. Releases stop when ownership, checksum,
 rollback, Apple trust, asset inventory, or provenance cannot be proved.
 
 The first complete archive-channel qualification is documented in [ND-300
-v3.6.4 release qualification](release-evidence-v3.6.4.md). The v3.7.0 package
+v3.6.4 release qualification](release-evidence-v3.6.4.md). The v3.7.1 package
 qualification record is finalized after its immutable public release and
 physical-Mac acceptance.
 

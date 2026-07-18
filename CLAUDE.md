@@ -401,7 +401,7 @@ Supports backward-compatible `--json`. Every result adds `install_channel`, `rec
   "action": "update",
   "success": true,
   "current_version": "3.5.2",
-  "latest_version": "3.7.0",
+  "latest_version": "3.7.1",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",
@@ -412,7 +412,7 @@ Supports backward-compatible `--json`. Every result adds `install_channel`, `rec
 }
 ```
 
-## macOS Universal PKG-in-DMG (v3.7.0+)
+## macOS Universal PKG-in-DMG (v3.7.1+)
 
 `macos-installer.yml` runs an internal-PR candidate and an exact-tag reusable
 release path. Native Intel/ARM builds become one universal pair; both Mach-O
