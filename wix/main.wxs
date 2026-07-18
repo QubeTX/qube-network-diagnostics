@@ -307,9 +307,13 @@
              GUID even though its directory moved. Repair the exact legacy/current
              machine PATH entries after commit rather than rotating the GUID and
              breaking already-shipped v3.1+ ownership. -->
+        <!-- Directory properties expand with a trailing backslash. Build these
+             paths from their parent properties plus the literal leaf so the
+             quoted arguments do not end in \ and escape their closing quote
+             under Windows command-line parsing. -->
         <CustomAction Id='RepairLegacyGlobalPath'
             FileKey='exe0'
-            ExeCommand='install-maintenance --action repair-global-path --origin msi-global --current-path &quot;[Bin]&quot; --legacy-path &quot;[LegacyBin]&quot;'
+            ExeCommand='install-maintenance --action repair-global-path --origin msi-global --current-path &quot;[APPLICATIONFOLDER]bin&quot; --legacy-path &quot;[LegacyApplicationFolder]bin&quot;'
             Execute='commit'
             Impersonate='no'
             Return='check'/>
