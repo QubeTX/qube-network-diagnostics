@@ -60,8 +60,10 @@ checked by default**:
 
 - **Remove an older Cargo-installed copy** — deletes a shadowing `nd300`/`speedqx`
   in your `~\.cargo\bin` (a prior `cargo install` copy usually wins on `PATH`
-  otherwise). Your Rust toolchain is never touched — `cargo.exe`, `rustup.exe`,
-  and the `.cargo\bin` `PATH` entry are left exactly as they were.
+  otherwise). A non-running pair is removed before setup returns; a genuinely
+  locked image uses the trusted retry helper. Your Rust toolchain is never
+  touched — `cargo.exe`, `rustup.exe`, and the `.cargo\bin` `PATH` entry are left
+  exactly as they were.
 - **Also remove the other edition** — performs advisory, file-only cleanup of an
   unregistered stale Global/Corporate binary pair after ownership preflight.
 

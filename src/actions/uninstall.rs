@@ -621,16 +621,25 @@ fn uninstall_path_impl(exe_path: &Path, full_cleanup: bool) -> CleanupReport {
 
     #[cfg(windows)]
     {
-        // On Windows, a running exe cannot be deleted directly. Spawn a trusted
-        // background PowerShell helper that retries until the process releases
-        // its image mapping. The path travels in an environment variable and is
-        // consumed with .NET LiteralPath-equivalent APIs, never shell-expanded.
-        // The file is NOT gone yet, so we set `binary_removal_scheduled` (not
-        // `binary_removed`) — the updater's shadow guard depends on the
-        // distinction.
-        match spawn_delayed_delete(exe_path) {
-            Ok(()) => report.binary_removal_scheduled = true,
-            Err(error) => report.notes.push(error),
+        // A migration target is normally an old, non-running copy and should be
+        // removed synchronously so it cannot win PATH resolution after a fresh
+        // installer completes. The top-level uninstall path may instead name
+        // this running image; Windows rejects that direct deletion, so retain
+        // the trusted retry helper only for the locked-image case. The path
+        // travels in an environment variable and is never shell-expanded.
+        match std::fs::remove_file(exe_path) {
+            Ok(()) => report.binary_removed = true,
+            Err(_) if !exe_path.exists() => report.binary_removed = true,
+            Err(error) => {
+                report.notes.push(format!(
+                    "Immediate binary removal was deferred because {}",
+                    error
+                ));
+                match spawn_delayed_delete(exe_path) {
+                    Ok(()) => report.binary_removal_scheduled = true,
+                    Err(error) => report.notes.push(error),
+                }
+            }
         }
     }
 
@@ -905,6 +914,35 @@ mod tests {
                 .as_deref(),
             Some("powershell.exe"),
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn files_only_cleanup_removes_a_non_running_pair_synchronously() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "nd300-synchronous-cleanup-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).expect("create cleanup fixture directory");
+        let nd300 = directory.join("nd300.exe");
+        let speedqx = directory.join("speedqx.exe");
+        std::fs::write(&nd300, b"old nd300").expect("create old nd300");
+        std::fs::write(&speedqx, b"old speedqx").expect("create old speedqx");
+
+        let report = uninstall_path_files_only(&nd300);
+
+        assert!(report.binary_removed, "{:#?}", report.notes);
+        assert!(!report.binary_removal_scheduled, "{:#?}", report.notes);
+        assert!(report.sibling_removed, "{:#?}", report.notes);
+        assert!(!nd300.exists());
+        assert!(!speedqx.exists());
+        std::fs::remove_dir(&directory).expect("remove cleanup fixture directory");
     }
 
     #[cfg(windows)]

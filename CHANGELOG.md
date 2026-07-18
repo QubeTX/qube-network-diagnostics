@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v3.6.4 is the forward-only updater fix. Hosted arm64 and Intel coverage now
   runs the current trust reader against the signed, notarized public binary pair
   in addition to the public update lifecycle.
+- **A fresh Windows installer removes a shadowing non-running Cargo pair before
+  it returns.** The shared allowlisted cleanup primitive now attempts synchronous
+  deletion first and uses its trusted retry helper only when Windows proves the
+  target is still locked. Previously every `nd300.exe` removal was deferred even
+  when the old Cargo copy was not running, creating a timing window where a fresh
+  shell could still resolve the superseded channel.
 
 ## [3.6.3] - 2026-07-17
 

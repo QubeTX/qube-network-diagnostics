@@ -17,6 +17,14 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
   both hosted Mac architectures exercise the same trust reader against the real
   signed and notarized public downloads.
 
+## July 17, 2026 — A fresh Windows install becomes active immediately
+
+**Fixed — An older Cargo copy no longer wins briefly after setup finishes**
+- When the older copy is not running, setup now removes both old program files
+  before it returns. The safe background retry is still used when Windows says a
+  file is genuinely open. This makes a fresh installer reliably represent your
+  newest channel choice in the very next terminal.
+
 ## July 17, 2026 — Windows can update the program that is currently running
 
 **Fixed — Windows updates no longer collide with their own open program file**
