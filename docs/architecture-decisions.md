@@ -77,26 +77,28 @@ an attempted automatic reset. That is the intended fail-safe behavior.
 
 ## ADR-0002: Self-update preserves the proven channel and uses immutable transactions
 
-- **Date:** 2026-07-17
-- **Status:** Accepted for v3.6.4
+- **Date:** 2026-07-18
+- **Status:** Accepted; extended for v3.7.0
 
 ### Context
 
-ND300 can be installed through Cargo, a managed macOS/Linux archive, a Windows
-standalone archive, or one of four Windows installers (Global/Corporate ×
-MSI/EXE). Treating those routes as interchangeable changes ownership, privilege,
-PATH, registration, and uninstall behavior. Updating a running Windows image
-also cannot rely on overwriting the executable in place. On macOS, a checksum
-alone does not establish that downloaded code is trusted by Apple.
+ND300 can be installed through Cargo, a managed macOS/Linux archive, the native
+macOS Apple Installer package, a Windows standalone archive, or one of four
+Windows installers (Global/Corporate × MSI/EXE). Treating those routes as
+interchangeable changes ownership, privilege, PATH, registration, and uninstall
+behavior. Updating a running Windows image also cannot rely on overwriting the
+executable in place. On macOS, a checksum alone does not establish that
+downloaded code or an installer is trusted by Apple.
 
 ### Decision
 
 - `nd300 update` and `speedqx update` first prove one owner, then execute only
   that owner's channel. Cargo stays Cargo; a validated Unix receipt stays on the
-  managed archive path; Windows standalone stays standalone; and each registered
-  MSI/EXE edition downloads its exact matching installer. A marker or familiar
-  path is supporting evidence, never authority over the running executable and
-  a proven package-manager/installer record.
+  managed archive path; a receipt-and-hash-proven macOS package downloads the
+  exact tagged DMG and reopens Apple Installer; Windows standalone stays
+  standalone; and each registered MSI/EXE edition downloads its exact matching
+  installer. A marker or familiar path is supporting evidence, never authority
+  over the running executable and a proven package-manager/installer record.
 - Unknown, conflicted, package-manager-owned, and local-build locations fail
   closed without mutation. The error names the ownership problem and links to
   `https://reports.qubetx.com/nd300#install` for a fresh same-channel install.
@@ -114,30 +116,49 @@ alone does not establish that downloaded code is trusted by Apple.
   trusted delayed-delete helper and is reported as scheduled; an unschedulable
   sibling retains the primary command and reports incomplete cleanup.
 - Update intent and fresh-install intent are distinct. An update always keeps
-  the proven channel. A fresh official Windows installer is the user's newest
-  intent and may replace a proven MSI/EXE format only within the same per-user or
-  per-machine scope. Opposite-scope takeover is refused before mutation.
+  the proven channel. A fresh official installer is the user's newest intent and
+  may repair or downgrade that installer channel. On macOS, package postinstall
+  may supersede only a receipt- or Cargo-registration-proven managed pair. On
+  Windows, a fresh installer may replace a proven MSI/EXE format only within the
+  same per-user or per-machine scope. Opposite-scope takeover is refused before
+  mutation.
 - Uninstall follows the same ownership proof. Registered Windows installs
   delegate directly to the validated MSI product or Inno uninstaller without
   shell-expanding registry commands. Cargo, managed archive, symlink, and
   portable cleanup remain origin-specific and narrowly allowlisted.
-- macOS managed binaries must pass Developer ID identity, per-binary identifier,
-  Team ID `M9D5379H93`, hardened runtime, timestamp, and Gatekeeper install-policy
-  acceptance with `source=Notarized Developer ID` before installation. Release
-  CI requires Apple notarization status `Accepted` for both architectures and
-  re-verifies the exact public quarantined bytes on native Intel and ARM hosts.
+- macOS managed-archive binaries must pass Developer ID identity, per-binary
+  identifier, Team ID `M9D5379H93`, hardened runtime, timestamp, and Gatekeeper
+  install-policy acceptance with `source=Notarized Developer ID` before
+  installation. The preferred macOS artifact is a versionless universal DMG
+  signed with Developer ID Application. It contains only a versionless PKG
+  signed with Developer ID Installer; both containers must be notarized,
+  stapled, and accepted by Gatekeeper. The PKG owns exactly the universal
+  `nd300`/`speedqx` pair plus a root-owned hash-bound install receipt, and its
+  identifier, version, payload, signing identity, and trusted timestamp are
+  verified before Apple Installer opens.
+- Package update downloads the exact-tag DMG and checksum sidecar to private
+  temporary storage, validates the outer DMG and nested PKG, opens Apple
+  Installer with a bounded wait, and then re-proves the receipt, hashes, and
+  versions. Cancellation or failure leaves the installed pair in place and
+  reports the exact matching tagged artifact plus the versionless install page.
+  Package uninstall removes only the proven pair and receipt and forgets
+  `com.qubetx.nd300.pkg` through an authorized native command.
+- Release CI requires Apple notarization status `Accepted`, re-verifies the
+  candidate on native Intel and ARM hosts, and later re-verifies the exact public
+  quarantined bytes on both architectures.
 - A release tag is created once at the exact green default-branch SHA only after
   the matching crate is public. Release and reusable Windows workflows retain
-  that tag context, publish exactly 28 assets, verify every sidecar and aggregate
+  that tag context, publish exactly 30 assets, verify every sidecar and aggregate
   checksum, and bind every attestation to the tag SHA before announcement.
 
-The v3.6.4 macOS channel is a standalone Mach-O archive, not an `.app` or `.pkg`,
-so it has no staplable ticket container. `notarytool` acceptance binds Apple's
-online record to the signed code hash. For bare CLIs, `spctl --assess --type
-install --ignore-cache --no-cache` distinguishes `Notarized Developer ID` from
-`Unnotarized Developer ID`; `spctl --type execute` and
-`codesign --check-notarization` are not substitutes. A future native `.pkg`
-channel must preserve the same ownership, exact-version, pair, and trust rules.
+The managed archive remains supported for existing users and is a standalone
+Mach-O archive, so it has no staplable ticket container. `notarytool` acceptance
+binds Apple's online record to the signed code hash. For bare CLIs, `spctl
+--assess --type install --ignore-cache --no-cache` distinguishes `Notarized
+Developer ID` from `Unnotarized Developer ID`; `spctl --type execute` and
+`codesign --check-notarization` are not substitutes. The native package adds
+staplable containers without weakening the archive channel's ownership,
+exact-version, paired-binary, rollback, or trust rules.
 
 ### Consequences
 
@@ -148,8 +169,10 @@ their compatibility boundary is a safe, explicit no-mutation failure followed
 by a versionless fresh installer. Releases stop when ownership, checksum,
 rollback, Apple trust, asset inventory, or provenance cannot be proved.
 
-The exact qualification record for this decision's first complete release is
-documented in [ND-300 v3.6.4 release qualification](release-evidence-v3.6.4.md).
+The first complete archive-channel qualification is documented in [ND-300
+v3.6.4 release qualification](release-evidence-v3.6.4.md). The v3.7.0 package
+qualification record is finalized after its immutable public release and
+physical-Mac acceptance.
 
 ## ADR-0003: Elevated Unix actions operate in the invoking user's context
 

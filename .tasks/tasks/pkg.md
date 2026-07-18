@@ -13,17 +13,18 @@ macOS gains a system-wide installer channel and two release assets, taking the c
 The DMG and nested PKG are signed, notarized, stapled, versionless, and exact-SHA-attested; the PKG owns a universal two-binary payload; `nd300 update` and `speedqx update` preserve the PKG channel; a fresh official PKG safely supersedes proven older ND-300 copies; uninstall removes only package-owned files and forgets the receipt; both native hosted architectures pass; one final read-only/update/uninstall physical-Mac batch passes; docs, ADR, evidence, homepage, and cleanup are complete.
 
 ## Verification
-- [ ] Package origin requires the exact `/usr/local/bin` pair and valid `com.qubetx.nd300.pkg` receipt
-- [ ] Universal `nd300` and `speedqx` signatures, hardened runtime, team, versions, and architectures verify
-- [ ] PKG and DMG Developer ID signatures, notarization tickets, Gatekeeper assessments, and checksums verify
+- [x] Package origin requires the exact `/usr/local/bin` pair and valid `com.qubetx.nd300.pkg` receipt
+- [x] Universal `nd300` and `speedqx` signatures, hardened runtime, team, versions, and architectures verify
+- [x] PKG and DMG Developer ID signatures, notarization tickets, Gatekeeper assessments, and checksums verify
 - [ ] Fresh-install takeover and same-channel updates pass on hosted Intel and Apple Silicon
 - [ ] Cancellation, corruption, stale receipt, ambiguous ownership, and rollback paths fail safely
 - [ ] Public release has exactly 30 expected assets and every attestation binds to the exact tag SHA
 - [ ] Physical-Mac acceptance, homepage preference, ADR, evidence, and repository cleanup finish
 
 ## Status
-Active. Design and implementation are in progress on `codex/nd300-macos-pkg-dmg`; no package artifact has been published yet.
+Active. Implementation and the native hosted candidate are green on `fc108ebb591fd132d2c362e5333b3908bc95d66d`; public release, public updater qualification, physical-Mac acceptance, homepage, evidence, and cleanup remain. No package artifact has been published yet.
 
 ## Activity
 - 2026-07-18 04:20 — audited the dirty local TR-300 prototype and Apple notarization requirements; retained its universal/signing shape but replaced its default-branch `workflow_run`, overwrite upload, and unattested publication model with ND-300's exact-tag reusable release contract (agent: codex)
 - 2026-07-18 06:05 — implemented the receipt/hash-proven PKG update/uninstall path, universal signed/notarized PKG-in-DMG builder, exact-tag 30-asset release integration, and native Intel/Apple-Silicon candidate lifecycle including standard archive takeover, repair, explicit downgrade, diagnostics, uninstall, and reinstall; Windows check/Clippy/323 tests and workflow/shell syntax gates are green, hosted proof is next (agent: codex)
+- 2026-07-18 09:44 UTC — hosted candidate run https://github.com/QubeTX/qube-network-diagnostics/actions/runs/29639530573 passed on exact head `fc108ebb591fd132d2c362e5333b3908bc95d66d`: both native builds, installer-identity preflights, signed/notarized/stapled PKG-in-DMG, Gatekeeper, checksum, managed-archive takeover, same-version repair, deliberate package downgrade, channel detection, receipt-aware uninstall, and reinstall passed on Intel and Apple Silicon; ADR-0002 can now record the final package decision (agent: codex)
