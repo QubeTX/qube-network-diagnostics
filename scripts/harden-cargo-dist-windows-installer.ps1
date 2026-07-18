@@ -32,11 +32,17 @@ function Replace-ExactlyOnce {
         [Parameter(Mandatory)][string]$Replacement,
         [Parameter(Mandatory)][string]$Label
     )
-    $count = [regex]::Matches($Content, [regex]::Escape($Needle)).Count
+    # PowerShell preserves a script's source newlines inside here-strings. A
+    # Windows checkout may therefore make these anchors CRLF even though the
+    # generated cargo-dist content is normalized to LF above. Normalize both
+    # operands so the fail-closed anchor check is checkout-policy independent.
+    $normalizedNeedle = $Needle.Replace("`r`n", "`n")
+    $normalizedReplacement = $Replacement.Replace("`r`n", "`n")
+    $count = [regex]::Matches($Content, [regex]::Escape($normalizedNeedle)).Count
     if ($count -ne 1) {
         throw "Expected exactly one $Label anchor in cargo-dist installer, found $count"
     }
-    return $Content.Replace($Needle, $Replacement)
+    return $Content.Replace($normalizedNeedle, $normalizedReplacement)
 }
 
 $resolved = (Resolve-Path -LiteralPath $Path).Path

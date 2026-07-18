@@ -10,7 +10,10 @@ function Assert-True {
 }
 
 function New-PatchedFixture {
-    param([Parameter(Mandatory)][string]$Path)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$HardenerPath = "$PSScriptRoot\harden-cargo-dist-windows-installer.ps1"
+    )
 
     @'
 $app_version = '9.8.7'
@@ -29,7 +32,7 @@ function Invoke-Installer($artifacts, $dest_dir, $dest_dir_lib) {
 }
 '@ | Set-Content -LiteralPath $Path -Encoding utf8NoBOM
 
-    & "$PSScriptRoot\harden-cargo-dist-windows-installer.ps1" `
+    & $HardenerPath `
         -Path $Path `
         -ExpectedVersion '9.8.7'
 }
@@ -68,6 +71,20 @@ New-Item -ItemType Directory -Path $temp | Out-Null
 $liveProcess = $null
 $staleProcess = $null
 try {
+    $hardener = "$PSScriptRoot\harden-cargo-dist-windows-installer.ps1"
+    $crlfHardener = Join-Path $temp 'harden-cargo-dist-windows-installer-crlf.ps1'
+    $hardenerText = [System.IO.File]::ReadAllText($hardener).Replace("`r`n", "`n")
+    [System.IO.File]::WriteAllText(
+        $crlfHardener,
+        $hardenerText.Replace("`n", "`r`n"),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $crlfFixture = Join-Path $temp 'nd300-installer-crlf-checkout.ps1'
+    New-PatchedFixture -Path $crlfFixture -HardenerPath $crlfHardener
+    Assert-True `
+        ((Get-Content -LiteralPath $crlfFixture -Raw).Contains('ND300 running-image compatibility shim')) `
+        'A CRLF checkout could not patch the normalized cargo-dist anchors'
+
     $fixture = Join-Path $temp 'nd300-installer.ps1'
     New-PatchedFixture $fixture
     $patched = Get-Content -LiteralPath $fixture -Raw

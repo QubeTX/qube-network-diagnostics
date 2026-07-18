@@ -328,6 +328,27 @@ impl RunningImageRetirement {
 }
 
 #[cfg(windows)]
+fn finish_running_image_update(
+    retirement: RunningImageRetirement,
+    mut result: Result<UpdateStrategy, UpdateFailure>,
+    strategies: &[UpdateStrategy],
+) -> Result<UpdateStrategy, UpdateFailure> {
+    if let Err(error) = retirement.finish(result.is_ok()) {
+        if let Err(failure) = &mut result {
+            failure.attempts.push(AttemptRecord {
+                strategy: strategies
+                    .first()
+                    .copied()
+                    .unwrap_or(UpdateStrategy::InstallerPowerShell),
+                kind: AttemptKind::Failed,
+                message: format!("running-image rollback failed: {error}"),
+            });
+        }
+    }
+    result
+}
+
+#[cfg(windows)]
 fn abandon_retirement(
     files: Vec<(PathBuf, PathBuf)>,
     reason: String,
@@ -454,20 +475,9 @@ pub async fn run(config: &Config) -> i32 {
             return 2;
         }
     };
-    let mut result = execute_update(&latest, &strategies).await;
+    let result = execute_update(&latest, &strategies).await;
     #[cfg(windows)]
-    if let Err(error) = retirement.finish(result.is_ok()) {
-        if let Err(failure) = &mut result {
-            failure.attempts.push(AttemptRecord {
-                strategy: strategies
-                    .first()
-                    .copied()
-                    .unwrap_or(UpdateStrategy::InstallerPowerShell),
-                kind: AttemptKind::Failed,
-                message: format!("running-image rollback failed: {error}"),
-            });
-        }
-    }
+    let result = finish_running_image_update(retirement, result, &strategies);
 
     match result {
         Ok(used) => {
@@ -590,20 +600,9 @@ async fn run_json(_config: &Config) -> i32 {
             return 2;
         }
     };
-    let mut result = execute_update(&latest, &strategies).await;
+    let result = execute_update(&latest, &strategies).await;
     #[cfg(windows)]
-    if let Err(error) = retirement.finish(result.is_ok()) {
-        if let Err(failure) = &mut result {
-            failure.attempts.push(AttemptRecord {
-                strategy: strategies
-                    .first()
-                    .copied()
-                    .unwrap_or(UpdateStrategy::InstallerPowerShell),
-                kind: AttemptKind::Failed,
-                message: format!("running-image rollback failed: {error}"),
-            });
-        }
-    }
+    let result = finish_running_image_update(retirement, result, &strategies);
 
     match result {
         Ok(used) => {
@@ -984,7 +983,7 @@ async fn try_cargo_install(latest: &str) -> Result<(), StrategyError> {
             .await
             .map_err(StrategyError::Runtime)?;
         cleanup_shadowing_current_install_after_cargo_success(&preinstall_origin, &user)?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(windows)]
