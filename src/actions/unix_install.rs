@@ -229,7 +229,8 @@ fn parse_pkg_info_version(output: &[u8]) -> Option<String> {
 
 #[cfg(any(target_os = "macos", test))]
 fn macos_pkg_payload_is_exact(output: &[u8]) -> bool {
-    let actual = String::from_utf8_lossy(output)
+    let decoded = String::from_utf8_lossy(output);
+    let actual = decoded
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())

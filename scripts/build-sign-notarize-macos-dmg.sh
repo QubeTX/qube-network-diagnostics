@@ -141,8 +141,11 @@ notarize() {
     status=$(jq -r '.status // empty' "$result")
     submission=$(jq -r '.id // empty' "$result")
     if [[ $status != Accepted ]]; then
-        [[ -n $submission ]] && xcrun notarytool log "$submission" \
-            --key "$api_key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" || true
+        if [[ -n $submission ]]; then
+            xcrun notarytool log "$submission" \
+                --key "$api_key" --key-id "$APPLE_API_KEY_ID" \
+                --issuer "$APPLE_API_ISSUER_ID" || true
+        fi
         echo "Apple notarization failed for $(basename "$artifact"): ${status:-unknown}" >&2
         exit 1
     fi
