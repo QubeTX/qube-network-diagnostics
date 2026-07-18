@@ -579,6 +579,21 @@ function Assert-NoRetiredImages {
     }
 }
 
+function New-MsiLogPath {
+    param([Parameter(Mandatory)][string]$Label)
+    $stem = [regex]::Replace($Label.ToLowerInvariant(), '[^a-z0-9]+', '-').Trim('-')
+    if (-not $stem) { $stem = 'installer' }
+    return Join-Path $EvidenceDir ("$stem-$([guid]::NewGuid().ToString('N')).msi.log")
+}
+
+function Write-MsiLogTail {
+    param([Parameter(Mandatory)][string]$Path)
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        Write-Host "`n===== MSI failure tail: $Path ====="
+        Get-Content -LiteralPath $Path -Tail 220 | ForEach-Object { Write-Host $_ }
+    }
+}
+
 function Install-Artifact {
     param(
         [Parameter(Mandatory)][string]$Asset,
@@ -588,11 +603,17 @@ function Install-Artifact {
     )
     if (-not $ArtifactOrigin) { $ArtifactOrigin = $Origin }
     if ($ArtifactOrigin.StartsWith('msi-')) {
-        $arguments = @('/i', $Asset, '/qn', '/norestart')
+        $msiLog = New-MsiLogPath $Label
+        $arguments = @('/i', $Asset, '/qn', '/norestart', '/l*v!', $msiLog)
         if (-not $UseDefaultConsolidation) {
             $arguments += @('CLEANCARGO=0', 'CLEANOTHEREDITION=0')
         }
-        Invoke-Checked 'msiexec.exe' $arguments $Label
+        try {
+            Invoke-Checked 'msiexec.exe' $arguments $Label
+        } catch {
+            Write-MsiLogTail $msiLog
+            throw
+        }
     } else {
         $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-')
         if (-not $UseDefaultConsolidation) {
@@ -610,8 +631,10 @@ function Install-ArtifactExpectFailure {
     )
     if (-not $ArtifactOrigin) { $ArtifactOrigin = $Origin }
     if ($ArtifactOrigin.StartsWith('msi-')) {
+        $msiLog = New-MsiLogPath $Label
         $result = Invoke-Captured 'msiexec.exe' @(
-            '/i', $Asset, '/qn', '/norestart', 'CLEANCARGO=0', 'CLEANOTHEREDITION=0'
+            '/i', $Asset, '/qn', '/norestart', '/l*v!', $msiLog,
+            'CLEANCARGO=0', 'CLEANOTHEREDITION=0'
         ) $Label
     } else {
         $result = Invoke-Captured $Asset @(
@@ -762,10 +785,28 @@ if ($Scenario -eq 'refusal') {
     Assert-NoRetiredImages 'Cross-scope refusal'
     Write-Snapshot "refused-$Origin" $baselineInstallBin
 
-    $uninstallResult = Invoke-Captured $baselineNd300 @('uninstall', '--json') 'Uninstall refusal baseline'
-    if ($uninstallResult.ExitCode -ne 0) {
-        throw "Refusal baseline uninstall failed with exit $($uninstallResult.ExitCode)"
+    # The refusal deliberately leaves the published old binary in control. Do
+    # not ask that old version to prove the new installer-aware uninstall path;
+    # tear down the disposable fixture through its exact MSI registration.
+    if (-not $BaselineOrigin.StartsWith('msi-')) {
+        throw 'The refusal cleanup currently requires an MSI baseline'
     }
+    $baselineRecords = @(
+        Get-ArpRecords | Where-Object {
+            (Get-PropertyValue -InputObject $_ -Name 'WindowsInstaller') -eq 1
+        }
+    )
+    if ($baselineRecords.Count -ne 1) {
+        throw "Expected exactly one refusal-baseline MSI registration, found $($baselineRecords.Count)"
+    }
+    $baselineProductCode = Get-PropertyValue -InputObject $baselineRecords[0] -Name 'PSChildName'
+    if ($baselineProductCode -notmatch '^\{[0-9A-Fa-f-]{36}\}$') {
+        throw "Refusal-baseline MSI registration has an invalid product code: $baselineProductCode"
+    }
+    $refusalUninstallLog = New-MsiLogPath 'Uninstall refusal baseline'
+    Invoke-Checked 'msiexec.exe' @(
+        '/x', $baselineProductCode, '/qn', '/norestart', '/l*v!', $refusalUninstallLog
+    ) 'Uninstall refusal baseline through its MSI registration'
     Wait-Until {
         -not (Test-Path -LiteralPath $baselineNd300 -PathType Leaf) -and
         @(Get-ArpRecords).Count -eq 0 -and
@@ -834,7 +875,7 @@ if ($Scenario -eq 'takeover') {
 }
 
 # 2. Candidate artifact or public self-update. Installer candidates first prove
-# deterministic rollback while the baseline updater image is live, then prove a
+# deterministic rollback after running-image retirement starts, then prove a
 # successful replacement without terminating that same process.
 $liveImage = $null
 try {
@@ -853,7 +894,7 @@ try {
 
             $baselineFingerprint = Get-InstallFingerprint $baselineInstallBin
             $liveImage = Start-SuspendedInstalledImage $baselineNd300
-            Install-ArtifactExpectFailure $rollbackAsset 'Inject candidate failure after replacement begins'
+            Install-ArtifactExpectFailure $rollbackAsset 'Inject candidate failure after running-image retirement'
             if (-not $liveImage.IsAlive) {
                 throw 'Faulting candidate installer terminated the running baseline updater'
             }

@@ -97,11 +97,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; A temp-only copy runs the hidden registered-channel takeover before files move.
 Source: "..\target\release\{#MyAppExeName}"; DestName: "nd300-install-takeover.exe"; Flags: dontcopy
 Source: "..\target\release\{#MyAppExeName}"; DestDir: "{app}\bin"; Flags: ignoreversion
-#ifdef ND300_ROLLBACK_TEST
-Source: "..\target\release\{#MySecondExeName}"; DestDir: "{app}\bin"; Flags: ignoreversion; BeforeInstall: FailAfterFirstBinary
-#else
 Source: "..\target\release\{#MySecondExeName}"; DestDir: "{app}\bin"; Flags: ignoreversion
-#endif
 
 [Registry]
 ; Install-source marker. `nd300 update` reads HKCU\Software\ND300\InstallSource
@@ -149,13 +145,6 @@ var
   RetiredNd300: Boolean;
   RetiredSpeedqx: Boolean;
   InstallSucceeded: Boolean;
-
-#ifdef ND300_ROLLBACK_TEST
-procedure FailAfterFirstBinary;
-begin
-  RaiseException('ND300 installer rollback test after first binary');
-end;
-#endif
 
 function RetireBinary(CurrentPath, RetiredPath: string; var Retired: Boolean): Boolean;
 begin
@@ -223,6 +212,10 @@ begin
     RetiredNd300 := False;
     Result := 'Could not prepare speedqx.exe for an in-place update.';
   end;
+#ifdef ND300_ROLLBACK_TEST
+  if Result = '' then
+    Result := 'ND300 installer rollback test after running-image retirement.';
+#endif
 end;
 
 procedure DeinitializeSetup;

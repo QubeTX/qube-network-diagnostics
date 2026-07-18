@@ -209,7 +209,7 @@ jobs:
         with:
           name: windows-origin-evidence-${{ matrix.origin }}-${{ github.run_attempt }}
           if-no-files-found: warn
-          path: ${{ runner.temp }}/nd300-origin-evidence/*.json
+          path: ${{ runner.temp }}/nd300-origin-evidence/*
 
   legacy-global-lifecycle:
     name: v2.9.0 legacy Global MSI (${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }})
@@ -254,7 +254,7 @@ jobs:
         with:
           name: windows-origin-evidence-legacy-global-${{ github.run_attempt }}
           if-no-files-found: warn
-          path: ${{ runner.temp }}/nd300-origin-evidence/*.json
+          path: ${{ runner.temp }}/nd300-origin-evidence/*
 
   fresh-channel-takeover:
     name: ${{ matrix.baseline }} to ${{ matrix.target }} fresh takeover (${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }})
@@ -312,7 +312,7 @@ jobs:
         with:
           name: windows-takeover-evidence-${{ matrix.baseline }}-to-${{ matrix.target }}-${{ github.run_attempt }}
           if-no-files-found: warn
-          path: ${{ runner.temp }}/nd300-origin-evidence/*.json
+          path: ${{ runner.temp }}/nd300-origin-evidence/*
 
   cross-scope-refusal:
     name: Corporate MSI to Global MSI safe refusal (${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }})
@@ -354,4 +354,4 @@ jobs:
         with:
           name: windows-cross-scope-refusal-evidence-${{ github.run_attempt }}
           if-no-files-found: warn
-          path: ${{ runner.temp }}/nd300-origin-evidence/*.json
+          path: ${{ runner.temp }}/nd300-origin-evidence/*

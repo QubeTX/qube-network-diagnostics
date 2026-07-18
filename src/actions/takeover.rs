@@ -46,8 +46,8 @@ fn run_windows(args: InstallTakeoverArgs) -> Result<(), String> {
         .into_iter()
         .filter(|owner| match args.scope {
             InstallTakeoverScope::All => true,
-            InstallTakeoverScope::User => !owner.machine_hive,
-            InstallTakeoverScope::Machine => owner.machine_hive,
+            InstallTakeoverScope::User => !owner.machine_scope,
+            InstallTakeoverScope::Machine => owner.machine_scope,
         })
         .collect();
 
@@ -57,7 +57,7 @@ fn run_windows(args: InstallTakeoverArgs) -> Result<(), String> {
     // path is user-writable and must never cross an elevation boundary.
     if let Some(owner) = owners
         .iter()
-        .find(|owner| owner.machine_hive != target_machine_scope)
+        .find(|owner| owner.machine_scope != target_machine_scope)
     {
         return Err(format!(
             "a registered {} installation uses the opposite Windows install scope; uninstall it first or choose a current installer in the same scope",
@@ -185,7 +185,7 @@ mod tests {
             origin,
             install_location: PathBuf::from(r"C:\fixture"),
             uninstall,
-            machine_hive: matches!(origin, InstallOrigin::MsiGlobal | InstallOrigin::ExeGlobal),
+            machine_scope: matches!(origin, InstallOrigin::MsiGlobal | InstallOrigin::ExeGlobal),
         }
     }
 
@@ -238,5 +238,13 @@ mod tests {
         assert!(!target_uses_machine_scope(
             InstallTakeoverTarget::Standalone
         ));
+
+        let managed_corporate = owner(
+            InstallOrigin::MsiCorporate,
+            RegisteredUninstall::Msi {
+                product_code: "{A1111111-B222-4CCC-8DDD-E55555555555}".to_string(),
+            },
+        );
+        assert!(!managed_corporate.machine_scope);
     }
 }

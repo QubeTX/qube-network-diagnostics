@@ -200,7 +200,10 @@ pub(crate) struct RegisteredInstallOwner {
     pub(crate) origin: InstallOrigin,
     pub(crate) install_location: PathBuf,
     pub(crate) uninstall: RegisteredUninstall,
-    pub(crate) machine_hive: bool,
+    /// Effective installer scope. This is not always the ARP registry hive:
+    /// Windows Installer can publish a per-user managed Corporate product in
+    /// protected HKLM while retaining per-user installation semantics.
+    pub(crate) machine_scope: bool,
 }
 
 #[derive(Debug)]
@@ -2027,7 +2030,7 @@ fn registered_install_owners_impl(
                         origin,
                         install_location,
                         uninstall: RegisteredUninstall::Inno { executable },
-                        machine_hive,
+                        machine_scope: matches!(origin, InstallOrigin::ExeGlobal),
                     }
                 } else {
                     let windows_installer = key
@@ -2044,7 +2047,7 @@ fn registered_install_owners_impl(
                         origin: msi_origin,
                         install_location,
                         uninstall: RegisteredUninstall::Msi { product_code },
-                        machine_hive,
+                        machine_scope: matches!(msi_origin, InstallOrigin::MsiGlobal),
                     }
                 };
 
@@ -2881,7 +2884,7 @@ mod tests {
                 uninstall: RegisteredUninstall::Msi {
                     product_code: PRODUCT_CODE.to_string(),
                 },
-                machine_hive: false,
+                machine_scope: false,
             })
         );
     }
