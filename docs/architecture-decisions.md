@@ -187,8 +187,10 @@ rollback, Apple trust, asset inventory, or provenance cannot be proved.
 
 The first complete archive-channel qualification is documented in [ND-300
 v3.6.4 release qualification](release-evidence-v3.6.4.md). The direct-package
-transition receives its final exact-SHA, Apple, public-matrix, and physical-Mac
-qualification record after the immutable v3.7.3 release completes.
+transition's exact-SHA, Apple, artifact, hosted lifecycle, public-matrix, and
+physical-machine evidence is recorded in [ND-300 v3.7.3 direct-package release
+qualification](release-evidence-v3.7.3.md). Pending physical results stay
+explicitly pending there rather than being inferred from hosted proof.
 
 ## ADR-0003: Elevated Unix actions operate in the invoking user's context
 
