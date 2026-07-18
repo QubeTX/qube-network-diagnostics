@@ -100,7 +100,8 @@ ascii_exit=$?
 set -e
 (( diagnostic_exit >= 0 && diagnostic_exit <= 2 ))
 (( ascii_exit >= 0 && ascii_exit <= 2 ))
-jq -e '.schema_version == 1' "${work_dir}/diagnostic.json"
+jq -e 'type == "object" and has("interfaces") and has("gateway") and has("dns")' \
+    "${work_dir}/diagnostic.json"
 update=$(/usr/local/bin/speedqx update --json)
 jq -e '.success == true and .install_channel == "macos-dmg-pkg" and .requires_user_action == false' <<< "$update"
 
