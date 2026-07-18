@@ -6,6 +6,33 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 18, 2026 — Mac installation now uses the familiar Apple Installer
+
+**Added — one preferred Mac download for Apple Silicon and Intel**
+- The latest release now offers one disk image containing a normal Apple
+  Installer package. It installs both commands for the whole Mac, carries
+  Apple's developer signatures and approval ticket, and works natively on both
+  current Mac processor families.
+
+**Improved — updates remember how the program was installed**
+- A Mac installed through Apple Installer updates through that same installer
+  again. The program checks the exact package record and installed files before
+  opening a verified replacement. If the download is damaged, ownership is
+  unclear, the prompt is cancelled, or installation does not finish correctly,
+  the existing copy remains in place and the terminal gives both the matching
+  download and the main download page.
+- Choosing a fresh package is treated as the user's newest installation choice,
+  even for a repair or deliberate older release. It consolidates a safely
+  recognized older managed copy so the next terminal does not find two competing
+  commands. Both kinds of Mac hardware test takeover, repair, older-version
+  installation, normal output, updates, removal, and reinstallation before a
+  release can proceed.
+
+**Changed (be aware if you script against the tool)**
+- Update results in JSON keep every existing field and now add the proven install
+  channel, whether the user needs to act, and a recovery page. A failed known
+  installer also gives its exact matching download.
+
 ## July 18, 2026 — Release verification is easier to audit
 
 **Behind the scenes**

@@ -229,8 +229,9 @@ fn unix_uninstall_cleans_receipt() -> bool {
         .is_some_and(|origin| {
             matches!(
                 origin.kind,
-                UnixOriginKind::Cargo | UnixOriginKind::ManagedArchive
-            ) && super::unix_install::cargo_dist_receipt_valid(&user)
+                UnixOriginKind::Cargo | UnixOriginKind::ManagedArchive | UnixOriginKind::MacPackage
+            ) && (origin.kind == UnixOriginKind::MacPackage
+                || super::unix_install::cargo_dist_receipt_valid(&user))
         })
 }
 
@@ -266,11 +267,16 @@ fn print_unix_uninstall_preview(real_path: &Path, config: &Config) {
                 config
             )
         ),
+        Some(origin) if origin.kind == UnixOriginKind::MacPackage => println!(
+            "  This will request Apple authorization, remove the receipt-owned system pair, and forget com.qubetx.nd300.pkg: {}",
+            color::cyan(&origin.executable.display().to_string(), config)
+        ),
         Some(origin) => println!(
             "  ND300 will inspect and refuse this {} installation unless its original manager removes it: {}",
             match origin.kind {
                 UnixOriginKind::PackageManager => "package-manager-owned",
                 UnixOriginKind::LocalBuild => "local-build",
+                UnixOriginKind::MacPackage => "Apple-Installer-owned",
                 _ => "unknown",
             },
             color::cyan(&origin.executable.display().to_string(), config)

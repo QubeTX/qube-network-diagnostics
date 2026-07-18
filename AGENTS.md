@@ -83,8 +83,8 @@ Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **25 
 ### Module Layout
 
 - **`src/cli.rs`** — Shared clap derive definitions (`Nd300Cli`, `SpeedQXCli`) used by both binaries and by `build.rs` for man page generation.
-- **`src/actions/`** — Exit-early operations (`fix`, `clear-dns`, `uninstall`, `dns`, `update` — each available as a bare subcommand and a legacy flag; plus hidden installer helpers). `dns` is *semi*-exit-early (exit on failure, fall through to diagnostics on success). The fix flow (`actions/fix/`) implements evidence-driven recovery, LIFO restoration, exact macOS DNS/search rollback, and private invoking-user reports. The updater (`actions/update.rs` + Unix-only `unix_install.rs`) proves one installation channel and never cross-falls-back: Cargo stays Cargo, a receipt-owned Unix archive stays archive-managed, Windows standalone stays standalone, and each registered Windows MSI/EXE edition stays exact. `takeover.rs` is the hidden same-scope Windows fresh-install helper; `migrate.rs` retains the narrow file-only Cargo/edition cleanup and retired-image allowlist; `maintenance.rs` owns MSI commit-time marker and legacy Global PATH maintenance. Registered Windows uninstall delegates directly to a Windows-Installer-proven MSI product code or validated Inno uninstaller; Unix uninstall refuses unknown/package-manager-owned locations. See "Self-Update Implementation" and "Windows Installer Matrix" below.
-- **`src/actions/migrate.rs`** — Cross-method install cleanup, exposed as the **hidden** `nd300 migrate-cleanup` subcommand (`#[command(hide = true)]`). Invoked by the four Windows installers (and the silent self-update path) to remove a shadowing older Cargo pair, limited other-edition files, and retired update images. It reuses `uninstall_path_files_only` / `OUR_BINARIES` and the updater's ownership/path helpers; it does not re-implement deletion. Non-running Windows targets are deleted synchronously so the selected installer channel wins as soon as setup returns; a genuinely locked target or sibling uses the trusted retry helper and classifies the pair as scheduled. An unscheduled sibling failure retains the primary executable and classifies cleanup incomplete, never removed. Publicly usable flags remain `--cargo-copy`, `--other-edition`, `--quiet`, `--dry-run`, `--json`, `--user-profile <path>`, `--cargo-home <path>`; installers additionally pass hidden validated `--install-origin <msi-global|msi-corporate|exe-global|exe-corporate>` and `--retired-update`. Retired cleanup accepts only versioned `nd300.update-old-*` / `speedqx.update-old-*` siblings in the running install directory plus the fixed pre-v3.1 Global MSI directory. Hard guarantees (unit-tested): never cargo/rustup/PATH/ARP/receipts/the shared marker/`~/Downloads`; never escalates. **Always exits 0** except on a true internal error — cleanup is advisory and must never fail an active installer transaction.
+- **`src/actions/`** — Exit-early operations (`fix`, `clear-dns`, `uninstall`, `dns`, `update` — each available as a bare subcommand and a legacy flag; plus hidden installer helpers). `dns` is *semi*-exit-early (exit on failure, fall through to diagnostics on success). The fix flow (`actions/fix/`) implements evidence-driven recovery, LIFO restoration, exact macOS DNS/search rollback, and private invoking-user reports. The updater (`actions/update.rs` + Unix-only `unix_install.rs`) proves one installation channel and never cross-falls-back: Cargo stays Cargo, a receipt-owned Unix archive stays archive-managed, a hash/receipt-proven macOS PKG reopens its exact DMG/PKG channel, Windows standalone stays standalone, and each registered Windows MSI/EXE edition stays exact. `takeover.rs` is the hidden same-scope Windows fresh-install helper; `migrate.rs` retains narrow installer-authorized Cargo/edition cleanup and the retired-image allowlist; `maintenance.rs` owns MSI commit-time marker and legacy Global PATH maintenance. Registered Windows uninstall delegates directly to a Windows-Installer-proven MSI product code or validated Inno uninstaller; a macOS PKG uninstall removes only its proven pair/metadata and forgets its receipt; unknown/package-manager-owned Unix paths are refused. See "Self-Update Implementation" and installer sections below.
+- **`src/actions/migrate.rs`** — Cross-method install cleanup, exposed as the **hidden** `nd300 migrate-cleanup` subcommand (`#[command(hide = true)]`). The four Windows installers use the Windows origins plus `--retired-update`; the Apple PKG postinstall uses `--install-origin macos-pkg --cargo-copy` as the console user. Windows cleanup retains its synchronous/locked-pair behavior and strict retired-image allowlist. macOS cleanup accepts only a Cargo registry or exact cargo-dist receipt in the resolved user's standard Cargo home, invokes that owning uninstaller, and retains ambiguous files. Publicly usable flags remain `--cargo-copy`, `--other-edition`, `--quiet`, `--dry-run`, `--json`, `--user-profile <path>`, `--cargo-home <path>`; installer origins are hidden. Hard guarantees remain unit-tested: never cargo/rustup/PATH/unknown files/the running package pair/`~/Downloads`; never escalates. **Always exits 0** except on a true internal error — cleanup is advisory and must never fail an active installer transaction.
 - **`src/diagnostics/`** — All diagnostic modules. Core modules export `pub async fn check() -> (DiagnosticResult, Option<DetailStruct>)`; deep (tech-mode) modules export `pub async fn collect() -> Option<DetailType>` (Skip = `None`, section omitted). Platform parsers are pure fns gated `#[cfg(any(target_os = "...", test))]` so they unit-test on all three CI OSes. `ping.rs` is the single home for ping invocation/parsing. `shared_cache.rs` pre-fetches subprocess outputs to deduplicate calls across tech-mode modules. On macOS, `interfaces.rs` builds the topology truth from route/flags/hardware-service mapping/addresses; `wifi.rs` uses bounded `system_profiler` only in technician mode; VPN, IPv6, TLS/DNSSEC, routing/listener/DHCP/protocol parsers use captured modern/legacy fixtures. `util.rs` provides timeout wrappers whose timed-out children are terminated, plus `retry_probe`/`ping_budget`/`harvest_or`. Core verdicts require *consistent* failure (multi-burst gateway, 3-domain median DNS, dual-endpoint ports, ≥2-reachable latency) — see CLAUDE.md "Verdict stability".
 - **`src/speedtest/`** — Shared Methodology v4 engine. Standalone speedqx has eight sources: Cloudflare, M-Lab NDT7, LibreSpeed, fast.com, M-Lab MSAK, Apple networkQuality, CacheFly, and Vultr; ND300 core stays Cloudflare + NDT7. Provider clients live beside `stat_primitives.rs`, `statistics.rs`, golden parity tests, adaptive transfer sizing, and display code. Ookla remains excluded for EULA reasons documented in `applenq.rs`.
 - **`src/render/`** — Output formatting. `table.rs` builds Unicode/ASCII box-drawing tables with ANSI-aware string functions (`visible_len`, `truncate_visible`). `color.rs` centralizes ANSI color output. `progress.rs` handles spinners.
@@ -116,9 +116,9 @@ aarch64-apple-darwin, x86_64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unk
 
 ## Release Process
 
-Releases use **cargo-dist v0.31.0, tag-triggered**, plus CI-gated crates.io publish. Four workflows: **`ci.yml`** (fmt/clippy/test/release build on macOS arm64 + Intel, Linux, and Windows with `-D warnings`, blocking audit, `dist plan`, read-only Mac smoke), **`crates-publish.yml`** (the only crate publisher after exact main-SHA CI), **`release.yml`** (six targets, Global MSI, shell/PS installers, GitHub Release, legacy aliases), and **`windows-installers.yml`** (Corporate MSI + two Inno EXEs + sidecars → **28 assets**). Mac arm64 uses `macos-15`; Intel uses `macos-15-intel`, retaining deployment floors 11.0/10.12. Tag publishing must sign both binaries for both Mac architectures with the pinned Developer ID fingerprint/Team ID/identifiers, require hardened runtime + timestamp and Apple notarization status `Accepted`, repack the exact signed bytes, regenerate checksums/manifest, and never publish unsigned fallback. Host attests the final post-signing artifacts; the later Windows assets receive separate attestations. Workflow defaults stay `contents: read`; only hosting gets write/id-token permission. **A deploy is two pushes: merge to `main` (→ crate), then push immutable `vX.Y.Z` (→ binaries/installers/release).**
+Releases use **cargo-dist v0.31.0, tag-triggered**, plus CI-gated crates.io publish. Five workflows: **`ci.yml`** (cross-platform code/audit/dist gates), **`crates-publish.yml`** (the only crate publisher), **`release.yml`** (six targets, Global MSI, base GitHub Release), **`windows-installers.yml`** (Corporate MSI + two Inno EXEs and sidecars → 28 assets), and **`macos-installer.yml`** (universal Developer ID Installer PKG inside a Developer ID Application DMG plus sidecar → **30 assets**). The macOS workflow has an internal-PR candidate path that builds/signs/notarizes and runs the full package lifecycle on native Intel and Apple Silicon before merge; tag publication reuses the validated tag/SHA context, starts from the exact signed architecture archives, refuses asset overwrite, and separately attests both additions. Release announcement requires all platform workflows and exact 30-asset verification. Workflow defaults stay `contents: read`; only hosting gets write/id-token permission. **A deploy is two pushes: merge to `main` (→ crate), then push immutable `vX.Y.Z` (→ binaries/installers/release).**
 
-Mac release credentials are the repository secrets `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8_BASE64`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER_ID`, plus repository variables `APPLE_SIGNING_IDENTITY=739B04530883FF9B665C66BD464F98C622971B32` and `APPLE_TEAM_ID=M9D5379H93`. Never print or commit secret values. Release archives must include `man/`; macOS user docs install those pages under the user's home without `sudo`/`mandb`.
+Mac release credentials are the repository secrets `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_INSTALLER_CERTIFICATE_P12_BASE64`, `APPLE_INSTALLER_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8_BASE64`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER_ID`, plus repository variables `APPLE_SIGNING_IDENTITY=739B04530883FF9B665C66BD464F98C622971B32`, `APPLE_INSTALLER_SIGNING_IDENTITY=Developer ID Installer: ES Development LLC (M9D5379H93)`, and `APPLE_TEAM_ID=M9D5379H93`. Never print or commit secret values. The Installer certificate must be G2/RSA-2048 with the matching private key; both native candidate runners prove it by signing a disposable PKG before packaging proceeds.
 
 ### Standard release workflow (run when shipping) — tag-push, consistent with TR-300
 
@@ -132,7 +132,7 @@ Triggers in user prompts: "release", "ship it", "deploy", "tag the release", "pu
 6. **Stage specific files** (never `git add -A`). **Commit** (`feat:`/`fix:`/`docs:`) with trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`. Open a PR; it runs `ci.yml` on macOS + Linux + Windows.
 7. **Merge the PR to `main`.** `ci.yml` → `crates-publish.yml` publishes the `nd300` crate (idempotent; a docs-only/unchanged-version merge safely skips).
 8. **Push the release tag:** `git fetch origin main && git tag vX.Y.Z origin/main && git push origin vX.Y.Z` → fires `release.yml` → chains `windows-installers.yml`. **Never reuse a tag** (forward only).
-9. **Watch + verify:** `release.yml` then `windows-installers.yml` (poll-loop below). Confirm the crate published, `gh release view vX.Y.Z` shows **28 assets**, `cargo install nd300 --force` works.
+9. **Watch + verify:** `release.yml`, its reusable Windows job, then its reusable macOS package job (poll-loop below). Confirm the crate published, the release has **exactly 30 assets**, both DMG/PKG Apple tickets and public Gatekeeper checks pass, every attestation binds to the tag SHA, and `cargo install nd300 --force` works.
 
     Pattern (parameterize `RUN_ID`, `timeout_ms` ~1500000 for 25 min headroom, `persistent: false`):
 
@@ -180,7 +180,7 @@ When the release CI fails:
 3. **Fix the underlying issue**. Do not paper over with `#[allow]` unless the warning is genuinely platform-shape only.
 4. **Bump the PATCH version** (e.g. `v3.0.0` → `v3.0.1`). Do not retag the same version — cargo-dist treats a tag as immutable, and re-tagging confuses GitHub Releases / installers / cached artifacts. Always go forward.
 5. **Add a CHANGELOG entry** for the patch. One-line description of what was broken and that it's a build-only fix is fine — users don't need internal CI minutiae.
-6. **Re-run the ship steps** (6–9 of the standard workflow): verify locally, commit, merge to `main` (→ crate), then push the **new** tag `vX.Y.Z` (→ release + installers). Verify the crate + the 28 assets after.
+6. **Re-run the ship steps** (6–9 of the standard workflow): verify locally, commit, merge to `main` (→ crate), then push the **new** tag `vX.Y.Z` (→ release + installers). Verify the crate + all 30 assets after.
 7. **Loop** if the patch run also fails. Bump again (`v3.0.2`, `v3.0.3`, ...) — never reuse a tag.
 
 ### Don't-do list (release safety)
@@ -275,10 +275,10 @@ The self-update feature lives in `src/actions/update.rs` and follows the same pa
    - Parse JSON → tag_name (e.g. "v2.9.0")
 2. Strip 'v' prefix, compare semver numerically against current VERSION
 3. If current >= latest → print "Already on latest" → exit 0
-4. Prove exactly one channel: Cargo registry metadata; a validated Unix receipt; Windows Cargo/standalone; or one registered MSI/EXE edition. Package-manager/local-build/unknown/conflicted ownership is refused.
+4. Prove exactly one channel: Cargo registry metadata; a validated Unix archive receipt; the exact macOS PKG receipt/payload/root-owned hash-bound pair; Windows Cargo/standalone; or one registered MSI/EXE edition. Package-manager/local-build/unknown/conflicted ownership is refused.
 5. Keep public entrypoints versionless, but pin the resolved tag for every internal artifact URL, checksum, and post-install comparison in this transaction.
-6. Execute only the matching channel strategy. Cargo runs bounded as the validated invoking user and never runs `rustup update`; Unix managed archives use the exact target archive; Windows uses the exact standalone/MSI/EXE route.
-7. Verify both staged programs at the exact expected version. Unix archives additionally use bounded/size-limited download, in-Rust SHA-256, strict two-file extraction, and macOS pinned Developer ID/team/identifier/runtime/timestamp verification.
+6. Execute only the matching channel strategy. Cargo runs bounded as the validated invoking user and never runs `rustup update`; Unix managed archives use the exact target archive; a macOS PKG downloads its exact-tag versionless DMG and invokes Apple Installer; Windows uses the exact standalone/MSI/EXE route.
+7. Verify both programs at the exact expected version. Unix archives additionally use bounded/size-limited download, in-Rust SHA-256, strict two-file extraction, and macOS pinned Developer ID/team/identifier/runtime/timestamp verification. The package route verifies the DMG and PKG identities, teams, timestamps, notarization tickets, Gatekeeper assessments, exact payload/PackageInfo, installed receipt, hashes, and pair after Installer closes.
 8. Transactionally swap/retire both binaries and restore both on every partial failure. Windows MSI cleanup is a commit action, Inno restores in `DeinitializeSetup`, and generated PowerShell restores around its copy loop.
 9. Never cross channels after a failed update. Report the attempt and the manual install URL while preserving the old owner.
 ```
@@ -312,25 +312,50 @@ const PS_INSTALLER_ASSET: &str = "nd300-installer.ps1";
 ### Platform Notes
 
 - **Windows**: The running `.exe` cannot be overwritten, but Windows permits an in-directory rename. Writable installs retire both binaries to versioned allowlisted siblings before strategy execution and restore them if every strategy fails. MSI performs the same move with the rollback-aware `MoveFiles` action before `RemoveExistingProducts`; Inno uses `PrepareToInstall` plus `DeinitializeSetup` restoration and disables Restart Manager shutdown; release automation fail-closed patches cargo-dist's generated PowerShell installer around its binary copy loop. The new binary runs hidden `migrate-cleanup --retired-update`, which removes non-running siblings immediately and schedules the still-running image for trusted delayed deletion. Keep all four paths and the generated-script anchors in lockstep.
-- **macOS/Linux**: `unix_install.rs` owns secure temporary directories, exact-tag archive download/verification, safe extraction, paired replacement/rollback/recovery markers, invoking-user Cargo execution, and origin classification. macOS requires the pinned Developer ID leaf/Team ID, per-binary identifier, hardened runtime, timestamp, and Gatekeeper install-policy acceptance with `source=Notarized Developer ID`. Release automation separately requires Apple notarization status `Accepted`; `spctl --type execute` and `codesign --check-notarization` are not accepted substitutes for bare CLIs.
-- **Unix uninstall**: Cargo origin → `cargo uninstall nd300`; ordinary invocation symlink → remove only the symlink; valid cargo-dist receipt → allow the matching managed files; package-manager/local-build/unknown → refuse. Never guess from location alone.
+- **macOS/Linux**: `unix_install.rs` owns secure temporary directories, exact-tag archive/package download and verification, safe extraction, paired archive replacement/rollback markers, invoking-user Cargo execution, and origin classification. The archive route retains pinned Developer ID binary checks. The macOS package route requires `com.qubetx.nd300.pkg`, exact payload/PackageInfo, root-owned non-writable `/usr/local/bin` pair and hash metadata, a Developer ID Application DMG, Developer ID Installer PKG, both stapled tickets, and Gatekeeper. It launches `open -W -a Installer`; cancellation or mismatch is failure, never a cross-channel fallback.
+- **Unix uninstall**: Cargo origin → `cargo uninstall nd300`; ordinary invocation symlink → remove only the symlink; valid cargo-dist receipt → allow the matching managed files; proven macOS PKG → authorize removal of only the pair/metadata then forget the receipt; package-manager/local-build/unknown → refuse. Never guess from location alone.
 - **Cargo**: bare `cargo install` has no project post-install hook, so it cannot uninstall an unrelated registered product. A Cargo-managed update remains Cargo-only and pins `--version =<resolved> --locked`; users deliberately switching from a Windows installer to bare Cargo must uninstall the registered owner first. Official MSI/EXE/PowerShell fresh installers can perform same-scope takeover and must refuse an opposite-scope owner before mutation.
 
 ### JSON Output
 
-Supports `--json` mode with structured output matching the uninstall pattern. On Windows, every update payload also carries a top-level `install_origin` field (one of `msi-global`/`msi-corporate`/`exe-global`/`exe-corporate`/`cargo-or-installer`/`unknown`; omitted on macOS/Linux):
+Supports `--json` mode with structured output matching the uninstall pattern. Existing fields remain compatible. Every result adds `install_channel`, `recovery_url`, and `requires_user_action`; a failed known installer strategy adds `exact_installer_url`. Windows also retains top-level `install_origin` (one of `msi-global`/`msi-corporate`/`exe-global`/`exe-corporate`/`cargo-or-installer`/`unknown`):
 ```json
 {
   "action": "update",
   "success": true,
   "current_version": "3.5.2",
-  "latest_version": "3.6.0",
+  "latest_version": "3.7.0",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",
-  "install_origin": "msi-corporate"
+  "install_origin": "msi-corporate",
+  "install_channel": "msi-corporate",
+  "recovery_url": "https://github.com/QubeTX/qube-network-diagnostics/releases/latest",
+  "requires_user_action": false
 }
 ```
+
+## macOS Universal PKG-in-DMG (v3.7.0+)
+
+`macos-installer.yml` is both the internal-PR candidate gate and the exact-tag
+reusable release job. It builds native thin pairs on `macos-15` and
+`macos-15-intel`, creates one universal pair, re-signs each Mach-O with its
+pinned Developer ID Application identity/hardened runtime/timestamp, packages
+both plus hash-bound install metadata as `com.qubetx.nd300.pkg` with Developer
+ID Installer, and places the signed/notarized/stapled PKG in a separately
+signed/notarized/stapled `nd300-universal-apple-darwin.dmg`.
+
+Fresh PKG installation is authoritative and may repair the same version or
+downgrade deliberately; automatic update is latest-only and same-channel. The
+postinstall hook runs the new package binary as the console user with root/Cargo
+environment removed and consolidates only a registry/receipt-proven standard
+Cargo-home pair. Ambiguous or nonstandard copies are retained. Hosted candidate
+and release validation cover both architectures, managed-archive takeover,
+same-version repair, a private higher-receipt downgrade fixture, both output
+modes, update selection, uninstall/receipt removal, and reinstall. The private
+fixture is never published. Release publication refuses overwrite, adds only the
+versionless DMG and sidecar, attests both to the exact tag SHA, and requires the
+canonical 30-asset inventory before announcement.
 
 ## Windows Installer Matrix + Installer-Aware Self-Update (v3.1.0+)
 
@@ -361,7 +386,7 @@ ND-300's `Release` workflow fires on a `vX.Y.Z` **tag push**, so a tag-triggered
 - Is a reusable `workflow_call` invoked by the tag-push Release job with its validated `tag` and `source_sha`; it no longer uses `workflow_run` (whose SHA is the default branch). Manual `workflow_dispatch` remains repair-only and must itself run at `--ref <tag>`.
 - **Resolves the immutable tag**, requires it to match the caller/manual SHA, and checks out that exact commit. The Release announcement requires this reusable job to succeed.
 - **Pre-flight + idempotency:** probes the release for `dist-manifest.json` + `nd300-x86_64-pc-windows-msvc.msi` (torn-release guard); if all 6 corporate/EXE assets are already attached on a non-dispatch run, logs and exits 0. `workflow_dispatch` always rebuilds (`--clobber`).
-- Keeps the WiX `candle`/`light -sice:ICE38 -sice:ICE64 -sice:ICE91` + Inno `iscc /DMyAppVersion=` mechanics. Final release carries the cargo-dist base assets + these 6 (28 total).
+- Keeps the WiX `candle`/`light -sice:ICE38 -sice:ICE64 -sice:ICE91` + Inno `iscc /DMyAppVersion=` mechanics. Windows verification completes the cargo-dist base assets + these 6 at 28; the later reusable macOS job adds two for the final 30.
 
 `Cargo.toml`: `allow-dirty = ["ci", "msi"]` (the `msi` is for the customized `wix/main.wxs` update, rollback, takeover, marker, and PATH maintenance), `/wix-corporate/**` + `/inno/*.iss` in the `include` list (never generated `inno/Output`), and the Windows-only `sha2`/`winreg` deps.
 

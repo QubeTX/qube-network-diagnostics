@@ -16,6 +16,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -26,6 +28,8 @@ use super::uninstall::CleanupReport;
 
 const RELEASE_BASE: &str = "https://github.com/QubeTX/qube-network-diagnostics/releases/download";
 const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(target_os = "macos")]
+const MAX_DMG_BYTES: usize = 256 * 1024 * 1024;
 const MAX_SIDECAR_BYTES: usize = 8 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const MAX_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
@@ -33,9 +37,21 @@ const MAX_ARCHIVE_ENTRIES: usize = 256;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const CARGO_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(target_os = "macos")]
+const INSTALLER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+#[cfg(target_os = "macos")]
 const MACOS_TEAM_ID: &str = "M9D5379H93";
 #[cfg(target_os = "macos")]
 const MACOS_LEAF_SHA1: &str = "739B04530883FF9B665C66BD464F98C622971B32";
+#[cfg(target_os = "macos")]
+const MACOS_INSTALLER_IDENTITY: &str = "Developer ID Installer: ES Development LLC (M9D5379H93)";
+#[cfg(any(target_os = "macos", test))]
+const MACOS_PKG_ID: &str = "com.qubetx.nd300.pkg";
+#[cfg(target_os = "macos")]
+const MACOS_INSTALL_RECEIPT: &str = "/Library/Application Support/ND300/install-receipt.json";
+#[cfg(target_os = "macos")]
+const MACOS_DMG_ASSET: &str = "nd300-universal-apple-darwin.dmg";
+#[cfg(target_os = "macos")]
+const MACOS_DMG_IDENTIFIER: &str = "com.qubetx.nd300.dmg";
 const TRANSACTION_MARKER: &str = ".nd300-update-transaction-v1";
 const COMMIT_MARKER_STAGE: &str = ".nd300-update-transaction-v1-commit";
 const NEW_ND300: &str = ".nd300-update-new-nd300";
@@ -47,6 +63,7 @@ const BACKUP_SPEEDQX: &str = ".nd300-update-backup-speedqx";
 pub(crate) enum UnixOriginKind {
     Cargo,
     ManagedArchive,
+    MacPackage,
     Symlink,
     PackageManager,
     LocalBuild,
@@ -84,6 +101,7 @@ pub(crate) fn detect_origin(user: &InvokingUser) -> io::Result<UnixInstallOrigin
         &cargo_bin,
         cargo_package_registered(&user.cargo_home()),
         receipt_valid,
+        macos_package_receipt_valid_for(&executable, VERSION),
     );
     Ok(UnixInstallOrigin {
         kind,
@@ -97,12 +115,16 @@ pub(crate) fn classify_origin_path(
     cargo_bin: &Path,
     cargo_registered: bool,
     cargo_dist_receipt_valid: bool,
+    macos_package_receipt_valid: bool,
 ) -> UnixOriginKind {
     if looks_like_local_build(executable) {
         return UnixOriginKind::LocalBuild;
     }
     if is_package_manager_path(executable) {
         return UnixOriginKind::PackageManager;
+    }
+    if macos_package_receipt_valid {
+        return UnixOriginKind::MacPackage;
     }
     if executable
         .parent()
@@ -117,6 +139,174 @@ pub(crate) fn classify_origin_path(
         };
     }
     UnixOriginKind::Unknown
+}
+
+#[cfg(target_os = "macos")]
+fn macos_package_receipt_valid_for(executable: &Path, expected_version: &str) -> bool {
+    let Some((nd300, speedqx)) = macos_system_pair(executable) else {
+        return false;
+    };
+
+    let info = std::process::Command::new("/usr/sbin/pkgutil")
+        .args(["--pkg-info", MACOS_PKG_ID])
+        .output();
+    let Ok(info) = info else {
+        return false;
+    };
+    if !info.status.success()
+        || parse_pkg_info_version(&info.stdout).as_deref() != Some(expected_version)
+    {
+        return false;
+    }
+
+    let files = std::process::Command::new("/usr/sbin/pkgutil")
+        .args(["--files", MACOS_PKG_ID])
+        .output();
+    let Ok(files) = files else {
+        return false;
+    };
+    if !files.status.success() || !macos_pkg_payload_is_exact(&files.stdout) {
+        return false;
+    }
+
+    let receipt_path = Path::new(MACOS_INSTALL_RECEIPT);
+    let receipt_valid = secure_macos_package_file(receipt_path)
+        && read_limited(receipt_path, 64 * 1024)
+            .ok()
+            .is_some_and(|bytes| {
+                validate_macos_install_receipt(&bytes, expected_version, &nd300, &speedqx)
+            });
+    receipt_valid
+        && binary_version_matches_sync(&nd300, "nd300", expected_version)
+        && binary_version_matches_sync(&speedqx, "speedqx", expected_version)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_package_receipt_valid_for(_executable: &Path, _expected_version: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn macos_system_pair(executable: &Path) -> Option<(PathBuf, PathBuf)> {
+    let expected_dir = Path::new("/usr/local/bin");
+    let name = executable.file_name()?.to_str()?;
+    if !matches!(name, "nd300" | "speedqx")
+        || !same_path(executable.parent()?, expected_dir)
+        || path_has_symlink_component(executable)
+    {
+        return None;
+    }
+    let nd300 = expected_dir.join("nd300");
+    let speedqx = expected_dir.join("speedqx");
+    for path in [&nd300, &speedqx] {
+        if !secure_macos_package_file(path) {
+            return None;
+        }
+    }
+    Some((nd300, speedqx))
+}
+
+#[cfg(target_os = "macos")]
+fn secure_macos_package_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).ok().is_some_and(|metadata| {
+        metadata.file_type().is_file()
+            && metadata.uid() == 0
+            && metadata.mode() & 0o022 == 0
+            && !path_has_symlink_component(path)
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_pkg_info_version(output: &[u8]) -> Option<String> {
+    let decoded = String::from_utf8_lossy(output);
+    let mut versions = decoded.lines().filter_map(|line| {
+        line.trim()
+            .strip_prefix("version:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    });
+    let version = versions.next()?.to_string();
+    versions.next().is_none().then_some(version)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_pkg_payload_is_exact(output: &[u8]) -> bool {
+    let decoded = String::from_utf8_lossy(output);
+    let actual = decoded
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.strip_prefix("./").unwrap_or(line))
+        .filter(|line| *line != ".")
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = [
+        "Library",
+        "Library/Application Support",
+        "Library/Application Support/ND300",
+        "Library/Application Support/ND300/install-receipt.json",
+        "usr",
+        "usr/local",
+        "usr/local/bin",
+        "usr/local/bin/nd300",
+        "usr/local/bin/speedqx",
+    ]
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    actual == expected
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_macos_install_receipt(
+    bytes: &[u8],
+    expected_version: &str,
+    nd300: &Path,
+    speedqx: &Path,
+) -> bool {
+    let Ok(receipt) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    let expected_nd300 = compute_sha256(nd300).ok();
+    let expected_speedqx = compute_sha256(speedqx).ok();
+    receipt
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(1)
+        && receipt
+            .get("package_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(MACOS_PKG_ID)
+        && receipt.get("version").and_then(serde_json::Value::as_str) == Some(expected_version)
+        && receipt
+            .get("install_channel")
+            .and_then(serde_json::Value::as_str)
+            == Some("macos-dmg-pkg")
+        && receipt
+            .pointer("/binaries/nd300/path")
+            .and_then(serde_json::Value::as_str)
+            == Some("/usr/local/bin/nd300")
+        && receipt
+            .pointer("/binaries/speedqx/path")
+            .and_then(serde_json::Value::as_str)
+            == Some("/usr/local/bin/speedqx")
+        && receipt
+            .pointer("/binaries/nd300/sha256")
+            .and_then(serde_json::Value::as_str)
+            == expected_nd300.as_deref()
+        && receipt
+            .pointer("/binaries/speedqx/sha256")
+            .and_then(serde_json::Value::as_str)
+            == expected_speedqx.as_deref()
+}
+
+#[cfg(target_os = "macos")]
+fn binary_version_matches_sync(path: &Path, name: &str, expected: &str) -> bool {
+    std::process::Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| parse_version_output(&output.stdout))
+        .is_some_and(|version| version == expected && path.file_name() == Some(OsStr::new(name)))
 }
 
 pub(crate) fn cargo_dist_receipt_valid(user: &InvokingUser) -> bool {
@@ -252,6 +442,27 @@ fn path_has_symlink_component(path: &Path) -> bool {
     false
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn path_has_symlink_beneath(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return true;
+    };
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return true;
+        };
+        current.push(name);
+        if fs::symlink_metadata(&current)
+            .ok()
+            .is_some_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn invocation_symlink_to(executable: &Path) -> Option<PathBuf> {
     let argv0 = std::env::args_os().next()?;
     let candidate = resolve_invocation_candidate(&argv0)?;
@@ -286,7 +497,7 @@ fn resolve_invocation_candidate(argv0: &OsStr) -> Option<PathBuf> {
         .find(|candidate| fs::symlink_metadata(candidate).is_ok())
 }
 
-fn cargo_package_registered(cargo_home: &Path) -> bool {
+pub(crate) fn cargo_package_registered(cargo_home: &Path) -> bool {
     let json_path = cargo_home.join(".crates2.json");
     if let Ok(bytes) = read_limited(&json_path, 2 * 1024 * 1024) {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -552,6 +763,16 @@ pub(crate) async fn uninstall_detected(user: &InvokingUser) -> CleanupReport {
             Err(error) => refused_cleanup(error),
         },
         UnixOriginKind::ManagedArchive => uninstall_managed_archive(user, &origin),
+        UnixOriginKind::MacPackage => {
+            #[cfg(target_os = "macos")]
+            {
+                uninstall_macos_package(&origin).await
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                refused_cleanup("macOS package ownership is unavailable on this platform".into())
+            }
+        }
         UnixOriginKind::PackageManager => refused_cleanup(format!(
             "Refusing to modify package-manager-owned installation at {}; use that package manager to uninstall ND300",
             origin.executable.display()
@@ -567,7 +788,10 @@ pub(crate) async fn uninstall_detected(user: &InvokingUser) -> CleanupReport {
     }
 }
 
-fn uninstall_managed_archive(user: &InvokingUser, origin: &UnixInstallOrigin) -> CleanupReport {
+pub(crate) fn uninstall_managed_archive(
+    user: &InvokingUser,
+    origin: &UnixInstallOrigin,
+) -> CleanupReport {
     let Some(receipt) = capture_validated_receipt(user) else {
         return refused_cleanup(
             "Validated cargo-dist receipt disappeared before uninstall; no files were removed"
@@ -696,6 +920,12 @@ pub(crate) async fn update_from_archive(latest: &str, user: &InvokingUser) -> Re
             }
             parent.to_path_buf()
         }
+        UnixOriginKind::MacPackage => {
+            return Err(format!(
+                "refusing to replace Apple Installer-owned installation at {} through the standalone archive updater",
+                origin.executable.display()
+            ));
+        }
         UnixOriginKind::Cargo => {
             return Err(format!(
                 "refusing to replace Cargo-owned installation at {} through the standalone archive updater",
@@ -788,6 +1018,7 @@ fn effective_update_kind(
     cargo_bin: &Path,
     cargo_registered: bool,
     cargo_dist_receipt_valid: bool,
+    macos_package_receipt_valid: bool,
 ) -> UnixOriginKind {
     if detected == UnixOriginKind::Symlink {
         classify_origin_path(
@@ -795,6 +1026,7 @@ fn effective_update_kind(
             cargo_bin,
             cargo_registered,
             cargo_dist_receipt_valid,
+            macos_package_receipt_valid,
         )
     } else {
         detected
@@ -811,7 +1043,242 @@ pub(crate) fn effective_update_kind_for(
         &user.cargo_home().join("bin"),
         cargo_package_registered(&user.cargo_home()),
         cargo_dist_receipt_valid(user),
+        macos_package_receipt_valid_for(&origin.executable, VERSION),
     )
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn update_from_macos_package(
+    latest: &str,
+    user: &InvokingUser,
+) -> Result<(), String> {
+    validate_release_version(latest)?;
+    let origin = detect_origin(user).map_err(|error| format!("install origin: {error}"))?;
+    if effective_update_kind_for(&origin, user) != UnixOriginKind::MacPackage {
+        return Err(format!(
+            "refusing to launch Apple Installer because the running pair at {} is not owned by the validated ND300 package receipt",
+            origin.executable.display()
+        ));
+    }
+
+    let asset = MACOS_DMG_ASSET;
+    let url = format!("{RELEASE_BASE}/v{latest}/{asset}");
+    let sidecar_url = format!("{url}.sha256");
+    let temp = SecureTempDir::new()?;
+    let dmg = temp.path().join(asset);
+    download_limited(&url, &dmg, MAX_DMG_BYTES).await?;
+    let sidecar = download_bytes_limited(&sidecar_url, MAX_SIDECAR_BYTES).await?;
+    let expected = parse_sha256_sidecar(&sidecar, asset)
+        .ok_or_else(|| format!("malformed SHA-256 sidecar at {sidecar_url}"))?;
+    checksum_verdict(&compute_sha256(&dmg)?, &expected)?;
+    verify_macos_dmg_trust(&dmg).await?;
+
+    let mount_path = temp.path().join("mount");
+    fs::create_dir(&mount_path)
+        .map_err(|error| format!("create private DMG mount point: {error}"))?;
+    let attach = run_bounded_command(
+        "/usr/bin/hdiutil",
+        &[
+            OsStr::new("attach"),
+            OsStr::new("-nobrowse"),
+            OsStr::new("-readonly"),
+            OsStr::new("-noautoopen"),
+            OsStr::new("-owners"),
+            OsStr::new("off"),
+            OsStr::new("-mountpoint"),
+            mount_path.as_os_str(),
+            dmg.as_os_str(),
+        ],
+    )
+    .await?;
+    if !attach.status.success() {
+        return Err(format!(
+            "could not mount the verified DMG: {}",
+            summarize_output(&attach.stdout, &attach.stderr)
+        ));
+    }
+    let mount = MountedDmg::new(mount_path);
+    let pkg = mount.path().join("nd300.pkg");
+    let metadata = fs::symlink_metadata(&pkg)
+        .map_err(|error| format!("verified DMG does not contain nd300.pkg: {error}"))?;
+    if !metadata.file_type().is_file() || path_has_symlink_beneath(mount.path(), &pkg) {
+        return Err("nd300.pkg inside the verified DMG is not a regular file".to_string());
+    }
+    verify_macos_pkg(&pkg, latest, &temp).await?;
+
+    eprintln!("  · Opening Apple Installer; complete or cancel the prompts there...");
+    let opened = run_installer_command(
+        "/usr/bin/open",
+        &[
+            OsStr::new("-W"),
+            OsStr::new("-a"),
+            OsStr::new("Installer"),
+            pkg.as_os_str(),
+        ],
+    )
+    .await?;
+    if !opened.status.success() {
+        return Err(format!(
+            "Apple Installer did not complete successfully: {}",
+            summarize_output(&opened.stdout, &opened.stderr)
+        ));
+    }
+
+    if !macos_package_receipt_valid_for(&origin.executable, latest) {
+        return Err(
+            "Apple Installer closed without leaving an exact, verified ND300 package receipt and binary pair; the prior installation remains the recovery point"
+                .to_string(),
+        );
+    }
+    verify_binary_version(
+        Path::new("/usr/local/bin/nd300"),
+        "nd300",
+        latest,
+        Some(user),
+    )
+    .await?;
+    verify_binary_version(
+        Path::new("/usr/local/bin/speedqx"),
+        "speedqx",
+        latest,
+        Some(user),
+    )
+    .await?;
+
+    mount.detach().map_err(|error| {
+        format!("update succeeded but the installer DMG could not detach: {error}")
+    })
+}
+
+#[cfg(target_os = "macos")]
+async fn uninstall_macos_package(origin: &UnixInstallOrigin) -> CleanupReport {
+    if !macos_package_receipt_valid_for(&origin.executable, VERSION) {
+        return refused_cleanup(
+            "The ND300 package receipt or installed pair changed before uninstall; no files were removed"
+                .to_string(),
+        );
+    }
+
+    // SAFETY: geteuid has no preconditions.
+    let elevated = unsafe { libc::geteuid() } == 0;
+    let result = if elevated {
+        let remove_speedqx = run_installer_command(
+            "/bin/rm",
+            &[
+                OsStr::new("-f"),
+                OsStr::new("--"),
+                OsStr::new("/usr/local/bin/speedqx"),
+            ],
+        )
+        .await;
+        match remove_speedqx {
+            Ok(output) if output.status.success() => {
+                let remove_nd300 = run_installer_command(
+                    "/bin/rm",
+                    &[
+                        OsStr::new("-f"),
+                        OsStr::new("--"),
+                        OsStr::new("/usr/local/bin/nd300"),
+                    ],
+                )
+                .await;
+                match remove_nd300 {
+                    Ok(output) if output.status.success() => {
+                        let remove_receipt = run_installer_command(
+                            "/bin/rm",
+                            &[
+                                OsStr::new("-f"),
+                                OsStr::new("--"),
+                                OsStr::new(MACOS_INSTALL_RECEIPT),
+                            ],
+                        )
+                        .await;
+                        match remove_receipt {
+                            Ok(output) if output.status.success() => {
+                                let _ = std::process::Command::new("/bin/rmdir")
+                                    .arg("/Library/Application Support/ND300")
+                                    .status();
+                                run_installer_command(
+                                    "/usr/sbin/pkgutil",
+                                    &[OsStr::new("--forget"), OsStr::new(MACOS_PKG_ID)],
+                                )
+                                .await
+                            }
+                            Ok(output) => Err(format!(
+                                "remove package metadata failed: {}",
+                                summarize_output(&output.stdout, &output.stderr)
+                            )),
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Ok(output) => Err(format!(
+                        "remove nd300 failed: {}",
+                        summarize_output(&output.stdout, &output.stderr)
+                    )),
+                    Err(error) => Err(error),
+                }
+            }
+            Ok(output) => Err(format!(
+                "remove speedqx failed: {}",
+                summarize_output(&output.stdout, &output.stderr)
+            )),
+            Err(error) => Err(error),
+        }
+    } else {
+        let script = format!(
+            "do shell script \"/bin/rm -f -- /usr/local/bin/speedqx && /bin/rm -f -- /usr/local/bin/nd300 && /bin/rm -f -- '/Library/Application Support/ND300/install-receipt.json' && (/bin/rmdir '/Library/Application Support/ND300' 2>/dev/null || true) && /usr/sbin/pkgutil --forget {}\" with administrator privileges",
+            MACOS_PKG_ID
+        );
+        run_installer_command(
+            "/usr/bin/osascript",
+            &[OsStr::new("-e"), OsStr::new(&script)],
+        )
+        .await
+    };
+
+    let output = match result {
+        Ok(output) => output,
+        Err(error) => {
+            return refused_cleanup(format!(
+                "Apple authorization or package removal failed: {error}"
+            ))
+        }
+    };
+    if !output.status.success() {
+        return refused_cleanup(format!(
+            "Apple authorization or package removal was cancelled or failed: {}",
+            summarize_output(&output.stdout, &output.stderr)
+        ));
+    }
+    let nd300_gone = !Path::new("/usr/local/bin/nd300").exists();
+    let speedqx_gone = !Path::new("/usr/local/bin/speedqx").exists();
+    let receipt_gone = !std::process::Command::new("/usr/sbin/pkgutil")
+        .args(["--pkg-info", MACOS_PKG_ID])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    let metadata_gone = !Path::new(MACOS_INSTALL_RECEIPT).exists();
+    if !nd300_gone || !speedqx_gone || !receipt_gone || !metadata_gone {
+        return refused_cleanup(
+            "Apple package removal returned success but the pair or receipt still exists"
+                .to_string(),
+        );
+    }
+    CleanupReport {
+        binary_removed: true,
+        binary_removal_scheduled: false,
+        target_retained: false,
+        sibling_removed: true,
+        sibling_removal_scheduled: false,
+        sibling_removal_failed: false,
+        receipt_removed: true,
+        path_cleaned: false,
+        notes: vec![
+            "Removed the receipt-proven Apple Installer pair and forgot com.qubetx.nd300.pkg"
+                .to_string(),
+        ],
+    }
 }
 
 fn update_receipt_version(user: &InvokingUser, version: &str) -> Result<(), String> {
@@ -1330,6 +1797,279 @@ async fn verify_macos_trust(path: &Path, expected_identifier: &str) -> Result<()
         )
     })?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn verify_macos_dmg_trust(path: &Path) -> Result<(), String> {
+    let verify = run_bounded_command(
+        "/usr/bin/codesign",
+        &[
+            OsStr::new("--verify"),
+            OsStr::new("--deep"),
+            OsStr::new("--strict"),
+            OsStr::new("--verbose=4"),
+            path.as_os_str(),
+        ],
+    )
+    .await?;
+    if !verify.status.success() {
+        return Err(format!(
+            "codesign rejected the DMG: {}",
+            summarize_output(&verify.stdout, &verify.stderr)
+        ));
+    }
+
+    let details = run_bounded_command(
+        "/usr/bin/codesign",
+        &[
+            OsStr::new("-d"),
+            OsStr::new("--verbose=4"),
+            path.as_os_str(),
+        ],
+    )
+    .await?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&details.stdout),
+        String::from_utf8_lossy(&details.stderr)
+    );
+    if !details.status.success()
+        || signing_field(&text, "Identifier") != Some(MACOS_DMG_IDENTIFIER)
+        || signing_field(&text, "TeamIdentifier") != Some(MACOS_TEAM_ID)
+        || !signing_field(&text, "Authority")
+            .is_some_and(|value| value.starts_with("Developer ID Application:"))
+        || signing_field(&text, "Timestamp").is_none()
+    {
+        return Err("DMG signature identity, team, authority, or timestamp is invalid".to_string());
+    }
+
+    let cert_temp = SecureTempDir::new()?;
+    let cert_prefix = cert_temp.path().join("dmg-cert-");
+    let extract = codesign_extract_certificates_arg(&cert_prefix);
+    let extracted = run_bounded_command(
+        "/usr/bin/codesign",
+        &[OsStr::new("-d"), extract.as_os_str(), path.as_os_str()],
+    )
+    .await?;
+    if !extracted.status.success() {
+        return Err("could not extract the DMG signing certificate".to_string());
+    }
+    let mut leaf_path = cert_prefix.into_os_string();
+    leaf_path.push("0");
+    let leaf = read_limited(Path::new(&leaf_path), 128 * 1024)
+        .map_err(|error| format!("read DMG leaf certificate: {error}"))?;
+    fingerprint_verdict(&sha1_fingerprint(&leaf), MACOS_LEAF_SHA1)?;
+
+    let staple = run_bounded_command(
+        "/usr/bin/xcrun",
+        &[
+            OsStr::new("stapler"),
+            OsStr::new("validate"),
+            path.as_os_str(),
+        ],
+    )
+    .await?;
+    if !staple.status.success() {
+        return Err(format!(
+            "the DMG has no valid stapled notarization ticket: {}",
+            summarize_output(&staple.stdout, &staple.stderr)
+        ));
+    }
+    let assess = run_bounded_command(
+        "/usr/sbin/spctl",
+        &[
+            OsStr::new("--assess"),
+            OsStr::new("--type"),
+            OsStr::new("open"),
+            OsStr::new("--context"),
+            OsStr::new("context:primary-signature"),
+            OsStr::new("--ignore-cache"),
+            OsStr::new("--no-cache"),
+            OsStr::new("--verbose=4"),
+            path.as_os_str(),
+        ],
+    )
+    .await?;
+    if !assess.status.success() {
+        return Err(format!(
+            "Gatekeeper rejected the DMG: {}",
+            summarize_output(&assess.stdout, &assess.stderr)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn verify_macos_pkg(
+    pkg: &Path,
+    expected_version: &str,
+    temp: &SecureTempDir,
+) -> Result<(), String> {
+    let signature = run_bounded_command(
+        "/usr/sbin/pkgutil",
+        &[OsStr::new("--check-signature"), pkg.as_os_str()],
+    )
+    .await?;
+    let signature_text = summarize_output(&signature.stdout, &signature.stderr);
+    if !signature.status.success()
+        || !signature_text.contains(MACOS_INSTALLER_IDENTITY)
+        || !signature_text.contains("Signed with a trusted timestamp")
+    {
+        return Err(format!(
+            "PKG signature is not the expected timestamped Developer ID Installer identity: {signature_text}"
+        ));
+    }
+
+    let staple = run_bounded_command(
+        "/usr/bin/xcrun",
+        &[
+            OsStr::new("stapler"),
+            OsStr::new("validate"),
+            pkg.as_os_str(),
+        ],
+    )
+    .await?;
+    if !staple.status.success() {
+        return Err(format!(
+            "PKG notarization ticket is invalid: {}",
+            summarize_output(&staple.stdout, &staple.stderr)
+        ));
+    }
+    let assess = run_bounded_command(
+        "/usr/sbin/spctl",
+        &[
+            OsStr::new("--assess"),
+            OsStr::new("--type"),
+            OsStr::new("install"),
+            OsStr::new("--ignore-cache"),
+            OsStr::new("--no-cache"),
+            OsStr::new("--verbose=4"),
+            pkg.as_os_str(),
+        ],
+    )
+    .await?;
+    if !assess.status.success() {
+        return Err(format!(
+            "Gatekeeper rejected the PKG: {}",
+            summarize_output(&assess.stdout, &assess.stderr)
+        ));
+    }
+
+    let payload = run_bounded_command(
+        "/usr/sbin/pkgutil",
+        &[OsStr::new("--payload-files"), pkg.as_os_str()],
+    )
+    .await?;
+    if !payload.status.success() || !macos_pkg_payload_is_exact(&payload.stdout) {
+        return Err("PKG payload is not exactly the nd300/speedqx system pair".to_string());
+    }
+
+    let expanded = temp.path().join("expanded-pkg");
+    let expansion = run_bounded_command(
+        "/usr/sbin/pkgutil",
+        &[
+            OsStr::new("--expand"),
+            pkg.as_os_str(),
+            expanded.as_os_str(),
+        ],
+    )
+    .await?;
+    if !expansion.status.success() {
+        return Err(format!(
+            "could not inspect PKG metadata: {}",
+            summarize_output(&expansion.stdout, &expansion.stderr)
+        ));
+    }
+    let package_info = read_limited(&expanded.join("PackageInfo"), 256 * 1024)
+        .map_err(|error| format!("read expanded PackageInfo: {error}"))?;
+    if !package_info_matches(&package_info, expected_version) {
+        return Err(format!(
+            "PKG identifier, version, or install location does not match {MACOS_PKG_ID} v{expected_version}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn package_info_matches(bytes: &[u8], expected_version: &str) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    xml_attribute(text, "identifier") == Some("com.qubetx.nd300.pkg")
+        && xml_attribute(text, "version") == Some(expected_version)
+        && xml_attribute(text, "install-location") == Some("/")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn xml_attribute<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=\"");
+    let rest = text.split_once(&needle)?.1;
+    rest.split_once('"').map(|(value, _)| value)
+}
+
+#[cfg(target_os = "macos")]
+async fn run_installer_command(
+    launcher: &str,
+    args: &[&OsStr],
+) -> Result<std::process::Output, String> {
+    let mut command = tokio::process::Command::new(launcher);
+    command.args(args);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    command.kill_on_drop(true);
+    tokio::time::timeout(INSTALLER_TIMEOUT, command.output())
+        .await
+        .map_err(|_| format!("{launcher} exceeded the 30-minute safety deadline"))?
+        .map_err(|error| format!("failed to launch {launcher}: {error}"))
+}
+
+#[cfg(target_os = "macos")]
+struct MountedDmg {
+    path: PathBuf,
+    attached: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl MountedDmg {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            attached: true,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn detach(mut self) -> Result<(), String> {
+        let output = std::process::Command::new("/usr/bin/hdiutil")
+            .arg("detach")
+            .arg(&self.path)
+            .output()
+            .map_err(|error| format!("launch hdiutil detach: {error}"))?;
+        if output.status.success() {
+            self.attached = false;
+            Ok(())
+        } else {
+            Err(summarize_output(&output.stdout, &output.stderr))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for MountedDmg {
+    fn drop(&mut self) {
+        if self.attached {
+            let _ = std::process::Command::new("/usr/bin/hdiutil")
+                .arg("detach")
+                .arg(&self.path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2104,6 +2844,7 @@ mod tests {
                 cargo,
                 true,
                 false,
+                false,
             ),
             UnixOriginKind::Cargo
         );
@@ -2113,6 +2854,7 @@ mod tests {
                 cargo,
                 false,
                 true,
+                false,
             ),
             UnixOriginKind::ManagedArchive
         );
@@ -2122,20 +2864,37 @@ mod tests {
                 cargo,
                 true,
                 true,
+                false,
             ),
             UnixOriginKind::Unknown
         );
         assert_eq!(
-            classify_origin_path(Path::new("/opt/homebrew/bin/nd300"), cargo, false, true),
+            classify_origin_path(
+                Path::new("/opt/homebrew/bin/nd300"),
+                cargo,
+                false,
+                true,
+                false,
+            ),
             UnixOriginKind::PackageManager
         );
         assert_eq!(
-            classify_origin_path(Path::new("/repo/target/release/nd300"), cargo, false, true),
+            classify_origin_path(
+                Path::new("/repo/target/release/nd300"),
+                cargo,
+                false,
+                true,
+                false,
+            ),
             UnixOriginKind::LocalBuild
         );
         assert_eq!(
-            classify_origin_path(Path::new("/usr/local/bin/nd300"), cargo, false, true),
+            classify_origin_path(Path::new("/usr/local/bin/nd300"), cargo, false, true, false,),
             UnixOriginKind::Unknown
+        );
+        assert_eq!(
+            classify_origin_path(Path::new("/usr/local/bin/nd300"), cargo, false, false, true,),
+            UnixOriginKind::MacPackage
         );
         assert_eq!(
             classify_origin_path(
@@ -2143,9 +2902,122 @@ mod tests {
                 cargo,
                 false,
                 false,
+                false,
             ),
             UnixOriginKind::Unknown
         );
+    }
+
+    #[test]
+    fn macos_package_payload_must_be_exact() {
+        let exact = b"Library\nLibrary/Application Support\nLibrary/Application Support/ND300\nLibrary/Application Support/ND300/install-receipt.json\nusr\nusr/local\nusr/local/bin\nusr/local/bin/nd300\nusr/local/bin/speedqx\n";
+        assert!(macos_pkg_payload_is_exact(exact));
+        let mut with_root = b".\n".to_vec();
+        with_root.extend_from_slice(exact);
+        assert!(macos_pkg_payload_is_exact(&with_root));
+        assert!(macos_pkg_payload_is_exact(
+            exact
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .rev()
+                .flat_map(|line| line.iter().copied().chain(std::iter::once(b'\n')))
+                .collect::<Vec<_>>()
+                .as_slice()
+        ));
+
+        let mut extra = exact.to_vec();
+        extra.extend_from_slice(b"usr/local/bin/unrelated\n");
+        assert!(!macos_pkg_payload_is_exact(&extra));
+        assert!(!macos_pkg_payload_is_exact(
+            b"usr/local/bin/nd300\nusr/local/bin/speedqx\n"
+        ));
+    }
+
+    #[test]
+    fn macos_package_receipt_version_parser_is_exact() {
+        assert_eq!(
+            parse_pkg_info_version(
+                b"package-id: com.qubetx.nd300.pkg\nversion: 3.7.0\nvolume: /\n"
+            ),
+            Some("3.7.0".to_string())
+        );
+        assert_eq!(parse_pkg_info_version(b"version:\n"), None);
+        assert_eq!(
+            parse_pkg_info_version(b"version: 3.7.0\nversion: 3.7.1\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn macos_package_info_requires_exact_identity_version_and_root_location() {
+        let exact = br#"<pkg-info identifier="com.qubetx.nd300.pkg" version="3.7.0" install-location="/"/>"#;
+        assert!(package_info_matches(exact, "3.7.0"));
+        assert!(!package_info_matches(
+            br#"<pkg-info identifier="com.qubetx.other" version="3.7.0" install-location="/"/>"#,
+            "3.7.0"
+        ));
+        assert!(!package_info_matches(exact, "3.7.1"));
+        assert!(!package_info_matches(
+            br#"<pkg-info identifier="com.qubetx.nd300.pkg" version="3.7.0" install-location="/tmp"/>"#,
+            "3.7.0"
+        ));
+    }
+
+    #[test]
+    fn macos_install_metadata_binds_channel_version_paths_and_hashes() {
+        let dir = temp_dir("macos-install-metadata");
+        let nd300 = dir.join("nd300");
+        let speedqx = dir.join("speedqx");
+        fs::write(&nd300, b"nd300 exact bytes").unwrap();
+        fs::write(&speedqx, b"speedqx exact bytes").unwrap();
+        let receipt = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "package_id": MACOS_PKG_ID,
+            "version": "3.7.0",
+            "install_channel": "macos-dmg-pkg",
+            "binaries": {
+                "nd300": {
+                    "path": "/usr/local/bin/nd300",
+                    "sha256": compute_sha256(&nd300).unwrap()
+                },
+                "speedqx": {
+                    "path": "/usr/local/bin/speedqx",
+                    "sha256": compute_sha256(&speedqx).unwrap()
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(validate_macos_install_receipt(
+            &receipt, "3.7.0", &nd300, &speedqx
+        ));
+        fs::write(&speedqx, b"changed after installation").unwrap();
+        assert!(!validate_macos_install_receipt(
+            &receipt, "3.7.0", &nd300, &speedqx
+        ));
+        assert!(!validate_macos_install_receipt(
+            &receipt, "3.7.1", &nd300, &speedqx
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mounted_package_check_ignores_ancestors_but_rejects_links_beneath_mount() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir("mounted-package-links");
+        let mount = dir.join("mount");
+        fs::create_dir(&mount).unwrap();
+        let pkg = mount.join("nd300.pkg");
+        fs::write(&pkg, b"package").unwrap();
+        assert!(!path_has_symlink_beneath(&mount, &pkg));
+
+        let linked = mount.join("linked.pkg");
+        symlink(&pkg, &linked).unwrap();
+        assert!(path_has_symlink_beneath(&mount, &linked));
+        assert!(path_has_symlink_beneath(&mount, &dir.join("outside.pkg")));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2174,15 +3046,15 @@ mod tests {
         let cargo = Path::new("/Users/alice/.cargo/bin");
         let target = Path::new("/Users/alice/.cargo/bin/nd300");
         assert_eq!(
-            effective_update_kind(UnixOriginKind::Symlink, target, cargo, false, false),
+            effective_update_kind(UnixOriginKind::Symlink, target, cargo, false, false, false,),
             UnixOriginKind::Unknown
         );
         assert_eq!(
-            effective_update_kind(UnixOriginKind::Symlink, target, cargo, true, false),
+            effective_update_kind(UnixOriginKind::Symlink, target, cargo, true, false, false,),
             UnixOriginKind::Cargo
         );
         assert_eq!(
-            effective_update_kind(UnixOriginKind::Symlink, target, cargo, false, true),
+            effective_update_kind(UnixOriginKind::Symlink, target, cargo, false, true, false,),
             UnixOriginKind::ManagedArchive
         );
     }

@@ -35,12 +35,15 @@ pub fn run(args: InstallMaintenanceArgs) -> i32 {
 }
 
 #[cfg(windows)]
-fn marker_value(origin: MigrateInstallOrigin) -> &'static str {
+fn marker_value(origin: MigrateInstallOrigin) -> Result<&'static str, String> {
     match origin {
-        MigrateInstallOrigin::MsiGlobal => "msi-global",
-        MigrateInstallOrigin::MsiCorporate => "msi-corporate",
-        MigrateInstallOrigin::ExeGlobal => "exe-global",
-        MigrateInstallOrigin::ExeCorporate => "exe-corporate",
+        MigrateInstallOrigin::MsiGlobal => Ok("msi-global"),
+        MigrateInstallOrigin::MsiCorporate => Ok("msi-corporate"),
+        MigrateInstallOrigin::ExeGlobal => Ok("exe-global"),
+        MigrateInstallOrigin::ExeCorporate => Ok("exe-corporate"),
+        MigrateInstallOrigin::MacosPkg => {
+            Err("macos-pkg is not a valid Windows installer marker".to_string())
+        }
     }
 }
 
@@ -49,11 +52,12 @@ fn set_marker(origin: MigrateInstallOrigin) -> Result<(), String> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
 
+    let marker = marker_value(origin)?;
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (key, _) = hkcu
         .create_subkey("Software\\ND300")
         .map_err(|error| format!("open HKCU\\Software\\ND300: {error}"))?;
-    key.set_value("InstallSource", &marker_value(origin))
+    key.set_value("InstallSource", &marker)
         .map_err(|error| format!("write InstallSource marker: {error}"))
 }
 
@@ -62,6 +66,7 @@ fn clear_marker_if_current(origin: MigrateInstallOrigin) -> Result<(), String> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
 
+    let marker = marker_value(origin)?;
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let Ok(key) = hkcu.open_subkey_with_flags(
         "Software\\ND300",
@@ -70,7 +75,7 @@ fn clear_marker_if_current(origin: MigrateInstallOrigin) -> Result<(), String> {
         return Ok(());
     };
     let current = key.get_value::<String, _>("InstallSource").ok();
-    if current.as_deref() == Some(marker_value(origin)) {
+    if current.as_deref() == Some(marker) {
         key.delete_value("InstallSource")
             .map_err(|error| format!("clear matching InstallSource marker: {error}"))?;
     }
@@ -195,6 +200,28 @@ fn encode_registry_string(value: &str) -> Vec<u8> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_marker_values_reject_the_macos_only_origin() {
+        assert_eq!(
+            marker_value(MigrateInstallOrigin::MsiGlobal).as_deref(),
+            Ok("msi-global")
+        );
+        assert_eq!(
+            marker_value(MigrateInstallOrigin::MsiCorporate).as_deref(),
+            Ok("msi-corporate")
+        );
+        assert_eq!(
+            marker_value(MigrateInstallOrigin::ExeGlobal).as_deref(),
+            Ok("exe-global")
+        );
+        assert_eq!(
+            marker_value(MigrateInstallOrigin::ExeCorporate).as_deref(),
+            Ok("exe-corporate")
+        );
+        assert!(marker_value(MigrateInstallOrigin::MacosPkg).is_err());
+    }
 
     #[test]
     fn legacy_machine_path_is_replaced_once_without_rewriting_other_entries() {

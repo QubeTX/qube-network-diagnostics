@@ -12,7 +12,7 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **25 deep diagnostics** (technician mode): ARP (+ gateway health), routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy (+ PAC/WPAD), VPN, firewall, DNS cache, IPv6 (+ real v6 fetch), MTU (+ path-MTU probe), connection states, real bufferbloat (loaded latency during saturation), reverse DNS, TLS inspection, traffic counters, route path (traceroute analysis), sustained packet loss, NAT/CGNAT analysis, Wi-Fi link quality, DNS resolver benchmark (+ hijack/DNSSEC checks), captive portal detection, clock sync (NTP)
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
 - **Eight-source SpeedQX engine** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) + M-Lab MSAK + Apple networkQuality + CacheFly + Vultr, using Methodology v4 capacity/consensus merging, agreement, confidence intervals, PDV jitter, and RPM. ND300's core diagnostic keeps the shorter Cloudflare + NDT7 run; standalone `speedqx` uses all eight.
-- **Channel-preserving self-update** — `nd300 update` / `speedqx update` proves how the running copy was installed and updates through that same channel: Cargo stays Cargo, a managed macOS/Linux archive stays a managed archive, and each Windows MSI/EXE edition downloads its exact matching installer. Unknown, conflicted, local-build, and package-manager ownership is refused instead of guessed. Downloads are pinned to one exact release and verified before the two-binary transaction; a failure restores the old pair and points to the install page.
+- **Channel-preserving self-update** — `nd300 update` / `speedqx update` proves how the running copy was installed and updates through that same channel: Cargo stays Cargo, a managed macOS/Linux archive stays a managed archive, a macOS PKG reopens its exact signed DMG/PKG channel, and each Windows MSI/EXE edition downloads its exact matching installer. Unknown, conflicted, local-build, and package-manager ownership is refused instead of guessed. Downloads are pinned to one exact release and verified before the two-binary transaction; a failure retains the old install and points to an exact matching artifact plus the versionless install page.
 - **SpeedQX** standalone speed test binary — all 8 providers (Methodology v4: capacity + consensus merge, I² agreement, PDV jitter, RPM) with per-provider breakdown and real-time progress; `--fast` for the quick 3-provider early-stopping run, `--skip-msak`/`--skip-apple` to trim the full run
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
@@ -22,7 +22,21 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 
 ## Installation
 
-### Shell (macOS/Linux)
+### macOS preferred installer (universal PKG-in-DMG)
+
+Download `nd300-universal-apple-darwin.dmg` from the
+[latest release](https://github.com/QubeTX/qube-network-diagnostics/releases/latest),
+open `nd300.pkg`, and follow Apple Installer. The versionless universal download
+installs both commands system-wide in `/usr/local/bin` and works natively on
+Apple Silicon and Intel. The DMG and nested PKG are Developer ID signed,
+notarized, and stapled; installation uses the normal macOS authorization prompt.
+
+A deliberate fresh PKG is the newest channel choice, including a same-version
+repair or explicit downgrade. It replaces the system pair and consolidates a
+receipt-proven managed archive in the standard Cargo home. Automatic updates
+remain latest-only and never change a proven installation channel.
+
+### Shell (macOS/Linux alternative)
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.sh | sh
@@ -507,7 +521,9 @@ The updater follows a **prove, pin, verify, replace** contract:
 2. Proves the running installation channel. Cargo registry metadata selects only
    bounded `cargo install nd300 --version =<resolved> --force --locked` as the
    validated invoking user. A valid Unix receipt selects only the native archive
-   transaction. Windows registry,
+   transaction. On macOS, an exact root-owned `/usr/local/bin` pair, Apple
+   package receipt, payload inventory, version, and hash-bound install metadata
+   select only the DMG/PKG installer transaction. Windows registry,
    path, marker, and Cargo evidence select exactly one of Cargo, standalone, or
    MSI/EXE × Global/Corporate. A conflict or unknown owner changes nothing.
 3. Public commands and download links use `releases/latest`; after the latest tag
@@ -521,8 +537,12 @@ The updater follows a **prove, pin, verify, replace** contract:
 5. Executes both staged programs with `--version`. On macOS it additionally
    requires the pinned Developer ID certificate, Team ID `M9D5379H93`, identifiers
    `com.qubetx.nd300` and `com.qubetx.speedqx`, hardened runtime, and timestamp.
-6. Atomically replaces both binaries with backups. Any failure restores both;
-   old and new ND300/SpeedQX versions are never intentionally mixed.
+6. Managed archives atomically replace both binaries with backups. A proven
+   macOS package instead downloads and verifies the exact-tag versionless DMG,
+   validates the outer Developer ID Application signature and nested Developer
+   ID Installer signature plus both notarization tickets, then opens Apple
+   Installer and verifies the new package receipt and pair after it closes.
+   Cancellation or failure retains the prior installation as the recovery point.
 7. On Windows, a Cargo-bin path wins over any stale installer marker. Otherwise
    ND300 proves a matching MSI/Inno owner from Add/Remove Programs and its
    normalized install location before selecting one of the four installer-aware
@@ -537,7 +557,9 @@ The updater follows a **prove, pin, verify, replace** contract:
 
 Unix uninstall is origin-aware too. Cargo-managed installs use
 `cargo uninstall nd300`; invocation through an ordinary symlink removes only the
-symlink; a cargo-dist layout requires its validated receipt. ND300 refuses to
+symlink; a cargo-dist layout requires its validated receipt. A receipt-proven
+macOS PKG requests Apple authorization, removes only its hash-bound system pair
+and metadata, and forgets `com.qubetx.nd300.pkg`. ND300 refuses to
 modify unknown, local-build, Homebrew/MacPorts, or other package-manager-owned
 locations and prints manual guidance instead.
 
@@ -570,22 +592,25 @@ Current releases publish the canonical `nd300-installer.sh` and `nd300-installer
 
 ### Update JSON output
 
-In `--json` mode, the response includes `"strategy"` (the precise variant that ran or was attempted) and, on failure, an `"attempts"` array. The legacy `"method"` field still maps to `"cargo"` or `"installer"` for backward compatibility. On **Windows**, every update payload also carries a top-level `"install_origin"` field — one of `msi-global`, `msi-corporate`, `exe-global`, `exe-corporate`, `cargo-or-installer`, or `unknown` (the field is omitted on macOS/Linux, where install origin doesn't vary).
+In `--json` mode, the response includes `"strategy"` (the precise variant that ran or was attempted) and, on failure, an `"attempts"` array. The legacy `"method"` field still maps to `"cargo"` or `"installer"` for backward compatibility. Additive `"install_channel"`, `"recovery_url"`, and `"requires_user_action"` fields describe the proven owner and safe recovery state; a failed known installer route also includes `"exact_installer_url"`. On **Windows**, every update payload also carries `"install_origin"` — one of `msi-global`, `msi-corporate`, `exe-global`, `exe-corporate`, `cargo-or-installer`, or `unknown`.
 
 ```json
 {
   "action": "update",
   "success": true,
   "current_version": "3.5.2",
-  "latest_version": "3.6.0",
+  "latest_version": "3.7.0",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",
-  "install_origin": "msi-corporate"
+  "install_origin": "msi-corporate",
+  "install_channel": "msi-corporate",
+  "recovery_url": "https://github.com/QubeTX/qube-network-diagnostics/releases/latest",
+  "requires_user_action": false
 }
 ```
 
-The precise `"strategy"` values are `cargo`, `unix_archive`,
+The precise `"strategy"` values are `cargo`, `unix_archive`, `mac_dmg_pkg`,
 `installer_powershell`, `installer_pwsh`, `msi_global`, `msi_corporate`,
 `exe_global`, and `exe_corporate`.
 

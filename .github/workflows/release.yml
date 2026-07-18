@@ -19,7 +19,8 @@
 # (this workflow builds the 6 cargo-dist targets + Global MSI + shell/PS
 # installers and creates the GitHub Release; it then calls
 # windows-installers.yml with the same tag-push context to add the Corporate MSI
-# + the two Inno EXEs + sidecars). The crate is
+# + the two Inno EXEs + sidecars, then macos-installer.yml adds the universal
+# signed/notarized PKG-in-DMG and sidecar for the exact 30-asset release). The crate is
 # published by crates-publish.yml (NOT here) to avoid double-publishing.
 
 name: Release
@@ -562,16 +563,37 @@ jobs:
       tag: ${{ needs.plan.outputs.tag }}
       source_sha: ${{ needs.plan.outputs.release-sha }}
 
+  # Build the universal Apple Installer channel only after the complete
+  # 28-asset Windows gate is verified. The reusable call retains the tag-push
+  # OIDC context, so both additional attestations bind to the same exact SHA.
+  macos-installer:
+    name: macOS universal PKG-in-DMG
+    needs:
+      - plan
+      - windows-installers
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && needs.windows-installers.result == 'success' }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/macos-installer.yml
+    secrets: inherit
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+      source_sha: ${{ needs.plan.outputs.release-sha }}
+      version: ${{ needs.plan.outputs.version }}
+
   announce:
     needs:
       - plan
       - host
       - verify-published-macos
       - windows-installers
+      - macos-installer
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && needs.verify-published-macos.result == 'success' && needs.windows-installers.result == 'success' }}
+    if: ${{ always() && needs.host.result == 'success' && needs.verify-published-macos.result == 'success' && needs.windows-installers.result == 'success' && needs.macos-installer.result == 'success' }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

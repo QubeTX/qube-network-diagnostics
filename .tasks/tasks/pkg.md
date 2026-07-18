@@ -1,0 +1,32 @@
+TT;DR: Ship a universal, signed, notarized ND-300 PKG inside a versionless DMG, and make PKG installs update and uninstall through their proven Apple Installer receipt.
+
+## Why
+The archive installer is safe for user-owned Cargo-home installs, but the preferred macOS experience should be a normal Apple Installer flow. The package channel must preserve both `nd300` and `speedqx`, exact release identity, Developer ID trust, and the user's most recently chosen install method without creating a second shadowing copy.
+
+## Plan
+Add an exact-tag reusable macOS installer workflow after the existing 28-asset Windows gate. Build a universal pair from the already signed arm64 and Intel archives, re-sign both universal Mach-O files with hardened runtime, place them in a Developer ID Installer-signed PKG, then place the PKG in a Developer ID Application-signed DMG. Notarize and staple the nested package and outer disk image, attest both versionless public assets to the exact release SHA, and qualify installation, update, takeover, failure, and uninstall on fresh hosted Intel and Apple Silicon runners. A receipt-proven `/usr/local/bin` install updates only through the exact-tag DMG/PKG channel; ambiguous ownership fails safely to the website.
+
+## Impact
+macOS gains a system-wide installer channel and two release assets, taking the canonical inventory from 28 to 30. Existing Cargo and managed-archive users remain on their current channels. The main risks are stale package receipts, cross-channel duplicates, privileged cleanup, artifact races, and code-signing drift; all are fail-closed and covered by native hosted matrices before physical testing.
+
+## Acceptance
+The DMG and nested PKG are signed, notarized, stapled, versionless, and exact-SHA-attested; the PKG owns a universal two-binary payload; `nd300 update` and `speedqx update` preserve the PKG channel; a fresh official PKG safely supersedes proven older ND-300 copies; uninstall removes only package-owned files and forgets the receipt; both native hosted architectures pass; one final read-only/update/uninstall physical-Mac batch passes; docs, ADR, evidence, homepage, and cleanup are complete.
+
+## Verification
+- [x] Package origin requires the exact `/usr/local/bin` pair and valid `com.qubetx.nd300.pkg` receipt
+- [x] Universal `nd300` and `speedqx` signatures, hardened runtime, team, versions, and architectures verify
+- [x] PKG and DMG Developer ID signatures, notarization tickets, Gatekeeper assessments, and checksums verify
+- [ ] Fresh-install takeover and same-channel updates pass on hosted Intel and Apple Silicon
+- [ ] Cancellation, corruption, stale receipt, ambiguous ownership, and rollback paths fail safely
+- [ ] Public release has exactly 30 expected assets and every attestation binds to the exact tag SHA
+- [ ] Physical-Mac acceptance, homepage preference, ADR, evidence, and repository cleanup finish
+
+## Status
+Active. Implementation and the native hosted candidate are green on `fc108ebb591fd132d2c362e5333b3908bc95d66d`; public release, public updater qualification, physical-Mac acceptance, homepage, evidence, and cleanup remain. No package artifact has been published yet.
+
+## Activity
+- 2026-07-18 04:20 — audited the dirty local TR-300 prototype and Apple notarization requirements; retained its universal/signing shape but replaced its default-branch `workflow_run`, overwrite upload, and unattested publication model with ND-300's exact-tag reusable release contract (agent: codex)
+- 2026-07-18 06:05 — implemented the receipt/hash-proven PKG update/uninstall path, universal signed/notarized PKG-in-DMG builder, exact-tag 30-asset release integration, and native Intel/Apple-Silicon candidate lifecycle including standard archive takeover, repair, explicit downgrade, diagnostics, uninstall, and reinstall; Windows check/Clippy/323 tests and workflow/shell syntax gates are green, hosted proof is next (agent: codex)
+- 2026-07-18 09:44 UTC — hosted candidate run https://github.com/QubeTX/qube-network-diagnostics/actions/runs/29639530573 passed on exact head `fc108ebb591fd132d2c362e5333b3908bc95d66d`: both native builds, installer-identity preflights, signed/notarized/stapled PKG-in-DMG, Gatekeeper, checksum, managed-archive takeover, same-version repair, deliberate package downgrade, channel detection, receipt-aware uninstall, and reinstall passed on Intel and Apple Silicon; ADR-0002 can now record the final package decision (agent: codex)
+- 2026-07-18 09:54 UTC — final cfg review found that reusable workflows retain the tag-push caller's `push` event and that release-only checkout ordering could delete downloaded archives; changed the release gate to the required source-SHA input, moved checkout before archive download, added the missing exact-SHA checkout to release lifecycle validation, and passed actionlint (agent: codex)
+- 2026-07-18 10:08 UTC — final installer-lockstep review found the shared hidden origin could write an orphan `macos-pkg` Windows marker; Windows maintenance now rejects that macOS-only origin before opening HKCU, with a regression test. All four MSI/Inno builds, paths, scopes, paired binaries, markers, GUIDs, and macOS package identifiers are lockstep-green on the fixed tree (agent: codex)
