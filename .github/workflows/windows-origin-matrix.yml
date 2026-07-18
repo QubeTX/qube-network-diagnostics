@@ -5,7 +5,11 @@ on:
     paths:
       - '.github/workflows/windows-origin-matrix.yml'
       - 'scripts/windows-origin-matrix.ps1'
+      - 'scripts/harden-cargo-dist-windows-installer.ps1'
+      - 'scripts/test-harden-cargo-dist-windows-installer.ps1'
       - 'src/actions/migrate.rs'
+      - 'src/actions/maintenance.rs'
+      - 'src/actions/takeover.rs'
       - 'src/actions/uninstall.rs'
       - 'src/actions/update.rs'
       - 'src/cli.rs'
@@ -33,7 +37,7 @@ on:
         description: 'Expected public version (public mode only)'
         required: true
         type: string
-        default: '3.6.2'
+        default: '3.6.3'
 
 permissions:
   contents: read
@@ -90,6 +94,25 @@ jobs:
             -out target\wix\nd300-x86_64-pc-windows-msvc-corporate.msi `
             target\wix\corporate.wixobj
           if ($LASTEXITCODE -ne 0) { throw "Corporate light exit $LASTEXITCODE" }
+
+          & $candle -arch x64 "-dVersion=${{ steps.metadata.outputs.version }}" `
+            '-dCargoTargetBinDir=target\release' '-dND300_ROLLBACK_TEST=1' `
+            -ext WixUIExtension -out target\wix\main-rollback-test.wixobj wix\main.wxs
+          if ($LASTEXITCODE -ne 0) { throw "Global rollback candle exit $LASTEXITCODE" }
+          & $light -ext WixUIExtension `
+            -out target\wix\nd300-x86_64-pc-windows-msvc-rollback-test.msi `
+            target\wix\main-rollback-test.wixobj
+          if ($LASTEXITCODE -ne 0) { throw "Global rollback light exit $LASTEXITCODE" }
+
+          & $candle -arch x64 "-dVersion=${{ steps.metadata.outputs.version }}" `
+            '-dCargoTargetBinDir=target\release' '-dND300_ROLLBACK_TEST=1' `
+            -ext WixUIExtension -out target\wix\corporate-rollback-test.wixobj `
+            wix-corporate\corporate.wxs
+          if ($LASTEXITCODE -ne 0) { throw "Corporate rollback candle exit $LASTEXITCODE" }
+          & $light -sice:ICE38 -sice:ICE64 -sice:ICE91 -ext WixUIExtension `
+            -out target\wix\nd300-x86_64-pc-windows-msvc-corporate-rollback-test.msi `
+            target\wix\corporate-rollback-test.wixobj
+          if ($LASTEXITCODE -ne 0) { throw "Corporate rollback light exit $LASTEXITCODE" }
       - name: Install Inno Setup 6
         shell: pwsh
         run: choco install innosetup -y --no-progress --no-color
@@ -102,14 +125,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Global iscc exit $LASTEXITCODE" }
           & $iscc "/DMyAppVersion=${{ steps.metadata.outputs.version }}" inno\corporate.iss
           if ($LASTEXITCODE -ne 0) { throw "Corporate iscc exit $LASTEXITCODE" }
+          & $iscc "/DMyAppVersion=${{ steps.metadata.outputs.version }}" `
+            '/DND300_ROLLBACK_TEST=1' inno\global.iss
+          if ($LASTEXITCODE -ne 0) { throw "Global rollback iscc exit $LASTEXITCODE" }
+          & $iscc "/DMyAppVersion=${{ steps.metadata.outputs.version }}" `
+            '/DND300_ROLLBACK_TEST=1' inno\corporate.iss
+          if ($LASTEXITCODE -ne 0) { throw "Corporate rollback iscc exit $LASTEXITCODE" }
       - name: Verify candidate inventory
         shell: pwsh
         run: |
           $expected = @(
             'target\wix\nd300-x86_64-pc-windows-msvc.msi',
             'target\wix\nd300-x86_64-pc-windows-msvc-corporate.msi',
+            'target\wix\nd300-x86_64-pc-windows-msvc-rollback-test.msi',
+            'target\wix\nd300-x86_64-pc-windows-msvc-corporate-rollback-test.msi',
             'inno\Output\nd300-x86_64-pc-windows-msvc-setup.exe',
-            'inno\Output\nd300-x86_64-pc-windows-msvc-corporate-setup.exe'
+            'inno\Output\nd300-x86_64-pc-windows-msvc-corporate-setup.exe',
+            'inno\Output\nd300-x86_64-pc-windows-msvc-setup-rollback-test.exe',
+            'inno\Output\nd300-x86_64-pc-windows-msvc-corporate-setup-rollback-test.exe'
           )
           foreach ($path in $expected) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing $path" }
@@ -176,4 +209,149 @@ jobs:
         with:
           name: windows-origin-evidence-${{ matrix.origin }}-${{ github.run_attempt }}
           if-no-files-found: warn
-          path: ${{ runner.temp }}/nd300-origin-evidence/*.json
+          path: ${{ runner.temp }}/nd300-origin-evidence/*
+
+  legacy-global-lifecycle:
+    name: v2.9.0 legacy Global MSI (${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }})
+    needs: build-candidate
+    if: >-
+      always() &&
+      (needs.build-candidate.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && inputs.mode == 'public'))
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: origin-legacy-global
+      - name: Download candidate installers
+        if: github.event_name == 'pull_request' || inputs.mode == 'candidate'
+        uses: actions/download-artifact@v4
+        with:
+          name: nd300-windows-candidate-installers
+          path: ${{ runner.temp }}/nd300-candidate
+      - name: Exercise pre-marker Global MSI lifecycle
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_MODE: ${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }}
+          EXPECTED_VERSION: ${{ github.event_name == 'pull_request' && needs.build-candidate.outputs.version || inputs.expected_version }}
+        run: |
+          & scripts\windows-origin-matrix.ps1 `
+            -Origin msi-global `
+            -BaselineOrigin msi-global `
+            -LegacyGlobalBaseline `
+            -Mode $env:TEST_MODE `
+            -BaselineVersion 2.9.0 `
+            -ExpectedVersion $env:EXPECTED_VERSION `
+            -RepoRoot $env:GITHUB_WORKSPACE `
+            -CandidateDir (Join-Path $env:RUNNER_TEMP 'nd300-candidate') `
+            -Repository '${{ github.repository }}'
+      - name: Upload legacy lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-origin-evidence-legacy-global-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/nd300-origin-evidence/*
+
+  fresh-channel-takeover:
+    name: ${{ matrix.baseline }} to ${{ matrix.target }} fresh takeover (${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }})
+    needs: build-candidate
+    if: >-
+      always() &&
+      (needs.build-candidate.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && inputs.mode == 'public'))
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - baseline: msi-global
+            target: exe-global
+          - baseline: exe-global
+            target: msi-global
+          - baseline: msi-corporate
+            target: exe-corporate
+          - baseline: exe-corporate
+            target: msi-corporate
+          - baseline: cargo
+            target: msi-global
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+        if: matrix.baseline == 'cargo'
+      - name: Download candidate installers
+        if: github.event_name == 'pull_request' || inputs.mode == 'candidate'
+        uses: actions/download-artifact@v4
+        with:
+          name: nd300-windows-candidate-installers
+          path: ${{ runner.temp }}/nd300-candidate
+      - name: Exercise fresh-channel takeover
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_MODE: ${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }}
+          BASELINE_VERSION: ${{ github.event_name == 'pull_request' && '3.5.2' || inputs.baseline_version }}
+          EXPECTED_VERSION: ${{ github.event_name == 'pull_request' && needs.build-candidate.outputs.version || inputs.expected_version }}
+        run: |
+          & scripts\windows-origin-matrix.ps1 `
+            -Scenario takeover `
+            -Origin '${{ matrix.target }}' `
+            -BaselineOrigin '${{ matrix.baseline }}' `
+            -Mode $env:TEST_MODE `
+            -BaselineVersion $env:BASELINE_VERSION `
+            -ExpectedVersion $env:EXPECTED_VERSION `
+            -RepoRoot $env:GITHUB_WORKSPACE `
+            -CandidateDir (Join-Path $env:RUNNER_TEMP 'nd300-candidate') `
+            -Repository '${{ github.repository }}'
+      - name: Upload takeover evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-takeover-evidence-${{ matrix.baseline }}-to-${{ matrix.target }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/nd300-origin-evidence/*
+
+  cross-scope-refusal:
+    name: Corporate MSI to Global MSI safe refusal (${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }})
+    needs: build-candidate
+    if: >-
+      always() &&
+      (needs.build-candidate.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && inputs.mode == 'public'))
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download candidate installers
+        if: github.event_name == 'pull_request' || inputs.mode == 'candidate'
+        uses: actions/download-artifact@v4
+        with:
+          name: nd300-windows-candidate-installers
+          path: ${{ runner.temp }}/nd300-candidate
+      - name: Prove raw MSI cross-scope switch fails before mutation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_MODE: ${{ github.event_name == 'pull_request' && 'candidate' || inputs.mode }}
+          BASELINE_VERSION: ${{ github.event_name == 'pull_request' && '3.5.2' || inputs.baseline_version }}
+          EXPECTED_VERSION: ${{ github.event_name == 'pull_request' && needs.build-candidate.outputs.version || inputs.expected_version }}
+        run: |
+          & scripts\windows-origin-matrix.ps1 `
+            -Scenario refusal `
+            -Origin msi-global `
+            -BaselineOrigin msi-corporate `
+            -Mode $env:TEST_MODE `
+            -BaselineVersion $env:BASELINE_VERSION `
+            -ExpectedVersion $env:EXPECTED_VERSION `
+            -RepoRoot $env:GITHUB_WORKSPACE `
+            -CandidateDir (Join-Path $env:RUNNER_TEMP 'nd300-candidate') `
+            -Repository '${{ github.repository }}'
+      - name: Upload refusal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cross-scope-refusal-evidence-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/nd300-origin-evidence/*

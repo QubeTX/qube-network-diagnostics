@@ -8,15 +8,16 @@
 - [ ] **Design safe post-finalize cross-edition Windows unregistration** - remove retained installer registrations without nesting MSI transactions (ms #p36) #arp
 
 ## To-Do
-- [ ] **Verify public Windows updates and upgrade the Alienware** - exercise all five origins against public artifacts (needs #rel) (ms #v36) #wup
+- [ ] **Begin the native macOS PKG channel** - after v3.6.3 is public, add the signed/notarized package path while the testing Mac is available (needs #wup) (ms #p36) #pkg
 - [ ] **Merge and verify the ND-300 homepage update** - deploy the final public fallback version through Vercel (needs #wup) (ms #v36) #web
 - [ ] **Close release documentation with exact evidence** - record SHAs, runs, publishing, trust, and smoke results (needs #web) (ms #v36) #doc
 - [ ] **Clean merged branches and worktrees in both repositories** - preserve unique work, prune stale refs, and enable automatic merged-branch deletion (needs #doc) (ms #v36) #cln
 
 ## Active
-- [ ] **Tag and verify the final ND-300 release** - fix forward from immutable v3.6.0/v3.6.1 verifier failures and verify v3.6.2 trust, assets, and attestations (ms #v36) (owner codex) #rel
+- [ ] **Repair public updates and upgrade the Alienware** - ship the channel-preserving v3.6.3 transaction, exercise current, legacy, and takeover paths publicly, then update this machine (ms #v36) (owner codex) #wup
 
 ## Done
+- [x] **Publish and verify ND-300 v3.6.2** - exact tag `f3d83fc`, run `29609073182`, 28 assets, Apple trust, checksums, and attestations all passed (ms #v36) #rel
 - [x] **Repair PR #18 release and cross-platform blockers** - exact head `4b2c623` passed every PR gate and both specialist reviews (ms #v36) #prf
 - [x] **Harden Windows install ownership and uninstall lifecycle** - candidate run `29601781683` passed all five disposable origins (ms #v36) #win
 - [x] **Run pre-merge validation and Alienware smoke** - local, installer, candidate VM, and non-mutating physical checks passed (ms #v36) #val

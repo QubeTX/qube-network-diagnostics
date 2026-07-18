@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.3] - 2026-07-17
+
+### Fixed
+- **Self-update preserves the proven installation channel.** Cargo registry
+  ownership selects only Cargo; a validated Unix receipt selects only the
+  native archive transaction; Windows standalone and each MSI/EXE edition select
+  only their matching route. Unknown, conflicted, package-manager, and local-build
+  ownership now fails without mutation and includes the manual install URL.
+  Public commands remain versionless, while the resolved release tag pins every
+  internal artifact and checksum URL for the transaction. Cargo is likewise
+  constrained to the exact resolved version with `--locked` rather than accepting
+  whichever crate version happens to be current later in the transaction.
+- **Windows self-update no longer tries to overwrite its running executable.**
+  MSI uses Windows Installer's transactional `MoveFiles` action before the old
+  product is removed, Inno Setup retires and restores the pair around its file
+  phase without Restart Manager terminating the caller, and the generated
+  cargo-dist PowerShell installer receives a fail-closed compatibility shim.
+  All paths rename only `nd300.exe` and `speedqx.exe` to versioned siblings,
+  restore them if replacement fails, and use the hidden allowlisted migration
+  helper to remove the retired images after the old updater exits. The Rust
+  updater applies the same retirement directly where its install directory is
+  writable. This repairs public upgrades from v3.5.2 across all five Windows
+  origins while keeping flags and public JSON shapes compatible.
+- **Fresh official Windows installs replace conflicting formats without crossing
+  security contexts.** The hidden installer-only takeover path strictly enumerates
+  registry-proven owners and invokes exact MSI product codes or validated Inno
+  uninstallers without a shell. MSI product codes are accepted only when Windows
+  Installer enumerates them under ND300's canonical UpgradeCode. A fresh Global
+  MSI/EXE may replace the other Global format, and a fresh Corporate MSI/EXE may
+  replace the other Corporate format. Per-user ↔ per-machine switches are refused
+  before mutation because Windows Installer cannot major-upgrade across contexts
+  and an elevated package must not execute a user-writable uninstaller. Default
+  Cargo-copy/other-edition cleanup remains advisory and file-limited; it never
+  removes Cargo, Rustup, PATH, or installer registration.
+- **Pre-marker Global MSI installations remain updateable.** v2.9's `nd-300`
+  display name, `Program Files\nd-300` path, legacy versionless installer alias,
+  and mapped running image are recognized and migrated to the current Global MSI
+  layout. A commit-only maintenance action removes the exact legacy system-PATH
+  entry, preserves unrelated entries and the registry value type, and ensures the
+  current path appears once. MSI ownership markers are also commit-written and
+  clear-on-uninstall only when still current, avoiding shared component identity
+  across Global and Corporate products. Hosted candidate/public coverage now
+  includes that boundary, five current origins, same-scope format takeover, and an
+  opposite-scope refusal that proves the original installation is byte-for-byte
+  unchanged.
+- **The versionless PowerShell installer now fails closed when its caller cannot
+  be proven.** Parent-process discovery and Add/Remove Programs enumeration are
+  mandatory for updater invocations. A proven registered parent delegates to its
+  exact MSI/EXE channel, a Cargo parent runs an exact-version Cargo update, and a
+  standalone parent stays standalone. An ND300/SpeedQX parent with no exact owner
+  or destination proof changes nothing; an ordinary terminal launch remains a
+  supported fresh install.
+- **Disposable Windows failures retain native process evidence.** The origin
+  matrix now records stdout, stderr, and the real process exit code without
+  PowerShell's native-error promotion terminating the harness first.
+- **The crates.io package excludes generated local installer binaries.** The
+  manifest now includes only the two Inno source scripts instead of the entire
+  output directory, so running the required local installer gate before publish
+  cannot embed multi-megabyte EXE artifacts in the Rust crate.
+
 ## [3.6.2] - 2026-07-17
 
 ### Fixed

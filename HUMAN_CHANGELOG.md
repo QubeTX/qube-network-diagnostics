@@ -6,6 +6,49 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 17, 2026 — Windows can update the program that is currently running
+
+**Fixed — Windows updates no longer collide with their own open program file**
+- The update command now stays with the installation channel you chose. Cargo
+  stays Cargo, Mac/Linux managed downloads stay managed downloads, and each
+  Windows installer type downloads the matching installer. It no longer tries a
+  different channel merely because the intended one failed. If ownership cannot
+  be proven, nothing is changed and the terminal links to the download page.
+  The public command can keep saying “latest,” but once that version is found the
+  updater pins every download and even Cargo to that one exact release.
+- Windows would not let the updater overwrite `nd300.exe` while that same file
+  was still running. Cargo reported “access denied,” while MSI and EXE setup
+  could close the updater before it finished. The updater and all Windows
+  installers now move the old two-file program pair to tightly controlled
+  temporary names, put the new pair in the normal location, restore the old
+  pair if setup fails, and remove the retired files once the old process exits.
+  This also gives older installations a working path to the current release from
+  every supported Windows installation type, including the old `nd-300` Global
+  MSI name and folder used before installer channels were recorded.
+- A deliberate fresh official Windows install is treated as your newest choice
+  when the old and new installers use the same Windows scope. You can switch
+  between MSI and EXE within Global, or within Corporate, and setup removes the
+  proven older entry, program pair, and PATH ownership before claiming the new
+  format. A direct per-user ↔ per-machine switch stops before changing anything;
+  Windows cannot safely complete that kind of upgrade, so setup asks you to
+  uninstall the old scope first or choose the matching-scope installer.
+- Windows now asks its own installer service to prove that an MSI product code is
+  really one of ND300's products before using it. A machine-wide installer will
+  never run an uninstaller supplied through a user's writable settings. The
+  versionless PowerShell installer also refuses an update launched by an ND300
+  process it cannot tie to the exact destination or a proven installer record.
+- Very old Global MSI upgrades now remove the obsolete old Global folder from
+  the system's command search path only after the new install commits, keep every
+  unrelated entry, and leave exactly one current folder. Installer markers are
+  likewise recorded only after success and are removed only by the installer
+  that still owns them.
+- The disposable Windows checks now preserve the real output and exit code when
+  an update fails, so future failures show their cause instead of ending at a
+  generic PowerShell error.
+- Building the Windows installers locally before release can no longer make
+  those large generated setup programs sneak into the smaller Rust package.
+  Only the installer instructions are included there.
+
 ## July 17, 2026 — Release checks accept harmless spacing and still catch damage
 
 **Fixed — the final download check no longer mistakes an empty separator for a broken checksum**

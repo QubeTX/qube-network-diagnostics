@@ -62,6 +62,8 @@ use crate::cli::MigrateInstallOrigin;
 // on the Windows consolidation path, so its import is Windows-gated to avoid an
 // unused-import warning on macOS/Linux.
 #[cfg(windows)]
+use super::uninstall::spawn_delayed_delete;
+#[cfg(windows)]
 use super::uninstall::uninstall_path_files_only;
 use super::uninstall::OUR_BINARIES;
 #[cfg(windows)]
@@ -117,20 +119,27 @@ pub(crate) struct TargetReport {
 pub(crate) struct CleanupTargets {
     pub(crate) cargo_copy: bool,
     pub(crate) other_edition: bool,
+    pub(crate) retired_update: bool,
 }
 
 /// Resolve which targets to act on. With NO target flag, default to `--cargo-copy`
 /// only (the most common, lowest-risk, never-needs-admin consolidation).
-pub(crate) fn resolve_targets(cargo_copy: bool, other_edition: bool) -> CleanupTargets {
-    if !cargo_copy && !other_edition {
+pub(crate) fn resolve_targets(
+    cargo_copy: bool,
+    other_edition: bool,
+    retired_update: bool,
+) -> CleanupTargets {
+    if !cargo_copy && !other_edition && !retired_update {
         CleanupTargets {
             cargo_copy: true,
             other_edition: false,
+            retired_update: false,
         }
     } else {
         CleanupTargets {
             cargo_copy,
             other_edition,
+            retired_update,
         }
     }
 }
@@ -149,7 +158,7 @@ pub(crate) fn is_permission_error(kind: std::io::ErrorKind) -> bool {
 // ─── Public entry point ──────────────────────────────────────────────────────
 
 pub async fn run(config: &Config, args: MigrateArgs) -> i32 {
-    let targets = resolve_targets(args.cargo_copy, args.other_edition);
+    let targets = resolve_targets(args.cargo_copy, args.other_edition, args.retired_update);
     let json = args.json || matches!(config.format, crate::config::OutputFormat::Json);
 
     let reports = collect_and_execute(&args, targets);
@@ -205,6 +214,9 @@ fn collect_and_execute(args: &MigrateArgs, targets: CleanupTargets) -> Vec<Targe
             running_dir.as_deref(),
         ));
     }
+    if targets.retired_update {
+        reports.push(execute_retired_update_images(args, running_dir.as_deref()));
+    }
 
     reports
 }
@@ -232,6 +244,16 @@ fn collect_and_execute(_args: &MigrateArgs, targets: CleanupTargets) -> Vec<Targ
             path: None,
             outcome: TargetOutcome::Skipped(
                 "not applicable on this platform (no Global/Corporate editions)".to_string(),
+            ),
+        });
+    }
+    if targets.retired_update {
+        reports.push(TargetReport {
+            id: "retired_update",
+            label: "retired Windows update images".to_string(),
+            path: None,
+            outcome: TargetOutcome::Skipped(
+                "not applicable on this platform (Windows update compatibility only)".to_string(),
             ),
         });
     }
@@ -550,6 +572,131 @@ fn needs_admin_for(exe: &Path) -> Option<String> {
     }
 }
 
+// ─── Retired in-place-update images ─────────────────────────────────────────
+
+/// A Windows installer can move a running image out of the canonical filename
+/// before writing its replacement. Only versioned siblings produced by that
+/// contract are eligible here; arbitrary backups and similarly named files are
+/// deliberately rejected.
+#[cfg(any(windows, test))]
+pub(crate) fn is_retired_update_image(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    ["nd300.update-old-", "speedqx.update-old-"]
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
+        .and_then(|suffix| suffix.strip_suffix(".exe"))
+        .is_some_and(|version| {
+            !version.is_empty()
+                && version
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '+' | '_'))
+        })
+}
+
+#[cfg(windows)]
+fn execute_retired_update_images(args: &MigrateArgs, running_dir: Option<&Path>) -> TargetReport {
+    let id = "retired_update";
+    let label = "retired Windows update images".to_string();
+    let Some(dir) = running_dir else {
+        return TargetReport {
+            id,
+            label,
+            path: None,
+            outcome: TargetOutcome::Failed(INTERNAL_ERROR_MARKER.to_string()),
+        };
+    };
+
+    let mut search_dirs = vec![dir.to_path_buf()];
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        let legacy = PathBuf::from(program_files).join("nd-300").join("bin");
+        if !search_dirs
+            .iter()
+            .any(|candidate| same_path(candidate, &legacy))
+        {
+            search_dirs.push(legacy);
+        }
+    }
+
+    let mut retired = Vec::new();
+    let mut inspection_failures = Vec::new();
+    for search_dir in &search_dirs {
+        let entries = match std::fs::read_dir(search_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                inspection_failures.push(format!("{}: {error}", search_dir.display()));
+                continue;
+            }
+        };
+        retired.extend(
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.is_file() && is_retired_update_image(path)),
+        );
+    }
+
+    if !inspection_failures.is_empty() {
+        return TargetReport {
+            id,
+            label,
+            path: Some(dir.to_path_buf()),
+            outcome: TargetOutcome::Failed(format!(
+                "could not inspect install directories: {}",
+                inspection_failures.join("; ")
+            )),
+        };
+    }
+
+    if retired.is_empty() {
+        return TargetReport {
+            id,
+            label,
+            path: Some(dir.to_path_buf()),
+            outcome: TargetOutcome::Skipped("no retired update images found".to_string()),
+        };
+    }
+    if args.dry_run {
+        return TargetReport {
+            id,
+            label,
+            path: Some(dir.to_path_buf()),
+            outcome: TargetOutcome::WouldRemove,
+        };
+    }
+
+    let mut scheduled = false;
+    let mut failures = Vec::new();
+    for path in retired {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(_) => match spawn_delayed_delete(&path) {
+                Ok(()) => scheduled = true,
+                Err(error) => failures.push(format!("{}: {error}", path.display())),
+            },
+        }
+    }
+
+    let outcome = if failures.is_empty() {
+        if scheduled {
+            TargetOutcome::Scheduled
+        } else {
+            TargetOutcome::Removed
+        }
+    } else {
+        TargetOutcome::Failed(failures.join("; "))
+    };
+    TargetReport {
+        id,
+        label,
+        path: Some(dir.to_path_buf()),
+        outcome,
+    }
+}
+
 // ─── Reporting ───────────────────────────────────────────────────────────────
 
 fn outcome_word(outcome: &TargetOutcome) -> String {
@@ -630,6 +777,7 @@ fn print_json(reports: &[TargetReport], targets: &CleanupTargets, dry_run: bool)
         "requested": {
             "cargo_copy": targets.cargo_copy,
             "other_edition": targets.other_edition,
+            "retired_update": targets.retired_update,
         },
         "targets": targets_json,
         // Advisory: success is always true unless a true internal error occurred.
@@ -654,34 +802,65 @@ mod tests {
     // ── Target resolution: no flag => cargo-only default ─────────────────────
     #[test]
     fn no_flag_defaults_to_cargo_only() {
-        let t = resolve_targets(false, false);
+        let t = resolve_targets(false, false, false);
         assert!(t.cargo_copy, "default must clean the cargo copy");
         assert!(!t.other_edition, "default must NOT touch the other edition");
+        assert!(!t.retired_update, "default must NOT touch retired images");
     }
 
     #[test]
     fn explicit_flags_are_respected() {
         assert_eq!(
-            resolve_targets(true, false),
+            resolve_targets(true, false, false),
             CleanupTargets {
                 cargo_copy: true,
-                other_edition: false
+                other_edition: false,
+                retired_update: false,
             }
         );
         assert_eq!(
-            resolve_targets(false, true),
+            resolve_targets(false, true, false),
             CleanupTargets {
                 cargo_copy: false,
-                other_edition: true
+                other_edition: true,
+                retired_update: false,
             }
         );
         assert_eq!(
-            resolve_targets(true, true),
+            resolve_targets(true, true, false),
             CleanupTargets {
                 cargo_copy: true,
-                other_edition: true
+                other_edition: true,
+                retired_update: false,
             }
         );
+        assert_eq!(
+            resolve_targets(false, false, true),
+            CleanupTargets {
+                cargo_copy: false,
+                other_edition: false,
+                retired_update: true,
+            }
+        );
+    }
+
+    #[test]
+    fn retired_update_allowlist_is_exact_and_versioned() {
+        assert!(is_retired_update_image(Path::new(
+            "nd300.update-old-3.6.3.exe"
+        )));
+        assert!(is_retired_update_image(Path::new(
+            "SPEEDQX.UPDATE-OLD-3.6.3-RC.1.EXE"
+        )));
+        assert!(!is_retired_update_image(Path::new("nd300.exe")));
+        assert!(!is_retired_update_image(Path::new("nd300.update-old-.exe")));
+        assert!(!is_retired_update_image(Path::new("nd300-old.exe")));
+        assert!(!is_retired_update_image(Path::new(
+            "cargo.update-old-3.6.3.exe"
+        )));
+        assert!(!is_retired_update_image(Path::new(
+            "nd300.update-old-..\\cargo.exe"
+        )));
     }
 
     // ── Allowlist refusal: ONLY nd300.exe / speedqx.exe are deletable ────────

@@ -1,6 +1,6 @@
 [package]
 name = "nd300"
-version = "3.6.2"
+version = "3.6.3"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -19,7 +19,7 @@ include = [
     "/man/**",
     "/src/**",
     "/wix-corporate/**",
-    "/inno/**",
+    "/inno/*.iss",
 ]
 
 [package.metadata.wix]
@@ -103,8 +103,8 @@ lto = "thin"
 cargo-dist-version = "0.31.0"
 # The release workflow is intentionally customized for tag-triggered artifacts;
 # crates.io publishing remains CI-gated from the default branch.
-# "msi" allows the customized wix/main.wxs (InstallSourceMarker component) to
-# coexist with cargo-dist's generated MSI without dist complaining.
+# "msi" allows the customized wix/main.wxs update, rollback, takeover, marker,
+# and legacy-PATH maintenance to coexist with cargo-dist generation.
 allow-dirty = ["ci", "msi"]
 # CI backends to support
 ci = "github"

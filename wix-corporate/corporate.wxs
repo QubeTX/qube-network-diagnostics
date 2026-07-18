@@ -72,8 +72,18 @@
             />
 
         <MajorUpgrade
-            Schedule='afterInstallInitialize'
+            Schedule='afterInstallExecute'
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <!-- Windows Installer cannot major-upgrade across per-user/per-machine
+             contexts. The preflight takeover helper therefore refuses an
+             opposite-scope registered owner before InstallInitialize instead
+             of authoring a cross-context Upgrade row that cannot be honored. -->
+
+        <!-- The package retires a running canonical binary through MoveFiles before
+             InstallFiles. Keep Restart Manager from terminating the updater before
+             that transactional rename can release the canonical path. -->
+        <Property Id='MSIRESTARTMANAGERCONTROL' Value='Disable'/>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='nd300 (Corporate Edition) Installation'/>
@@ -93,20 +103,6 @@
             <Directory Id='LocalAppDataFolder'>
                 <Directory Id='ProgramsFolder' Name='Programs'>
                     <Directory Id='APPLICATIONFOLDER' Name='nd300'>
-                        <!-- Install-source marker. `nd300 update` reads this from
-                             HKCU and picks the matching installer to download for
-                             in-place upgrades. Value must match the
-                             `msi-corporate` arm in
-                             src/actions/update.rs::read_install_source_marker(). -->
-                        <Component Id='InstallSourceMarker' Guid='8883F05C-A1EA-48D8-B73B-FB4E053B441A'>
-                            <RegistryValue
-                                Root='HKCU'
-                                Key='Software\ND300'
-                                Name='InstallSource'
-                                Type='string'
-                                Value='msi-corporate'
-                                KeyPath='yes'/>
-                        </Component>
                         <Directory Id='Bin' Name='bin'>
                             <Component Id='Path' Guid='135C0F0E-9C35-431D-ACFE-3C83CAAFFE15' KeyPath='yes'>
                                 <!-- User PATH (HKCU\Environment\Path), not system PATH. -->
@@ -120,6 +116,13 @@
                                     System='no'/>
                             </Component>
                             <Component Id='binary0' Guid='*'>
+                                <CopyFile
+                                    Id='RetireRunningNd300'
+                                    Delete='yes'
+                                    SourceDirectory='Bin'
+                                    SourceName='nd300.exe'
+                                    DestinationDirectory='Bin'
+                                    DestinationName='nd300.update-old-$(var.Version).exe'/>
                                 <File
                                     Id='exe0'
                                     Name='nd300.exe'
@@ -128,6 +131,13 @@
                                     KeyPath='yes'/>
                             </Component>
                             <Component Id='binary1' Guid='*'>
+                                <CopyFile
+                                    Id='RetireRunningSpeedqx'
+                                    Delete='yes'
+                                    SourceDirectory='Bin'
+                                    SourceName='speedqx.exe'
+                                    DestinationDirectory='Bin'
+                                    DestinationName='speedqx.update-old-$(var.Version).exe'/>
                                 <File
                                     Id='exe1'
                                     Name='speedqx.exe'
@@ -153,8 +163,6 @@
 
             <ComponentRef Id='binary0'/>
             <ComponentRef Id='binary1'/>
-            <ComponentRef Id='InstallSourceMarker'/>
-
             <Feature
                 Id='Environment'
                 Title='PATH Environment Variable'
@@ -182,6 +190,40 @@
             Execute='deferred'
             Impersonate='yes'
             Return='ignore'/>
+        <Binary Id='InstallTakeoverHelper'
+            SourceFile='$(var.CargoTargetBinDir)\nd300.exe'/>
+        <CustomAction Id='TakeOverRegisteredChannels'
+            BinaryKey='InstallTakeoverHelper'
+            ExeCommand='install-takeover --target msi-corporate --scope all'
+            Execute='immediate'
+            Return='check'/>
+        <CustomAction Id='CleanRetiredUpdate'
+            FileKey='exe0'
+            ExeCommand='migrate-cleanup --quiet --retired-update'
+            Execute='commit'
+            Impersonate='yes'
+            Return='ignore'/>
+        <CustomAction Id='WriteInstallSourceMarker'
+            FileKey='exe0'
+            ExeCommand='install-maintenance --action set-marker --origin msi-corporate'
+            Execute='commit'
+            Impersonate='yes'
+            Return='check'/>
+        <CustomAction Id='ClearInstallSourceMarker'
+            FileKey='exe0'
+            ExeCommand='install-maintenance --action clear-marker --origin msi-corporate'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='ignore'/>
+        <?ifdef ND300_ROLLBACK_TEST?>
+        <!-- Candidate-matrix-only fault injection; see wix/main.wxs. -->
+        <CustomAction Id='ForceRunningImageRollbackTest'
+            Directory='TARGETDIR'
+            ExeCommand='&quot;[SystemFolder]cmd.exe&quot; /d /c exit 86'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='check'/>
+        <?endif?>
         <CustomAction Id='CleanOtherEdition'
             FileKey='exe0'
             ExeCommand='migrate-cleanup --quiet --install-origin msi-corporate --other-edition'
@@ -190,11 +232,30 @@
             Return='ignore'/>
 
         <InstallExecuteSequence>
+            <Custom Action='TakeOverRegisteredChannels' Before='InstallInitialize'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <?ifdef ND300_ROLLBACK_TEST?>
+            <Custom Action='ForceRunningImageRollbackTest' After='InstallFiles'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <?endif?>
             <Custom Action='CleanCargoCopy' Before='InstallFinalize'>
                 <![CDATA[NOT Installed AND CLEANCARGO="1"]]>
             </Custom>
             <Custom Action='CleanOtherEdition' After='CleanCargoCopy'>
                 <![CDATA[NOT Installed AND CLEANOTHEREDITION="1"]]>
+            </Custom>
+            <Custom Action='ClearInstallSourceMarker' Before='RemoveFiles'>
+                <![CDATA[REMOVE="ALL"]]>
+            </Custom>
+            <!-- Commit execution retains renamed images until InstallFinalize
+                 succeeds, while keeping the per-user cleanup unprivileged. -->
+            <Custom Action='CleanRetiredUpdate' Before='WriteInstallSourceMarker'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <Custom Action='WriteInstallSourceMarker' Before='CleanCargoCopy'>
+                <![CDATA[NOT Installed]]>
             </Custom>
         </InstallExecuteSequence>
 

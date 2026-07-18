@@ -404,7 +404,7 @@ fn uninstall_registered_owner(owner: &super::update::RegisteredInstallOwner) -> 
 /// Resolve a trusted Windows system executable from the kernel-provided system
 /// directory instead of PATH or the current working directory.
 #[cfg(windows)]
-fn system_executable_path(relative_path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn system_executable_path(relative_path: &Path) -> Result<PathBuf, String> {
     use std::os::windows::ffi::OsStringExt;
     use winapi::um::sysinfoapi::GetSystemDirectoryW;
 
@@ -439,12 +439,12 @@ fn system_executable_path(relative_path: &Path) -> Result<PathBuf, String> {
 /// A bare `msiexec.exe` passed to ShellExecuteW(`runas`) would permit
 /// executable-search hijacking before the user approves elevation.
 #[cfg(windows)]
-fn system_msiexec_path() -> Result<PathBuf, String> {
+pub(crate) fn system_msiexec_path() -> Result<PathBuf, String> {
     system_executable_path(Path::new("msiexec.exe"))
 }
 
 #[cfg(windows)]
-fn system_powershell_path() -> Result<PathBuf, String> {
+pub(crate) fn system_powershell_path() -> Result<PathBuf, String> {
     system_executable_path(Path::new("WindowsPowerShell\\v1.0\\powershell.exe"))
 }
 
@@ -638,7 +638,7 @@ fn uninstall_path_impl(exe_path: &Path, full_cleanup: bool) -> CleanupReport {
 }
 
 #[cfg(windows)]
-fn spawn_delayed_delete(exe_path: &Path) -> Result<(), String> {
+pub(crate) fn spawn_delayed_delete(exe_path: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
     // `cmd /C <script>` has non-C argv parsing: ordinary Command::args quoting
