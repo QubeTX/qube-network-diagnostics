@@ -943,6 +943,12 @@ try {
         # v2.9 predates clap subcommands but already supports the legacy
         # --update action flag. Current baselines exercise the preferred form;
         # the legacy case must invoke the interface that binary actually ships.
+        $legacyRecovery = 'not-needed'
+        $legacyFingerprint = if ($LegacyGlobalBaseline) {
+            Get-InstallFingerprint $baselineInstallBin
+        } else {
+            $null
+        }
         $updateArgs = if ($LegacyGlobalBaseline) {
             @('--update', '--json')
         } else {
@@ -953,8 +959,68 @@ try {
             -LiteralPath (Join-Path $EvidenceDir "$Origin-public-update-process.json") `
             -Encoding utf8NoBOM
         if ($result.ExitCode -ne 0) {
-            Write-Host "::error::Public nd300 update failed with exit $($result.ExitCode)"
-            throw "Public nd300 update failed with exit $($result.ExitCode)"
+            if (-not $LegacyGlobalBaseline) {
+                Write-Host "::error::Public nd300 update failed with exit $($result.ExitCode)"
+                throw "Public nd300 update failed with exit $($result.ExitCode)"
+            }
+
+            # A released updater cannot be changed retroactively. The v2.9
+            # client can fail while loading a PowerShell security module on a
+            # modern hosted image. Require that failure to be explicit and
+            # byte-for-byte non-mutating, then exercise the documented public
+            # same-channel MSI recovery route.
+            try {
+                $legacyPayload = $result.StdOut | ConvertFrom-Json
+            } catch {
+                throw "Legacy updater failed without valid JSON evidence: $($_.Exception.Message)"
+            }
+            if ($legacyPayload.success -ne $false -or
+                $legacyPayload.update_available -ne $true -or
+                $legacyPayload.current_version -ne $BaselineVersion -or
+                $legacyPayload.latest_version -ne $ExpectedVersion) {
+                throw "Legacy updater failure payload was not an explicit safe failure: $($result.StdOut)"
+            }
+            Assert-InstallState `
+                -Version $BaselineVersion `
+                -ForOrigin $BaselineOrigin `
+                -InstallBin $baselineInstallBin `
+                -ExpectNoMarker
+            Assert-FingerprintEqual `
+                $legacyFingerprint `
+                (Get-InstallFingerprint $baselineInstallBin) `
+                'Legacy public updater failure'
+            Write-Snapshot 'legacy-update-failed-unchanged' $baselineInstallBin
+
+            $recoveryAsset = Download-PublishedAsset `
+                -Version $ExpectedVersion `
+                -ForOrigin $Origin
+            Install-Artifact `
+                -Asset $recoveryAsset `
+                -Label 'Recover legacy Global MSI through the public same-channel installer' `
+                -ArtifactOrigin $Origin `
+                -UseDefaultConsolidation
+            Wait-Until {
+                (Test-Path -LiteralPath $installedNd300 -PathType Leaf) -and
+                (Test-Path -LiteralPath (Join-Path $installBin 'speedqx.exe') -PathType Leaf)
+            } 'public same-channel MSI recovery to materialize both binaries' 90
+            if ((Normalize-PathText $baselineInstallBin) -ne (Normalize-PathText $installBin) -and
+                ((Test-Path -LiteralPath $baselineNd300 -PathType Leaf) -or
+                 (Test-Path -LiteralPath (Join-Path $baselineInstallBin 'speedqx.exe') -PathType Leaf))) {
+                throw "Public same-channel MSI recovery left legacy binaries in $baselineInstallBin"
+            }
+            $legacyRecovery = 'public-same-channel-msi'
+        } elseif ($LegacyGlobalBaseline) {
+            $legacyRecovery = 'legacy-updater-succeeded'
+        }
+        if ($LegacyGlobalBaseline) {
+            [ordered]@{
+                baseline_version = $BaselineVersion
+                expected_version = $ExpectedVersion
+                updater_exit_code = $result.ExitCode
+                recovery = $legacyRecovery
+            } | ConvertTo-Json | Set-Content `
+                -LiteralPath (Join-Path $EvidenceDir "$Origin-legacy-recovery.json") `
+                -Encoding utf8NoBOM
         }
     }
 } finally {

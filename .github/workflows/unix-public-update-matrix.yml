@@ -46,7 +46,7 @@ jobs:
             baseline_kind: current
             invoker: nd300
             strategy: unix_archive
-            hide_cargo: 'false'
+            hide_cargo: 'true'
           - id: macos-intel-managed
             label: macOS Intel managed archive via speedqx
             runner: macos-15-intel
@@ -54,14 +54,22 @@ jobs:
             baseline_kind: current
             invoker: speedqx
             strategy: unix_archive
-            hide_cargo: 'false'
+            hide_cargo: 'true'
+          - id: linux-current-managed
+            label: Linux x86_64 managed archive
+            runner: ubuntu-24.04
+            channel: managed
+            baseline_kind: current
+            invoker: speedqx
+            strategy: unix_archive
+            hide_cargo: 'true'
           - id: linux-legacy-managed
             label: Linux x86_64 legacy shell migration
             runner: ubuntu-24.04
             channel: managed
             baseline_kind: legacy
             invoker: nd300
-            strategy: installer_curl
+            strategy: legacy_safe_fallback
             hide_cargo: 'true'
           - id: linux-cargo
             label: Linux x86_64 Cargo via speedqx

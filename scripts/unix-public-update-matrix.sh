@@ -84,6 +84,40 @@ if expected_strategy != "-":
 PY
 }
 
+assert_legacy_failure_json() {
+    local path=$1
+    python3 - "$path" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert payload.get("success") is False, payload
+assert payload.get("update_available") is True, payload
+attempts = {item.get("strategy") for item in payload.get("attempts", [])}
+assert {"installer_curl", "installer_wget"}.issubset(attempts), payload
+PY
+}
+
+write_pair_fingerprint() {
+    local path=$1
+    python3 - "$bin_dir/nd300" "$bin_dir/speedqx" "$path" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+payload = {}
+for name, raw_path in zip(("nd300", "speedqx"), sys.argv[1:3]):
+    path = pathlib.Path(raw_path)
+    payload[name] = {
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "size": path.stat().st_size,
+    }
+pathlib.Path(sys.argv[3]).write_text(json.dumps(payload, sort_keys=True) + "\n")
+PY
+}
+
 assert_receipt() {
     local wanted=$1
     python3 - "$receipt" "$CARGO_HOME" "$wanted" <<'PY'
@@ -122,15 +156,53 @@ fi
 
 assert_version "$bin_dir/nd300" "$baseline"
 assert_version "$bin_dir/speedqx" "$baseline"
+write_pair_fingerprint "$evidence_dir/baseline-fingerprint.json"
 
 if [[ "$hide_cargo" == true ]]; then
-    # v3.5.x predates receipt-aware Unix routing. Hiding the hosted runner's
-    # unrelated Rust toolchain proves its public shell-installer migration path.
+    # Keep the hosted runner's unrelated Rust toolchain from changing the route
+    # under test. This forces managed installs through the verified archive
+    # transaction and legacy installs through their historical shell fallback.
     export PATH="$bin_dir:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 fi
 
+set +e
 "$bin_dir/$invoker" update --json --no-color | tee "$evidence_dir/update.json"
-assert_json "$evidence_dir/update.json" true "$expected_strategy"
+update_exit=${PIPESTATUS[0]}
+set -e
+
+recovery=not-needed
+if [[ "$expected_strategy" == legacy_safe_fallback ]]; then
+    if [[ $update_exit -eq 0 ]]; then
+        # The historical client may start succeeding if its host shell changes.
+        # Accept that, but still require a valid successful update payload.
+        assert_json "$evidence_dir/update.json" true '-'
+        recovery=legacy-updater-succeeded
+    else
+        # Released clients cannot be changed retroactively. Prove their known
+        # shell incompatibility leaves the validated pair and receipt untouched,
+        # then exercise the documented versionless same-channel recovery path.
+        assert_legacy_failure_json "$evidence_dir/update.json"
+        assert_version "$bin_dir/nd300" "$baseline"
+        assert_version "$bin_dir/speedqx" "$baseline"
+        assert_receipt "$baseline"
+        write_pair_fingerprint "$evidence_dir/after-failed-update-fingerprint.json"
+        cmp -s \
+            "$evidence_dir/baseline-fingerprint.json" \
+            "$evidence_dir/after-failed-update-fingerprint.json" \
+            || fail "legacy updater failure mutated the installed binary pair"
+
+        recovery_installer="$work_root/nd300-installer-latest.sh"
+        curl --proto '=https' --tlsv1.2 -fLsS \
+            'https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.sh' \
+            -o "$recovery_installer"
+        sh "$recovery_installer"
+        recovery=versionless-same-channel-installer
+    fi
+else
+    [[ $update_exit -eq 0 ]] || fail "public updater exited $update_exit"
+    assert_json "$evidence_dir/update.json" true "$expected_strategy"
+fi
+
 assert_version "$bin_dir/nd300" "$expected"
 assert_version "$bin_dir/speedqx" "$expected"
 
@@ -178,6 +250,7 @@ baseline=$baseline
 expected=$expected
 entrypoint=$invoker
 strategy=$expected_strategy
+legacy_recovery=$recovery
 paired_update=pass
 already_latest=pass
 uninstall=pass
