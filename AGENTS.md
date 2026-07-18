@@ -318,13 +318,19 @@ const PS_INSTALLER_ASSET: &str = "nd300-installer.ps1";
 
 ### JSON Output
 
-Supports `--json` mode with structured output matching the uninstall pattern. Existing fields remain compatible. Every result adds `install_channel`, `recovery_url`, and `requires_user_action`; a failed known installer strategy adds `exact_installer_url`. Windows also retains top-level `install_origin` (one of `msi-global`/`msi-corporate`/`exe-global`/`exe-corporate`/`cargo-or-installer`/`unknown`):
+Supports `--json` mode with structured output matching the uninstall pattern.
+Stdout contains exactly one final JSON object; transaction progress and child
+status use stderr. Existing fields remain compatible. Every result adds
+`install_channel`, `recovery_url`, and `requires_user_action`; a failed known
+installer strategy adds `exact_installer_url`. Windows also retains top-level
+`install_origin` (one of `msi-global`/`msi-corporate`/`exe-global`/
+`exe-corporate`/`cargo-or-installer`/`unknown`):
 ```json
 {
   "action": "update",
   "success": true,
   "current_version": "3.5.2",
-  "latest_version": "3.7.1",
+  "latest_version": "3.7.2",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",

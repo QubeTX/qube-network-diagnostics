@@ -32,12 +32,12 @@ on:
         description: 'Published version installed before upgrade'
         required: true
         type: string
-        default: '3.5.2'
+        default: '3.7.1'
       expected_version:
         description: 'Expected public version (public mode only)'
         required: true
         type: string
-        default: '3.6.3'
+        default: '3.7.2'
 
 permissions:
   contents: read

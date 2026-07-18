@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.2] - 2026-07-18
+
+### Fixed
+- **Windows installer updates now keep JSON stdout machine-parseable.** The
+  MSI/EXE download, checksum, and launch messages now use stderr, and output
+  from PowerShell, MSI, and Inno child processes is captured and forwarded to
+  stderr. `nd300 update --json` and `speedqx update --json` therefore emit
+  exactly one JSON object on stdout during a real installer transaction. The
+  permanent Windows public matrix strictly parses current output and requires
+  the same discipline for every transaction whose starting version is v3.7.2
+  or newer. v3.7.1 remains immutable; v3.7.2 is the forward-only
+  output-contract fix.
+
 ## [3.7.1] - 2026-07-18
 
 ### Fixed

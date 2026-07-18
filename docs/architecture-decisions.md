@@ -102,6 +102,9 @@ downloaded code or an installer is trusted by Apple.
 - Unknown, conflicted, package-manager-owned, and local-build locations fail
   closed without mutation. The error names the ownership problem and links to
   `https://reports.qubetx.com/nd300#install` for a fresh same-channel install.
+- In JSON mode, stdout contains exactly one final response object. Download,
+  checksum, installer, and child-process progress uses stderr so automation can
+  parse success and safe-failure outcomes without stripping terminal text.
 - Public entrypoints remain versionless (`releases/latest`, installer aliases,
   and `cargo install`). After resolving latest once, the transaction pins the
   exact stable version, tag, target asset, checksum sidecar, and source digest.
@@ -170,9 +173,9 @@ by a versionless fresh installer. Releases stop when ownership, checksum,
 rollback, Apple trust, asset inventory, or provenance cannot be proved.
 
 The first complete archive-channel qualification is documented in [ND-300
-v3.6.4 release qualification](release-evidence-v3.6.4.md). The v3.7.1 package
-qualification record is finalized after its immutable public release and
-physical-Mac acceptance.
+v3.6.4 release qualification](release-evidence-v3.6.4.md). The native package
+and JSON-output qualification record is finalized after the immutable v3.7.2
+fix-forward release and physical acceptance.
 
 ## ADR-0003: Elevated Unix actions operate in the invoking user's context
 

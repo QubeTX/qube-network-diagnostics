@@ -6,6 +6,16 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 18, 2026 — Automated Windows updates return clean structured results
+
+**Fixed — installer progress no longer mixes into JSON output**
+- Windows updates already downloaded, checked, and ran the matching installer
+  safely, but their progress notes appeared in the same output stream as the
+  final structured result. Programs reading that result could not parse it as
+  one document. Progress now goes to the terminal's separate status stream, and
+  the structured stream contains only the final result. The public Windows
+  update test permanently checks that boundary for this and future releases.
+
 ## July 18, 2026 — The new Mac installer can finish publishing
 
 **Fixed — release automation no longer expects a checked-out folder too early**
