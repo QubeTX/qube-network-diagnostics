@@ -1,0 +1,452 @@
+name: macOS Universal PKG-in-DMG
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/macos-installer.yml"
+      - ".github/workflows/release.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "scripts/build-sign-notarize-macos-dmg.sh"
+      - "scripts/validate-macos-pkg-lifecycle.sh"
+      - "scripts/verify-apple-installer-identity.sh"
+      - "src/actions/**"
+      - "src/cli.rs"
+  workflow_call:
+    inputs:
+      tag:
+        description: "Validated release tag"
+        required: true
+        type: string
+      source_sha:
+        description: "Exact release source SHA"
+        required: true
+        type: string
+      version:
+        description: "Stable release version without v prefix"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag for a tag-bound repair build (for example v3.7.0)"
+        required: false
+        default: ""
+        type: string
+      preflight_only:
+        description: "Only prove the Installer identity on both native runners"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  credential-preflight:
+    name: Installer identity preflight (${{ matrix.name }})
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-15
+          - name: Intel
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - name: Import Installer identity and sign disposable PKG
+        env:
+          APPLE_INSTALLER_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_P12_BASE64 }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ vars.APPLE_INSTALLER_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        shell: bash
+        run: scripts/verify-apple-installer-identity.sh
+
+  build:
+    name: Build, sign, and notarize universal PKG-in-DMG
+    needs: credential-preflight
+    if: ${{ github.event_name == 'workflow_call' || (github.event_name == 'workflow_dispatch' && inputs.preflight_only == false) }}
+    runs-on: macos-15-intel
+    permissions:
+      contents: read
+      attestations: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+    steps:
+      - name: Resolve and verify immutable release identity
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER_TAG: ${{ inputs.tag }}
+          CALLER_SHA: ${{ inputs.source_sha }}
+          CALLER_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            tag='${{ inputs.tag }}'
+            source_sha=$GITHUB_SHA
+            if [[ $GITHUB_REF != "refs/tags/$tag" ]]; then
+              echo "manual package builds must be dispatched with --ref matching the requested tag" >&2
+              exit 1
+            fi
+            version=${tag#v}
+          else
+            tag=$CALLER_TAG
+            source_sha=$CALLER_SHA
+            version=$CALLER_VERSION
+            [[ $GITHUB_REF == "refs/tags/$tag" && $GITHUB_SHA == "$source_sha" ]] || {
+              echo "reusable package build lost the caller's exact tag/SHA context" >&2
+              exit 1
+            }
+          fi
+          [[ $tag =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 64
+          [[ $version == "${tag#v}" && $source_sha =~ ^[0-9a-f]{40}$ ]] || exit 64
+          resolved=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/$tag" | awk 'NR == 1 {print $1}')
+          [[ $resolved == "$source_sha" ]] || {
+            echo "tag $tag resolves to $resolved, not trusted source $source_sha" >&2
+            exit 1
+          }
+          release_target=$(gh release view "$tag" --json targetCommitish --jq '.targetCommitish')
+          [[ $release_target == "$source_sha" ]] || {
+            echo "GitHub Release target does not match the exact tag source" >&2
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify exact signed architecture archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir upstream
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            archive="nd300-${target}.tar.xz"
+            gh release download "$TAG" --dir upstream --pattern "$archive" --pattern "$archive.sha256"
+            (cd upstream && shasum -a 256 -c "$archive.sha256")
+            gh attestation verify "upstream/$archive" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-repo "$GITHUB_REPOSITORY" \
+              --source-digest "$SOURCE_SHA" --format json >/dev/null
+            gh attestation verify "upstream/$archive.sha256" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-repo "$GITHUB_REPOSITORY" \
+              --source-digest "$SOURCE_SHA" --format json >/dev/null
+          done
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Build signed and notarized universal DMG
+        timeout-minutes: 45
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_P12_BASE64 }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ vars.APPLE_INSTALLER_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          scripts/build-sign-notarize-macos-dmg.sh \
+            '${{ steps.release.outputs.version }}' \
+            upstream/nd300-aarch64-apple-darwin.tar.xz \
+            upstream/nd300-x86_64-apple-darwin.tar.xz \
+            output
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: nd300-universal-macos-dmg
+          if-no-files-found: error
+          path: |
+            output/nd300-universal-apple-darwin.dmg
+            output/nd300-universal-apple-darwin.dmg.sha256
+            output/nd300-private-downgrade-test-fixture.pkg
+
+  validate:
+    name: Validate package lifecycle (${{ matrix.name }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - name: Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: nd300-universal-macos-dmg
+          path: artifact
+      - name: Download managed-archive takeover fixture
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          mkdir upstream
+          archive="nd300-${TARGET}.tar.xz"
+          gh release download "$TAG" --dir upstream --pattern "$archive" --pattern "$archive.sha256"
+          (cd upstream && shasum -a 256 -c "$archive.sha256")
+
+      - name: Mount, install, update-check, uninstall, and reinstall
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ vars.APPLE_INSTALLER_SIGNING_IDENTITY }}
+        shell: bash
+        run: |
+          scripts/validate-macos-pkg-lifecycle.sh \
+            "$PWD/artifact/nd300-universal-apple-darwin.dmg" \
+            "$PWD/upstream/nd300-${TARGET}.tar.xz" \
+            "$VERSION" \
+            "$PWD/artifact/nd300-private-downgrade-test-fixture.pkg"
+
+  candidate-thin:
+    name: Candidate native binaries (${{ matrix.name }})
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - name: Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build native release pair
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          [[ $host == "$TARGET" ]]
+          cargo build --release --locked --target "$TARGET"
+          root="$RUNNER_TEMP/nd300-${TARGET}"
+          mkdir "$root"
+          cp "target/${TARGET}/release/nd300" "target/${TARGET}/release/speedqx" "$root/"
+          chmod 755 "$root/nd300" "$root/speedqx"
+          tar -cJf "$RUNNER_TEMP/nd300-${TARGET}.tar.xz" -C "$RUNNER_TEMP" "nd300-${TARGET}"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: candidate-thin-${{ matrix.target }}
+          if-no-files-found: error
+          path: ${{ runner.temp }}/nd300-${{ matrix.target }}.tar.xz
+
+  candidate-package:
+    name: Candidate signed and notarized PKG-in-DMG
+    needs: [credential-preflight, candidate-thin]
+    if: ${{ github.event_name == 'pull_request' && needs.credential-preflight.result == 'success' && needs.candidate-thin.result == 'success' }}
+    runs-on: macos-15-intel
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: candidate-thin-*
+          path: upstream
+          merge-multiple: true
+      - name: Resolve candidate version
+        id: version
+        shell: bash
+        run: echo "version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "nd300") | .version')" >> "$GITHUB_OUTPUT"
+      - name: Build candidate package
+        timeout-minutes: 45
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_P12_BASE64 }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ vars.APPLE_INSTALLER_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          scripts/build-sign-notarize-macos-dmg.sh \
+            '${{ steps.version.outputs.version }}' \
+            upstream/nd300-aarch64-apple-darwin.tar.xz \
+            upstream/nd300-x86_64-apple-darwin.tar.xz \
+            output
+      - uses: actions/upload-artifact@v6
+        with:
+          name: candidate-macos-installer
+          if-no-files-found: error
+          path: |
+            output/nd300-universal-apple-darwin.dmg
+            output/nd300-universal-apple-darwin.dmg.sha256
+            output/nd300-private-downgrade-test-fixture.pkg
+
+  candidate-validate:
+    name: Candidate lifecycle (${{ matrix.name }})
+    needs: [candidate-thin, candidate-package]
+    if: ${{ github.event_name == 'pull_request' && needs.candidate-package.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - name: Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: candidate-macos-installer
+          path: artifact
+      - uses: actions/download-artifact@v7
+        with:
+          name: candidate-thin-${{ matrix.target }}
+          path: upstream
+      - name: Validate candidate lifecycle
+        env:
+          VERSION: ${{ needs.candidate-package.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ vars.APPLE_INSTALLER_SIGNING_IDENTITY }}
+        shell: bash
+        run: |
+          scripts/validate-macos-pkg-lifecycle.sh \
+            "$PWD/artifact/nd300-universal-apple-darwin.dmg" \
+            "$PWD/upstream/nd300-${TARGET}.tar.xz" \
+            "$VERSION" \
+            "$PWD/artifact/nd300-private-downgrade-test-fixture.pkg"
+
+  publish:
+    name: Attest, publish, and verify the exact 30-asset release
+    needs: [build, validate]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: nd300-universal-macos-dmg
+          path: artifact
+      - name: Refuse overwrite of immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          for asset in nd300-universal-apple-darwin.dmg nd300-universal-apple-darwin.dmg.sha256; do
+            if grep -Fqx "$asset" <<< "$existing"; then
+              echo "refusing to overwrite already-published immutable asset: $asset" >&2
+              exit 1
+            fi
+          done
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            artifact/nd300-universal-apple-darwin.dmg
+            artifact/nd300-universal-apple-darwin.dmg.sha256
+      - name: Upload versionless DMG assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        shell: bash
+        run: |
+          gh release upload "$TAG" \
+            artifact/nd300-universal-apple-darwin.dmg \
+            artifact/nd300-universal-apple-darwin.dmg.sha256
+      - name: Verify exact inventory, checksums, and source attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            dist-manifest.json nd-300-installer.ps1 nd-300-installer.sh
+            nd300-aarch64-apple-darwin.tar.xz nd300-aarch64-apple-darwin.tar.xz.sha256
+            nd300-aarch64-unknown-linux-gnu.tar.xz nd300-aarch64-unknown-linux-gnu.tar.xz.sha256
+            nd300-installer.ps1 nd300-installer.sh
+            nd300-universal-apple-darwin.dmg nd300-universal-apple-darwin.dmg.sha256
+            nd300-x86_64-apple-darwin.tar.xz nd300-x86_64-apple-darwin.tar.xz.sha256
+            nd300-x86_64-pc-windows-msvc-corporate-setup.exe nd300-x86_64-pc-windows-msvc-corporate-setup.exe.sha256
+            nd300-x86_64-pc-windows-msvc-corporate.msi nd300-x86_64-pc-windows-msvc-corporate.msi.sha256
+            nd300-x86_64-pc-windows-msvc-setup.exe nd300-x86_64-pc-windows-msvc-setup.exe.sha256
+            nd300-x86_64-pc-windows-msvc.msi nd300-x86_64-pc-windows-msvc.msi.sha256
+            nd300-x86_64-pc-windows-msvc.zip nd300-x86_64-pc-windows-msvc.zip.sha256
+            nd300-x86_64-unknown-linux-gnu.tar.xz nd300-x86_64-unknown-linux-gnu.tar.xz.sha256
+            nd300-x86_64-unknown-linux-musl.tar.xz nd300-x86_64-unknown-linux-musl.tar.xz.sha256
+            sha256.sum source.tar.gz source.tar.gz.sha256
+          )
+          printf '%s\n' "${expected[@]}" | sort > "$RUNNER_TEMP/expected.txt"
+          gh release view "$TAG" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          test "$(wc -l < "$RUNNER_TEMP/actual.txt" | tr -d ' ')" = 30
+
+          mkdir public
+          gh release download "$TAG" --dir public
+          pwsh -File scripts/verify-release-checksums.ps1 -Directory public
+          (cd public && sha256sum -c nd300-universal-apple-darwin.dmg.sha256)
+          for artifact in public/*; do
+            for attempt in 1 2 3 4 5 6; do
+              if gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" \
+                --signer-repo "$GITHUB_REPOSITORY" --source-digest "$SOURCE_SHA" \
+                --format json >/dev/null; then
+                break
+              fi
+              [[ $attempt == 6 ]] && exit 1
+              sleep 10
+            done
+          done
+          echo "Verified all 30 assets and exact-source attestations."

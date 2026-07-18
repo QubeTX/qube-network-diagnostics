@@ -210,14 +210,16 @@ pub struct MigrateArgs {
 
 /// Valid installer origins accepted by the hidden migration helper.
 ///
-/// Keep these values in lockstep with the four Windows installers and
-/// `actions::update::InstallOrigin::json_id`.
+/// Keep the Windows values in lockstep with the four Windows installers and
+/// `actions::update::InstallOrigin::json_id`; `macos-pkg` is reserved for the
+/// signed Apple Installer postinstall migration hook.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MigrateInstallOrigin {
     MsiGlobal,
     MsiCorporate,
     ExeGlobal,
     ExeCorporate,
+    MacosPkg,
 }
 
 /// Arguments for the hidden pre-install channel-takeover helper.

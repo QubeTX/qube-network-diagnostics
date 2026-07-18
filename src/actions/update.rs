@@ -46,6 +46,7 @@ const EXE_GLOBAL_ASSET: &str = "nd300-x86_64-pc-windows-msvc-setup.exe";
 const EXE_CORPORATE_ASSET: &str = "nd300-x86_64-pc-windows-msvc-corporate-setup.exe";
 
 const MANUAL_INSTALL_URL: &str = "https://reports.qubetx.com/nd300#install";
+const RELEASES_PAGE: &str = "https://github.com/QubeTX/qube-network-diagnostics/releases/latest";
 
 // ─── Strategy types ──────────────────────────────────────────────────────────
 
@@ -73,6 +74,8 @@ enum UpdateStrategy {
     Cargo,
     #[cfg(unix)]
     UnixArchive,
+    #[cfg(target_os = "macos")]
+    MacDmgPackage,
     InstallerPowerShell,
     InstallerPwsh,
     /// Re-runs the Global perMachine MSI (UAC required).
@@ -91,6 +94,8 @@ impl UpdateStrategy {
             UpdateStrategy::Cargo => "cargo install",
             #[cfg(unix)]
             UpdateStrategy::UnixArchive => "verified release archive",
+            #[cfg(target_os = "macos")]
+            UpdateStrategy::MacDmgPackage => "macOS DMG / PKG installer",
             UpdateStrategy::InstallerPowerShell => "PowerShell installer",
             UpdateStrategy::InstallerPwsh => "pwsh installer",
             UpdateStrategy::MsiGlobal => "Global MSI installer",
@@ -105,6 +110,8 @@ impl UpdateStrategy {
             UpdateStrategy::Cargo => "cargo",
             #[cfg(unix)]
             UpdateStrategy::UnixArchive => "unix_archive",
+            #[cfg(target_os = "macos")]
+            UpdateStrategy::MacDmgPackage => "mac_dmg_pkg",
             UpdateStrategy::InstallerPowerShell => "installer_powershell",
             UpdateStrategy::InstallerPwsh => "installer_pwsh",
             UpdateStrategy::MsiGlobal => "msi_global",
@@ -515,13 +522,31 @@ pub async fn run(config: &Config) -> i32 {
                 );
             }
             println!();
-            println!("  Reinstall through the same method: {MANUAL_INSTALL_URL}");
+            println!("  Your existing installation was left in place.");
+            if let Some((strategy, asset)) = failure.attempts.first().and_then(|attempt| {
+                recovery_asset_for_strategy(attempt.strategy).map(|asset| (attempt.strategy, asset))
+            }) {
+                println!(
+                    "  Matching v{} {}: {RELEASE_DOWNLOAD_BASE}/v{}/{}",
+                    latest,
+                    strategy.label(),
+                    latest,
+                    asset
+                );
+            }
+            println!("  Fresh installer: {MANUAL_INSTALL_URL}");
+            println!("  Official latest release: {RELEASES_PAGE}");
             2
         }
     }
 }
 
 async fn run_json(_config: &Config) -> i32 {
+    // Preserve the pre-transaction owner. On Unix the current process keeps
+    // running after its installed path is replaced, so re-detecting against
+    // this binary's old compile-time VERSION would mislabel a successful PKG
+    // update whose durable receipt already records the new version.
+    let context = UpdateJsonContext::capture();
     let latest = match fetch_latest_version().await {
         Ok(v) => v,
         Err(e) => {
@@ -531,7 +556,7 @@ async fn run_json(_config: &Config) -> i32 {
                 "message": format!("Failed to check for updates: {}", e),
                 "current_version": VERSION,
             });
-            inject_install_origin(&mut output);
+            context.inject(&mut output, true);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
@@ -552,7 +577,7 @@ async fn run_json(_config: &Config) -> i32 {
             "latest_version": latest,
             "update_available": false,
         });
-        inject_install_origin(&mut output);
+        context.inject(&mut output, false);
         println!(
             "{}",
             serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
@@ -573,7 +598,7 @@ async fn run_json(_config: &Config) -> i32 {
                 "attempts": [],
                 "manual_install_url": MANUAL_INSTALL_URL,
             });
-            inject_install_origin(&mut output);
+            context.inject(&mut output, true);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
@@ -595,7 +620,7 @@ async fn run_json(_config: &Config) -> i32 {
                 "attempts": [],
                 "manual_install_url": MANUAL_INSTALL_URL,
             });
-            inject_install_origin(&mut output);
+            context.inject(&mut output, true);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
@@ -619,7 +644,7 @@ async fn run_json(_config: &Config) -> i32 {
                 "method": used.json_method(),
                 "strategy": used.json_id(),
             });
-            inject_install_origin(&mut output);
+            context.inject(&mut output, false);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
@@ -650,8 +675,24 @@ async fn run_json(_config: &Config) -> i32 {
                 "update_available": true,
                 "attempts": attempts,
                 "manual_install_url": MANUAL_INSTALL_URL,
+                "recovery_url": RELEASES_PAGE,
+                "requires_user_action": true,
             });
-            inject_install_origin(&mut output);
+            if let Some(asset) = failure
+                .attempts
+                .first()
+                .and_then(|attempt| recovery_asset_for_strategy(attempt.strategy))
+            {
+                if let Some(object) = output.as_object_mut() {
+                    object.insert(
+                        "exact_installer_url".to_string(),
+                        serde_json::Value::String(format!(
+                            "{RELEASE_DOWNLOAD_BASE}/v{latest}/{asset}"
+                        )),
+                    );
+                }
+            }
+            context.inject(&mut output, true);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
@@ -659,25 +700,6 @@ async fn run_json(_config: &Config) -> i32 {
             2
         }
     }
-}
-
-/// Add a top-level `install_origin` field to the JSON payload on Windows.
-/// On other platforms this is a no-op — the field is Windows-only because
-/// install-origin only meaningfully varies on Windows (where users have a
-/// choice of MSI vs EXE installer, perMachine vs perUser scope).
-#[cfg(windows)]
-fn inject_install_origin(payload: &mut serde_json::Value) {
-    if let Some(obj) = payload.as_object_mut() {
-        obj.insert(
-            "install_origin".to_string(),
-            serde_json::Value::String(detect_install_origin().json_id().to_string()),
-        );
-    }
-}
-
-#[cfg(not(windows))]
-fn inject_install_origin(_payload: &mut serde_json::Value) {
-    // No-op on non-Windows; the field would always be the same value.
 }
 
 // ─── Version probing ─────────────────────────────────────────────────────────
@@ -895,6 +917,16 @@ async fn build_strategy_list() -> Result<Vec<UpdateStrategy>, String> {
                 }
             }
             UnixOriginKind::ManagedArchive => Ok(vec![UpdateStrategy::UnixArchive]),
+            UnixOriginKind::MacPackage => {
+                #[cfg(target_os = "macos")]
+                {
+                    Ok(vec![UpdateStrategy::MacDmgPackage])
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Err("Apple Installer ownership is unavailable on this platform".to_string())
+                }
+            }
             UnixOriginKind::PackageManager => Err(format!(
                 "the running executable at {} is package-manager-owned; update it through that package manager",
                 origin.executable.display()
@@ -956,6 +988,8 @@ async fn try_strategy(strategy: UpdateStrategy, latest: &str) -> Result<(), Stra
         UpdateStrategy::Cargo => try_cargo_install(latest).await,
         #[cfg(unix)]
         UpdateStrategy::UnixArchive => try_unix_archive(latest).await,
+        #[cfg(target_os = "macos")]
+        UpdateStrategy::MacDmgPackage => try_macos_package(latest).await,
         UpdateStrategy::InstallerPowerShell => try_installer_powershell("powershell", latest),
         UpdateStrategy::InstallerPwsh => try_installer_powershell("pwsh", latest),
         UpdateStrategy::MsiGlobal => {
@@ -1026,6 +1060,103 @@ async fn try_unix_archive(latest: &str) -> Result<(), StrategyError> {
     let user = crate::platform::invoking_user::InvokingUser::detect()
         .map_err(|error| StrategyError::Preflight(format!("invoking user: {error}")))?;
     super::unix_install::update_from_archive(latest, &user)
+        .await
+        .map_err(StrategyError::Fatal)
+}
+
+struct UpdateJsonContext {
+    install_channel: String,
+    #[cfg(windows)]
+    install_origin: String,
+}
+
+impl UpdateJsonContext {
+    fn capture() -> Self {
+        #[cfg(windows)]
+        {
+            let origin = detect_install_origin().json_id().to_string();
+            Self {
+                install_channel: origin.clone(),
+                install_origin: origin,
+            }
+        }
+        #[cfg(unix)]
+        {
+            Self {
+                install_channel: install_channel_json_id(),
+            }
+        }
+    }
+
+    fn inject(&self, payload: &mut serde_json::Value, requires_user_action: bool) {
+        if let Some(object) = payload.as_object_mut() {
+            #[cfg(windows)]
+            object.insert(
+                "install_origin".to_string(),
+                serde_json::Value::String(self.install_origin.clone()),
+            );
+            object.insert(
+                "install_channel".to_string(),
+                serde_json::Value::String(self.install_channel.clone()),
+            );
+            object.insert(
+                "recovery_url".to_string(),
+                serde_json::Value::String(RELEASES_PAGE.to_string()),
+            );
+            object.insert(
+                "requires_user_action".to_string(),
+                serde_json::Value::Bool(requires_user_action),
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+fn install_channel_json_id() -> String {
+    use super::unix_install::UnixOriginKind;
+    let kind = crate::platform::invoking_user::InvokingUser::detect()
+        .ok()
+        .and_then(|user| {
+            super::unix_install::detect_origin(&user)
+                .ok()
+                .map(|origin| super::unix_install::effective_update_kind_for(&origin, &user))
+        });
+    match kind {
+        Some(UnixOriginKind::Cargo) => "cargo",
+        Some(UnixOriginKind::ManagedArchive) => "managed-archive",
+        Some(UnixOriginKind::MacPackage) => "macos-dmg-pkg",
+        Some(UnixOriginKind::PackageManager) => "package-manager",
+        Some(UnixOriginKind::LocalBuild) => "local-build",
+        Some(UnixOriginKind::Symlink | UnixOriginKind::Unknown) | None => "unknown",
+    }
+    .to_string()
+}
+
+fn recovery_asset_for_strategy(strategy: UpdateStrategy) -> Option<&'static str> {
+    match strategy {
+        #[cfg(target_os = "macos")]
+        UpdateStrategy::MacDmgPackage => Some("nd300-universal-apple-darwin.dmg"),
+        UpdateStrategy::MsiGlobal => Some(MSI_GLOBAL_ASSET),
+        UpdateStrategy::MsiCorporate => Some(MSI_CORPORATE_ASSET),
+        UpdateStrategy::ExeGlobal => Some(EXE_GLOBAL_ASSET),
+        UpdateStrategy::ExeCorporate => Some(EXE_CORPORATE_ASSET),
+        #[cfg(windows)]
+        UpdateStrategy::InstallerPowerShell | UpdateStrategy::InstallerPwsh => {
+            Some(PS_INSTALLER_ASSET)
+        }
+        UpdateStrategy::Cargo => None,
+        #[cfg(unix)]
+        UpdateStrategy::UnixArchive => None,
+        #[cfg(not(windows))]
+        UpdateStrategy::InstallerPowerShell | UpdateStrategy::InstallerPwsh => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn try_macos_package(latest: &str) -> Result<(), StrategyError> {
+    let user = crate::platform::invoking_user::InvokingUser::detect()
+        .map_err(|error| StrategyError::Preflight(format!("invoking user: {error}")))?;
+    super::unix_install::update_from_macos_package(latest, &user)
         .await
         .map_err(StrategyError::Fatal)
 }
@@ -2436,6 +2567,42 @@ mod tests {
         assert_eq!(UpdateStrategy::MsiCorporate.json_id(), "msi_corporate");
         assert_eq!(UpdateStrategy::ExeGlobal.json_id(), "exe_global");
         assert_eq!(UpdateStrategy::ExeCorporate.json_id(), "exe_corporate");
+        #[cfg(target_os = "macos")]
+        assert_eq!(UpdateStrategy::MacDmgPackage.json_id(), "mac_dmg_pkg");
+    }
+
+    #[test]
+    fn update_json_context_uses_the_pretransaction_channel_snapshot() {
+        let context = UpdateJsonContext {
+            install_channel: "macos-dmg-pkg".to_string(),
+            #[cfg(windows)]
+            install_origin: "msi-global".to_string(),
+        };
+        let mut payload = serde_json::json!({"success": true});
+        context.inject(&mut payload, false);
+        assert_eq!(
+            payload
+                .get("install_channel")
+                .and_then(|value| value.as_str()),
+            Some("macos-dmg-pkg")
+        );
+        assert_eq!(
+            payload
+                .get("requires_user_action")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            payload.get("recovery_url").and_then(|value| value.as_str()),
+            Some(RELEASES_PAGE)
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            payload
+                .get("install_origin")
+                .and_then(|value| value.as_str()),
+            Some("msi-global")
+        );
     }
 
     #[test]
@@ -2453,7 +2620,7 @@ mod tests {
             UpdateStrategy::InstallerPowerShell.label(),
             UpdateStrategy::InstallerPwsh.label(),
         ];
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         let labels = [
             UpdateStrategy::MsiGlobal.label(),
             UpdateStrategy::MsiCorporate.label(),
@@ -2463,6 +2630,18 @@ mod tests {
             UpdateStrategy::InstallerPowerShell.label(),
             UpdateStrategy::InstallerPwsh.label(),
             UpdateStrategy::UnixArchive.label(),
+        ];
+        #[cfg(target_os = "macos")]
+        let labels = [
+            UpdateStrategy::MsiGlobal.label(),
+            UpdateStrategy::MsiCorporate.label(),
+            UpdateStrategy::ExeGlobal.label(),
+            UpdateStrategy::ExeCorporate.label(),
+            UpdateStrategy::Cargo.label(),
+            UpdateStrategy::InstallerPowerShell.label(),
+            UpdateStrategy::InstallerPwsh.label(),
+            UpdateStrategy::UnixArchive.label(),
+            UpdateStrategy::MacDmgPackage.label(),
         ];
         let unique: std::collections::HashSet<_> = labels.iter().collect();
         assert_eq!(

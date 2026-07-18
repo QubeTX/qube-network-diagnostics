@@ -161,7 +161,7 @@ pub async fn run(config: &Config, args: MigrateArgs) -> i32 {
     let targets = resolve_targets(args.cargo_copy, args.other_edition, args.retired_update);
     let json = args.json || matches!(config.format, crate::config::OutputFormat::Json);
 
-    let reports = collect_and_execute(&args, targets);
+    let reports = collect_and_execute(&args, targets).await;
 
     let internal_error = reports
         .iter()
@@ -190,7 +190,7 @@ const INTERNAL_ERROR_MARKER: &str = "__internal_error__";
 // ─── Detection + execution ───────────────────────────────────────────────────
 
 #[cfg(windows)]
-fn collect_and_execute(args: &MigrateArgs, targets: CleanupTargets) -> Vec<TargetReport> {
+async fn collect_and_execute(args: &MigrateArgs, targets: CleanupTargets) -> Vec<TargetReport> {
     let mut reports = Vec::new();
 
     let Some(running) = current_exe_real_path() else {
@@ -221,11 +221,10 @@ fn collect_and_execute(args: &MigrateArgs, targets: CleanupTargets) -> Vec<Targe
     reports
 }
 
-#[cfg(not(windows))]
-fn collect_and_execute(_args: &MigrateArgs, targets: CleanupTargets) -> Vec<TargetReport> {
-    // Mac/Linux are already safe — the shell installer overwrites the same
-    // ~/.cargo/bin, so there is no second copy to consolidate. Report a clean
-    // no-op for whichever targets were requested.
+#[cfg(target_os = "linux")]
+async fn collect_and_execute(_args: &MigrateArgs, targets: CleanupTargets) -> Vec<TargetReport> {
+    // Linux's supported standalone and Cargo channels share the invoking
+    // user's Cargo bin directory, so there is no second official location.
     let mut reports = Vec::new();
     if targets.cargo_copy {
         reports.push(TargetReport {
@@ -258,6 +257,169 @@ fn collect_and_execute(_args: &MigrateArgs, targets: CleanupTargets) -> Vec<Targ
         });
     }
     reports
+}
+
+#[cfg(target_os = "macos")]
+async fn collect_and_execute(args: &MigrateArgs, targets: CleanupTargets) -> Vec<TargetReport> {
+    let mut reports = Vec::new();
+    if targets.cargo_copy {
+        reports.push(execute_macos_cargo_copy(args).await);
+    }
+    if targets.other_edition {
+        reports.push(TargetReport {
+            id: "other_edition",
+            label: "other edition".to_string(),
+            path: None,
+            outcome: TargetOutcome::Skipped(
+                "not applicable on macOS (no Global/Corporate editions)".to_string(),
+            ),
+        });
+    }
+    if targets.retired_update {
+        reports.push(TargetReport {
+            id: "retired_update",
+            label: "retired Windows update images".to_string(),
+            path: None,
+            outcome: TargetOutcome::Skipped(
+                "not applicable on macOS (Unix replaces running binaries atomically)".to_string(),
+            ),
+        });
+    }
+    reports
+}
+
+#[cfg(target_os = "macos")]
+async fn execute_macos_cargo_copy(args: &MigrateArgs) -> TargetReport {
+    use super::unix_install::{
+        cargo_dist_receipt_valid, cargo_package_registered, cargo_uninstall,
+        uninstall_managed_archive, UnixInstallOrigin, UnixOriginKind,
+    };
+    use crate::platform::invoking_user::InvokingUser;
+
+    let id = "cargo_copy";
+    let label = "older Cargo/archive pair".to_string();
+    if args.install_origin != Some(MigrateInstallOrigin::MacosPkg) {
+        return TargetReport {
+            id,
+            label,
+            path: None,
+            outcome: TargetOutcome::Skipped(
+                "macOS cross-location cleanup is installer-only and requires --install-origin macos-pkg"
+                    .to_string(),
+            ),
+        };
+    }
+    match std::env::current_exe().and_then(|path| path.canonicalize()) {
+        Ok(path)
+            if path == Path::new("/usr/local/bin/nd300")
+                || path == Path::new("/usr/local/bin/speedqx") =>
+        {
+            // Exact package payload location; continue with ownership checks.
+        }
+        Ok(path) => {
+            return TargetReport {
+                id,
+                label,
+                path: Some(path),
+                outcome: TargetOutcome::Skipped(
+                    "installer-declared macOS package origin does not match /usr/local/bin"
+                        .to_string(),
+                ),
+            };
+        }
+        Err(error) => {
+            return TargetReport {
+                id,
+                label,
+                path: None,
+                outcome: TargetOutcome::Failed(format!(
+                    "{INTERNAL_ERROR_MARKER}: resolve installed package path: {error}"
+                )),
+            };
+        }
+    };
+    let user = match InvokingUser::detect() {
+        Ok(user) => user,
+        Err(error) => {
+            return TargetReport {
+                id,
+                label,
+                path: None,
+                outcome: TargetOutcome::Failed(format!("identify console user: {error}")),
+            };
+        }
+    };
+    let candidate = user.cargo_home().join("bin").join("nd300");
+    if !candidate.exists() {
+        return TargetReport {
+            id,
+            label,
+            path: None,
+            outcome: TargetOutcome::Skipped("no older Cargo/archive pair is present".to_string()),
+        };
+    }
+
+    let cargo_owned = cargo_package_registered(&user.cargo_home());
+    let archive_owned = cargo_dist_receipt_valid(&user);
+    let result = match (cargo_owned, archive_owned) {
+        (true, false) => cargo_uninstall(&user).await,
+        (false, true) => Ok(uninstall_managed_archive(
+            &user,
+            &UnixInstallOrigin {
+                kind: UnixOriginKind::ManagedArchive,
+                executable: candidate.clone(),
+                invocation_symlink: None,
+            },
+        )),
+        (true, true) => {
+            return TargetReport {
+                id,
+                label,
+                path: Some(candidate),
+                outcome: TargetOutcome::Skipped(
+                    "candidate has conflicting Cargo and cargo-dist ownership evidence".to_string(),
+                ),
+            };
+        }
+        (false, false) => {
+            return TargetReport {
+                id,
+                label,
+                path: Some(candidate),
+                outcome: TargetOutcome::Skipped(
+                    "candidate pair has no exact Cargo registration or validated cargo-dist receipt"
+                        .to_string(),
+                ),
+            };
+        }
+    };
+
+    match result {
+        Ok(report)
+            if report.binary_removed
+                && report.sibling_removed
+                && !report.sibling_removal_failed =>
+        {
+            TargetReport {
+                id,
+                label,
+                path: Some(candidate),
+                outcome: TargetOutcome::Removed,
+            }
+        }
+        Ok(report) => TargetReport {
+            id,
+            label,
+            path: Some(candidate),
+            outcome: TargetOutcome::Failed(report.notes.join("; ")),
+        },
+        Err(error) => TargetReport {
+            id,
+            label,
+            path: Some(candidate),
+            outcome: TargetOutcome::Failed(error),
+        },
+    }
 }
 
 // ─── Cargo-copy target ───────────────────────────────────────────────────────
@@ -346,6 +508,7 @@ fn migrate_install_origin(origin: MigrateInstallOrigin) -> InstallOrigin {
         MigrateInstallOrigin::MsiCorporate => InstallOrigin::MsiCorporate,
         MigrateInstallOrigin::ExeGlobal => InstallOrigin::ExeGlobal,
         MigrateInstallOrigin::ExeCorporate => InstallOrigin::ExeCorporate,
+        MigrateInstallOrigin::MacosPkg => InstallOrigin::Unknown,
     }
 }
 

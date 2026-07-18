@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-07-18
+
+### Added
+- **macOS now has a native universal PKG-in-DMG installer channel.** The
+  versionless DMG contains a universal `nd300`/`speedqx` pair in a Developer ID
+  Installer-signed PKG. Both the nested PKG and Developer ID Application-signed
+  outer DMG are notarized, stapled, Gatekeeper-assessed, checksummed, and built
+  from the exact signed Intel/arm64 release archives. The tag-bound reusable
+  workflow publishes two exact-SHA-attested assets only after native lifecycle
+  validation on both architectures, bringing the release inventory to 30.
+- **Package installs update and uninstall through proven Apple ownership.** A
+  package channel requires the exact `/usr/local/bin` pair, package identifier,
+  version, payload inventory, root-owned non-writable files, version output, and
+  hash-bound install metadata to agree. Update downloads the exact resolved-tag
+  DMG and sidecar, verifies both signing identities and notarization tickets,
+  then opens Apple Installer. Cancellation, stale/conflicting evidence, or
+  post-install mismatch keeps the previous installation and returns matching
+  tagged and versionless recovery links. Package uninstall uses the same proof
+  before removing the pair and forgetting the receipt.
+- **Fresh macOS package intent converges supported older installs.** Package
+  postinstall removes only a receipt/registry-proven standard Cargo-home archive
+  pair as the console user and never inherits the installer's root Cargo home.
+  Native candidate tests cover archive-to-PKG takeover, same-version repair, an
+  explicit downgrade from a deliberately higher package receipt, diagnostics,
+  update-channel selection, uninstall, and reinstall on Intel and Apple Silicon.
+
+### Changed
+- **Update JSON has additive channel and recovery context.** Existing fields and
+  Windows `install_origin` remain compatible. All update outcomes now include
+  `install_channel`, `recovery_url`, and `requires_user_action`; failures in a
+  known installer channel also include its exact tagged `exact_installer_url`.
+
 ### Documentation
 - **The v3.6.4 release decision now has a durable qualification record.** The
   record links the reviewed and merged SHAs to exact-head/main CI, crates.io,

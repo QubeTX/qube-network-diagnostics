@@ -41,6 +41,7 @@ fn marker_value(origin: MigrateInstallOrigin) -> &'static str {
         MigrateInstallOrigin::MsiCorporate => "msi-corporate",
         MigrateInstallOrigin::ExeGlobal => "exe-global",
         MigrateInstallOrigin::ExeCorporate => "exe-corporate",
+        MigrateInstallOrigin::MacosPkg => "macos-pkg",
     }
 }
 
