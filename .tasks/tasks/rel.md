@@ -21,7 +21,7 @@ All release jobs succeed; both Mac archives are Developer ID signed, Apple accep
 - [x] Public binaries/installers report the final release version
 
 ## Status
-Done. Tag v3.6.2 resolves to exact main `f3d83fc`; release run `29609073182` succeeded with both Apple submissions accepted, public Gatekeeper validation, exactly 28 assets, valid sidecars and aggregate checksums, exact-source attestations, and public 3.6.2 binaries. The later public-updater failure belongs to #wup and requires the forward-only v3.6.3 release; no prior tag moves.
+Done. Tag v3.6.2 resolves to exact main `f3d83fc`; release run `29609073182` succeeded with both Apple submissions accepted, public Gatekeeper validation, exactly 28 assets, valid sidecars and aggregate checksums, exact-source attestations, and public 3.6.2 binaries. Later public-updater defects belong to #wup and were fixed forward through immutable v3.6.3 to final v3.6.4; no prior tag moved.
 
 ## Activity
 - 2026-07-17 10:18 — imported ND36-004 and incorporated the exact-source workflow correction (agent: codex)

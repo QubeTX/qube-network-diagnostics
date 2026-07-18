@@ -8,15 +8,15 @@
 - [ ] **Design safe post-finalize cross-edition Windows unregistration** - remove retained installer registrations without nesting MSI transactions (ms #p36) #arp
 
 ## To-Do
-- [ ] **Begin the native macOS PKG channel** - after v3.6.3 is public, add the signed/notarized package path while the testing Mac is available (needs #wup) (ms #p36) #pkg
-- [ ] **Merge and verify the ND-300 homepage update** - deploy the final public fallback version through Vercel (needs #wup) (ms #v36) #web
-- [ ] **Close release documentation with exact evidence** - record SHAs, runs, publishing, trust, and smoke results (needs #web) (ms #v36) #doc
+- [ ] **Begin the native macOS PKG channel** - after the updater fix-forward is public, add the signed/notarized package path while the testing Mac is available (needs #wup) (ms #p36) #pkg
 - [ ] **Clean merged branches and worktrees in both repositories** - preserve unique work, prune stale refs, and enable automatic merged-branch deletion (needs #doc) (ms #v36) #cln
 
 ## Active
-- [ ] **Repair public updates and upgrade the Alienware** - ship the channel-preserving v3.6.3 transaction, exercise current, legacy, and takeover paths publicly, then update this machine (ms #v36) (owner codex) #wup
+- [ ] **Close release documentation with exact evidence** - record SHAs, runs, publishing, trust, and smoke results (needs #web) (ms #v36) (owner codex) #doc
 
 ## Done
+- [x] **Repair public updates and upgrade the Alienware** - v3.6.4 passed public matrices and upgraded this Global MSI host from 3.5.2 with exact public bytes (ms #v36) #wup
+- [x] **Merge and verify the ND-300 homepage update** - PR #8 deployed the 3.6.4 fallback through Vercel and obsolete PR #7 closed (ms #v36) #web
 - [x] **Publish and verify ND-300 v3.6.2** - exact tag `f3d83fc`, run `29609073182`, 28 assets, Apple trust, checksums, and attestations all passed (ms #v36) #rel
 - [x] **Repair PR #18 release and cross-platform blockers** - exact head `4b2c623` passed every PR gate and both specialist reviews (ms #v36) #prf
 - [x] **Harden Windows install ownership and uninstall lifecycle** - candidate run `29601781683` passed all five disposable origins (ms #v36) #win

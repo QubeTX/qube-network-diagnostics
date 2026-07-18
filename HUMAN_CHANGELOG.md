@@ -6,6 +6,14 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 18, 2026 — Release verification is easier to audit
+
+**Behind the scenes**
+- Recorded the source, public downloads, Apple approvals, update journeys,
+  physical Windows check, and website deployment in one durable release record,
+  so future maintenance does not have to reconstruct why this release was
+  approved.
+
 ## July 17, 2026 — Managed Mac updates can verify the downloaded program
 
 **Fixed — Apple certificate verification no longer mistakes its output folder for another app**

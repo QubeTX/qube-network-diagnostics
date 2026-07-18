@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **The v3.6.4 release decision now has a durable qualification record.** The
+  record links the reviewed and merged SHAs to exact-head/main CI, crates.io,
+  Apple acceptance and public Gatekeeper checks, the 28-asset checksum and
+  attestation audit, disposable public updater matrices, the physical Windows
+  result, and the production homepage deployment.
+
 ## [3.6.4] - 2026-07-17
 
 ### Fixed

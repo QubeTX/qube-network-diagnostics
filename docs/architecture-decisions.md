@@ -75,63 +75,81 @@ equivalents, but it cannot destroy configuration ND300 does not fully
 understand. Some failures will now end with explicit manual guidance instead of
 an attempted automatic reset. That is the intended fail-safe behavior.
 
-## ADR-0002: Unix updates are verified transactions; macOS releases are trusted artifacts
+## ADR-0002: Self-update preserves the proven channel and uses immutable transactions
 
 - **Date:** 2026-07-17
-- **Status:** Accepted for v3.6.0
+- **Status:** Accepted for v3.6.4
 
 ### Context
 
-The Unix updater previously ran `rustup update stable`, piped a mutable
-`releases/latest` installer into a shell, and could remove an older install
-before proving the intended Cargo binary. The public v3.5.2 macOS archives were
-also ad-hoc signed or unsigned and failed Gatekeeper assessment.
+ND300 can be installed through Cargo, a managed macOS/Linux archive, a Windows
+standalone archive, or one of four Windows installers (Global/Corporate ×
+MSI/EXE). Treating those routes as interchangeable changes ownership, privilege,
+PATH, registration, and uninstall behavior. Updating a running Windows image
+also cannot rely on overwriting the executable in place. On macOS, a checksum
+alone does not establish that downloaded code is trusted by Apple.
 
 ### Decision
 
-- Updating ND300 must not update the user's Rust toolchain.
-- Cargo updates verify both binaries at the explicit invoking user's Cargo bin
-  directory before any legacy cleanup.
-- The Unix archive fallback downloads an exact tag/target asset, verifies its
-  SHA-256 digest in Rust, safely extracts only `nd300` and `speedqx`, validates
-  their versions, and atomically installs both with rollback.
-- Unknown and package-manager-owned install locations are never recursively
-  deleted. Cargo installs use `cargo uninstall nd300`; a launcher symlink is
-  removed as a symlink rather than by deleting its canonical target.
-- macOS fallback binaries must pass Developer ID signature, identifier, Team ID
-  (`M9D5379H93`), hardened-runtime, timestamp, and Gatekeeper install-policy
-  acceptance with `source=Notarized Developer ID` before installation.
-- Release CI signs both binaries in both thin Mac archives using an ephemeral
-  keychain, requires Apple notarization status `Accepted`, preserves those exact
-  bytes when repacking, and has no unsigned fallback. It then re-downloads both
-  public Mac archives on native arm64/Intel runners, applies quarantine, and
-  repeats signature, Gatekeeper, version, architecture, and deployment-floor
-  checks. Attestations bind the final post-notarization artifacts.
-- A release tag must be an exact stable version on the tested default-branch
-  SHA, match `Cargo.toml`, and correspond to an already-published crates.io
-  version before Apple secrets are exposed. Hosting requires every build job,
-  exactly 22 base assets, two public Mac trust checks, then exactly 28 assets
-  and exact-source attestations after the Windows add-ons.
+- `nd300 update` and `speedqx update` first prove one owner, then execute only
+  that owner's channel. Cargo stays Cargo; a validated Unix receipt stays on the
+  managed archive path; Windows standalone stays standalone; and each registered
+  MSI/EXE edition downloads its exact matching installer. A marker or familiar
+  path is supporting evidence, never authority over the running executable and
+  a proven package-manager/installer record.
+- Unknown, conflicted, package-manager-owned, and local-build locations fail
+  closed without mutation. The error names the ownership problem and links to
+  `https://reports.qubetx.com/nd300#install` for a fresh same-channel install.
+- Public entrypoints remain versionless (`releases/latest`, installer aliases,
+  and `cargo install`). After resolving latest once, the transaction pins the
+  exact stable version, tag, target asset, checksum sidecar, and source digest.
+  Cargo uses `--version =<resolved> --locked`; an update must not update Rust or
+  silently accept a later crate.
+- `nd300` and `speedqx` are one package transaction. Downloads are verified and
+  both candidate versions are checked before mutation. Unix stages the pair and
+  receipt, replaces atomically, and rolls back both on failure. Windows retires
+  only the two allowlisted running images to versioned siblings, uses MSI/Inno or
+  the hardened standalone installer for replacement/rollback, then removes a
+  non-running retired pair synchronously. A genuinely locked member uses the
+  trusted delayed-delete helper and is reported as scheduled; an unschedulable
+  sibling retains the primary command and reports incomplete cleanup.
+- Update intent and fresh-install intent are distinct. An update always keeps
+  the proven channel. A fresh official Windows installer is the user's newest
+  intent and may replace a proven MSI/EXE format only within the same per-user or
+  per-machine scope. Opposite-scope takeover is refused before mutation.
+- Uninstall follows the same ownership proof. Registered Windows installs
+  delegate directly to the validated MSI product or Inno uninstaller without
+  shell-expanding registry commands. Cargo, managed archive, symlink, and
+  portable cleanup remain origin-specific and narrowly allowlisted.
+- macOS managed binaries must pass Developer ID identity, per-binary identifier,
+  Team ID `M9D5379H93`, hardened runtime, timestamp, and Gatekeeper install-policy
+  acceptance with `source=Notarized Developer ID` before installation. Release
+  CI requires Apple notarization status `Accepted` for both architectures and
+  re-verifies the exact public quarantined bytes on native Intel and ARM hosts.
+- A release tag is created once at the exact green default-branch SHA only after
+  the matching crate is public. Release and reusable Windows workflows retain
+  that tag context, publish exactly 28 assets, verify every sidecar and aggregate
+  checksum, and bind every attestation to the tag SHA before announcement.
 
-The product is a standalone Mach-O CLI, not an `.app` or `.pkg`; it therefore
-has no staplable ticket container. `notarytool` acceptance binds Apple's online
-record to the signed code hash. For bare CLIs, `spctl --assess --type install
---ignore-cache --no-cache` reliably distinguishes `Notarized Developer ID`
-from `Unnotarized Developer ID`; `spctl --type execute` and
-`codesign --check-notarization` do not, and are never substitutes.
+The v3.6.4 macOS channel is a standalone Mach-O archive, not an `.app` or `.pkg`,
+so it has no staplable ticket container. `notarytool` acceptance binds Apple's
+online record to the signed code hash. For bare CLIs, `spctl --assess --type
+install --ignore-cache --no-cache` distinguishes `Notarized Developer ID` from
+`Unnotarized Developer ID`; `spctl --type execute` and
+`codesign --check-notarization` are not substitutes. A future native `.pkg`
+channel must preserve the same ownership, exact-version, pair, and trust rules.
 
 ### Consequences
 
-Unix update failures retain the working installation and return actionable
-manual guidance. Releases cannot proceed when Apple credentials, signing,
-notarization, or final trust verification are unavailable. Windows keeps its
-existing four installer-aware update strategies.
+ND300 never changes channel merely because the intended strategy failed. A
+failure retains or restores the last working pair and gives same-channel manual
+recovery guidance. Already-published old clients cannot be changed retroactively;
+their compatibility boundary is a safe, explicit no-mutation failure followed
+by a versionless fresh installer. Releases stop when ownership, checksum,
+rollback, Apple trust, asset inventory, or provenance cannot be proved.
 
-GitHub repository credentials for the Apple workflow were provisioned during
-the v3.6.0 hardening pass and authenticated without recording their values in
-the repository. A Windows operator can therefore trigger the complete Mac
-sign/notarize/verify flow after exact-SHA CI; continued access to the audit Mac
-or its downloaded API key is neither required nor permitted.
+The exact qualification record for this decision's first complete release is
+documented in [ND-300 v3.6.4 release qualification](release-evidence-v3.6.4.md).
 
 ## ADR-0003: Elevated Unix actions operate in the invoking user's context
 

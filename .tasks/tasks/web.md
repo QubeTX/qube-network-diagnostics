@@ -13,14 +13,16 @@ Public install guidance stays aligned with the deployed binary. SD-300 and Shaug
 The final public version appears in all four fallbacks, homepage CI succeeds, PR #8 is merged, Vercel production succeeds, and PR #7 is closed as superseded.
 
 ## Verification
-- [ ] Homepage fallback version equals the final public ND-300 version in four components
-- [ ] Homepage lint/build validation and PR checks pass
-- [ ] PR #7 is closed with a superseded-by-#8 note
-- [ ] PR #8 is merged only after public release validation
-- [ ] Vercel production deployment succeeds
+- [x] Homepage fallback version equals the final public ND-300 version in four components
+- [x] Homepage lint/build validation and PR checks pass
+- [x] PR #7 is closed with a superseded-by-#8 note
+- [x] PR #8 is merged only after public release validation
+- [x] Vercel production deployment succeeds
 
 ## Status
-Blocked on #wup. PR #8 is prepared for 3.6.0 and currently green.
+Done. PR #8 head `dac12a6` set all four fallbacks to public v3.6.4, passed lint/build and Vercel preview, and merged as `fab1628`. Vercel production deployment `5498518176` succeeded; a no-cache production fetch returned HTTP 200 with the 3.6.4 bundle and live GitHub lookup. PR #7 is closed as superseded.
 
 ## Activity
 - 2026-07-17 10:18 — imported ND36-008 and cleanup/deploy requirements (agent: codex)
+- 2026-07-17 22:36 — refreshed PR #8 from the superseded 3.6.2 fallback to final public 3.6.4; lint, production build, and Vercel preview passed at `dac12a6` (agent: codex)
+- 2026-07-17 22:37 — merged PR #8 as `fab1628`, verified successful Vercel production deployment `5498518176` and live HTTP/bundle/API results, then closed PR #7 as superseded (agent: codex)
