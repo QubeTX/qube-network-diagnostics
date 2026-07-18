@@ -84,18 +84,29 @@ if expected_strategy != "-":
 PY
 }
 
-assert_legacy_failure_json() {
+assert_safe_failure_json() {
     local path=$1
-    python3 - "$path" <<'PY'
+    local failure_kind=$2
+    local wanted_version=$3
+    python3 - "$path" "$failure_kind" "$wanted_version" <<'PY'
 import json
 import pathlib
 import sys
 
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+failure_kind = sys.argv[2]
+wanted_version = sys.argv[3]
 assert payload.get("success") is False, payload
-assert payload.get("update_available") is True, payload
+assert payload.get("current_version") == wanted_version, payload
 attempts = {item.get("strategy") for item in payload.get("attempts", [])}
-assert {"installer_curl", "installer_wget"}.issubset(attempts), payload
+if failure_kind == "legacy_safe_fallback":
+    assert payload.get("update_available") is True, payload
+    assert {"installer_curl", "installer_wget"}.issubset(attempts), payload
+elif failure_kind == "macos_pre_fix_safe_fallback":
+    message = str(payload.get("message", "")).lower()
+    assert "unix_archive" in attempts or "rate limit" in message, payload
+else:
+    raise AssertionError(f"unsupported failure kind: {failure_kind}")
 PY
 }
 
@@ -171,17 +182,21 @@ update_exit=${PIPESTATUS[0]}
 set -e
 
 recovery=not-needed
-if [[ "$expected_strategy" == legacy_safe_fallback ]]; then
+if [[ "$expected_strategy" == legacy_safe_fallback ||
+      "$expected_strategy" == macos_pre_fix_safe_fallback ]]; then
     if [[ $update_exit -eq 0 ]]; then
         # The historical client may start succeeding if its host shell changes.
         # Accept that, but still require a valid successful update payload.
         assert_json "$evidence_dir/update.json" true '-'
         recovery=legacy-updater-succeeded
     else
-        # Released clients cannot be changed retroactively. Prove their known
-        # shell incompatibility leaves the validated pair and receipt untouched,
+        # Released clients cannot be changed retroactively. Prove the observed
+        # historical failure leaves the validated pair and receipt untouched,
         # then exercise the documented versionless same-channel recovery path.
-        assert_legacy_failure_json "$evidence_dir/update.json"
+        assert_safe_failure_json \
+            "$evidence_dir/update.json" \
+            "$expected_strategy" \
+            "$baseline"
         assert_version "$bin_dir/nd300" "$baseline"
         assert_version "$bin_dir/speedqx" "$baseline"
         assert_receipt "$baseline"

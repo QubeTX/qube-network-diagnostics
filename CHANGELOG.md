@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.4] - 2026-07-17
+
+### Fixed
+- **The macOS managed-archive updater can complete its Developer ID trust
+  check.** The updater now passes `codesign`'s optional certificate-output
+  prefix as one `--extract-certificates=<prefix>` argument. Passing the prefix
+  as a separate token made current macOS interpret the temporary output path as
+  another code object, so the verified archive route stopped before changing
+  either installed binary. The immutable v3.6.3 release remains available, but
+  v3.6.4 is the forward-only updater fix. Hosted arm64 and Intel coverage now
+  runs the current trust reader against the signed, notarized public binary pair
+  in addition to the public update lifecycle.
+
 ## [3.6.3] - 2026-07-17
 
 ### Fixed

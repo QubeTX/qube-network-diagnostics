@@ -45,16 +45,18 @@ jobs:
             channel: managed
             baseline_kind: current
             invoker: nd300
-            strategy: unix_archive
+            strategy: macos_pre_fix_safe_fallback
             hide_cargo: 'true'
+            target: aarch64-apple-darwin
           - id: macos-intel-managed
             label: macOS Intel managed archive via speedqx
             runner: macos-15-intel
             channel: managed
             baseline_kind: current
             invoker: speedqx
-            strategy: unix_archive
+            strategy: macos_pre_fix_safe_fallback
             hide_cargo: 'true'
+            target: x86_64-apple-darwin
           - id: linux-current-managed
             label: Linux x86_64 managed archive
             runner: ubuntu-24.04
@@ -82,8 +84,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up release Rust toolchain for Cargo channel
-        if: matrix.channel == 'cargo'
+      - name: Set up release Rust toolchain for Cargo or macOS trust fixture
+        if: matrix.channel == 'cargo' || startsWith(matrix.id, 'macos-')
         uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Exercise published update and uninstall lifecycle
@@ -107,6 +109,28 @@ jobs:
             '${{ matrix.invoker }}' \
             '${{ matrix.strategy }}' \
             '${{ matrix.hide_cargo }}'
+
+      - name: Verify current trust reader against signed public Mac binaries
+        if: always() && startsWith(matrix.id, 'macos-')
+        shell: bash
+        env:
+          FIXTURE_VERSION: ${{ inputs.expected_version || '3.6.3' }}
+          FIXTURE_TARGET: ${{ matrix.target }}
+        run: |
+          fixture_root="$RUNNER_TEMP/nd300-signed-trust-fixture"
+          mkdir -p "$fixture_root"
+          asset="nd300-${FIXTURE_TARGET}.tar.xz"
+          base="https://github.com/QubeTX/qube-network-diagnostics/releases/download/v${FIXTURE_VERSION}"
+          curl --proto '=https' --tlsv1.2 -fLsS "$base/$asset" -o "$fixture_root/$asset"
+          curl --proto '=https' --tlsv1.2 -fLsS "$base/$asset.sha256" -o "$fixture_root/$asset.sha256"
+          (
+            cd "$fixture_root"
+            shasum -a 256 -c "$asset.sha256"
+            tar -xJf "$asset"
+          )
+          export ND300_TEST_SIGNED_PAIR_DIR="$fixture_root/nd300-${FIXTURE_TARGET}"
+          cargo test --locked --lib public_macos_signed_pair_passes_runtime_trust_verifier \
+            -- --ignored --nocapture
 
       - name: Upload lifecycle evidence
         if: always()

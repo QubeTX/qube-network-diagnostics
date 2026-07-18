@@ -6,6 +6,17 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 17, 2026 — Managed Mac updates can verify the downloaded program
+
+**Fixed — Apple certificate verification no longer mistakes its output folder for another app**
+- The managed Mac updater correctly downloaded and checksum-verified the new
+  two-program archive, but then gave Apple's signing tool its temporary
+  certificate-output location in an ambiguous form. Current macOS treated that
+  location as another program to inspect and stopped safely before replacing
+  anything. The output location is now passed in the form Apple expects, and
+  both hosted Mac architectures exercise the same trust reader against the real
+  signed and notarized public downloads.
+
 ## July 17, 2026 — Windows can update the program that is currently running
 
 **Fixed — Windows updates no longer collide with their own open program file**
