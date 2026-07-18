@@ -223,7 +223,7 @@ printf '%s\n' Library 'Library/Application Support' \
     'Library/Application Support/ND300/install-receipt.json' \
     usr usr/local usr/local/bin usr/local/bin/nd300 usr/local/bin/speedqx \
     | sort -u > "$expected_payload"
-pkgutil --payload-files "$pkg" | sed 's#^\./##' | sort -u > "$actual_payload"
+pkgutil --payload-files "$pkg" | sed -e 's#^\./##' -e '/^\.$/d' | sort -u > "$actual_payload"
 diff -u "$expected_payload" "$actual_payload"
 
 # Hosted validation installs this private, deliberately higher-version receipt
@@ -242,7 +242,7 @@ pkgbuild --root "$payload" \
 fixture_signature=$(pkgutil --check-signature "$downgrade_fixture")
 grep -Fq 'Signed with a trusted timestamp' <<< "$fixture_signature"
 grep -Fq "$APPLE_INSTALLER_SIGNING_IDENTITY" <<< "$fixture_signature"
-pkgutil --payload-files "$downgrade_fixture" | sed 's#^\./##' | sort -u \
+pkgutil --payload-files "$downgrade_fixture" | sed -e 's#^\./##' -e '/^\.$/d' | sort -u \
     > "${work_dir}/fixture-payload.txt"
 diff -u "$expected_payload" "${work_dir}/fixture-payload.txt"
 

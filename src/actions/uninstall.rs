@@ -268,8 +268,7 @@ fn print_unix_uninstall_preview(real_path: &Path, config: &Config) {
             )
         ),
         Some(origin) if origin.kind == UnixOriginKind::MacPackage => println!(
-            "  This will request Apple authorization, remove the receipt-owned system pair, and forget {}: {}",
-            "com.qubetx.nd300.pkg",
+            "  This will request Apple authorization, remove the receipt-owned system pair, and forget com.qubetx.nd300.pkg: {}",
             color::cyan(&origin.executable.display().to_string(), config)
         ),
         Some(origin) => println!(

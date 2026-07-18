@@ -218,13 +218,15 @@ fn secure_macos_package_file(path: &Path) -> bool {
 
 #[cfg(any(target_os = "macos", test))]
 fn parse_pkg_info_version(output: &[u8]) -> Option<String> {
-    String::from_utf8_lossy(output).lines().find_map(|line| {
+    let decoded = String::from_utf8_lossy(output);
+    let mut versions = decoded.lines().filter_map(|line| {
         line.trim()
             .strip_prefix("version:")
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    })
+    });
+    let version = versions.next()?.to_string();
+    versions.next().is_none().then_some(version)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -235,6 +237,7 @@ fn macos_pkg_payload_is_exact(output: &[u8]) -> bool {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(|line| line.strip_prefix("./").unwrap_or(line))
+        .filter(|line| *line != ".")
         .collect::<std::collections::BTreeSet<_>>();
     let expected = [
         "Library",
@@ -2909,6 +2912,9 @@ mod tests {
     fn macos_package_payload_must_be_exact() {
         let exact = b"Library\nLibrary/Application Support\nLibrary/Application Support/ND300\nLibrary/Application Support/ND300/install-receipt.json\nusr\nusr/local\nusr/local/bin\nusr/local/bin/nd300\nusr/local/bin/speedqx\n";
         assert!(macos_pkg_payload_is_exact(exact));
+        let mut with_root = b".\n".to_vec();
+        with_root.extend_from_slice(exact);
+        assert!(macos_pkg_payload_is_exact(&with_root));
         assert!(macos_pkg_payload_is_exact(
             exact
                 .split(|byte| *byte == b'\n')
@@ -2925,6 +2931,21 @@ mod tests {
         assert!(!macos_pkg_payload_is_exact(
             b"usr/local/bin/nd300\nusr/local/bin/speedqx\n"
         ));
+    }
+
+    #[test]
+    fn macos_package_receipt_version_parser_is_exact() {
+        assert_eq!(
+            parse_pkg_info_version(
+                b"package-id: com.qubetx.nd300.pkg\nversion: 3.7.0\nvolume: /\n"
+            ),
+            Some("3.7.0".to_string())
+        );
+        assert_eq!(parse_pkg_info_version(b"version:\n"), None);
+        assert_eq!(
+            parse_pkg_info_version(b"version: 3.7.0\nversion: 3.7.1\n"),
+            None
+        );
     }
 
     #[test]
