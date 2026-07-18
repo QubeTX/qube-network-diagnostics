@@ -118,7 +118,7 @@ for binary in nd300 speedqx; do
     universal="${universal_dir}/${binary}"
     lipo -create "$arm_binary" "$x86_binary" -output "$universal"
     chmod 755 "$universal"
-    lipo -verify_arch arm64 x86_64 "$universal"
+    lipo "$universal" -verify_arch arm64 x86_64
     codesign --force --identifier "com.qubetx.${binary}" --options runtime --timestamp \
         --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$universal"
     codesign --verify --strict --verbose=4 "$universal"

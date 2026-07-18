@@ -89,8 +89,8 @@ jq -e --arg version "$version" --arg nd300_sha "$nd300_sha" --arg speedqx_sha "$
 ' "$receipt"
 [[ $(/usr/local/bin/nd300 --version) == "nd300 $version" ]]
 [[ $(/usr/local/bin/speedqx --version) == "speedqx $version" ]]
-lipo -verify_arch arm64 x86_64 /usr/local/bin/nd300
-lipo -verify_arch arm64 x86_64 /usr/local/bin/speedqx
+lipo /usr/local/bin/nd300 -verify_arch arm64 x86_64
+lipo /usr/local/bin/speedqx -verify_arch arm64 x86_64
 
 set +e
 /usr/local/bin/nd300 --fast --json > "${work_dir}/diagnostic.json"
