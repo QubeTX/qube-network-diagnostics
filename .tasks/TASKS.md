@@ -8,13 +8,13 @@
 - [ ] **Design safe post-finalize cross-edition Windows unregistration** - remove retained installer registrations without nesting MSI transactions (ms #p36) #arp
 
 ## To-Do
-- [ ] **Begin the native macOS PKG channel** - after the updater fix-forward is public, add the signed/notarized package path while the testing Mac is available (needs #wup) (ms #p36) #pkg
-- [ ] **Clean merged branches and worktrees in both repositories** - preserve unique work, prune stale refs, and enable automatic merged-branch deletion (needs #doc) (ms #v36) #cln
 
 ## Active
-- [ ] **Close release documentation with exact evidence** - record SHAs, runs, publishing, trust, and smoke results (needs #web) (ms #v36) (owner codex) #doc
+- [ ] **Begin the native macOS PKG channel** - add the signed/notarized package path while the testing Mac is available, batching physical validation (ms #p36) (owner codex) #pkg
 
 ## Done
+- [x] **Clean merged branches and worktrees in both repositories** - audited and pruned refs/worktrees, preserved user files, enabled automatic deletion, and left only main (ms #v36) #cln
+- [x] **Close release documentation with exact evidence** - PR #23 passed exact-head/main CI, merged, and skipped the already-published crate idempotently (ms #v36) #doc
 - [x] **Repair public updates and upgrade the Alienware** - v3.6.4 passed public matrices and upgraded this Global MSI host from 3.5.2 with exact public bytes (ms #v36) #wup
 - [x] **Merge and verify the ND-300 homepage update** - PR #8 deployed the 3.6.4 fallback through Vercel and obsolete PR #7 closed (ms #v36) #web
 - [x] **Publish and verify ND-300 v3.6.2** - exact tag `f3d83fc`, run `29609073182`, 28 assets, Apple trust, checksums, and attestations all passed (ms #v36) #rel

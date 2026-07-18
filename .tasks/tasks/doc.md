@@ -17,12 +17,13 @@ No completed claim lacks evidence, no completed gate remains described as pendin
 - [x] Crates.io, Apple trust, assets, checksums, and attestations are recorded
 - [x] Windows matrix, Alienware, and homepage results are recorded
 - [x] Technical and human changelogs remain aligned
-- [ ] Closeout PR CI passes and merges without unrelated files
+- [x] Closeout PR CI passes and merges without unrelated files
 
 ## Status
-Active. Exact-source, public artifact, Apple, disposable matrix, successful Alienware Global MSI update, homepage, ADR, and changelog evidence are recorded on the dedicated v3.6.4 closeout branch. Only closeout-PR CI and merge remain.
+Done. Closeout PR #23 head `382b780` changed only documentation/task-board files, passed all 18 jobs in CI `29635703388` plus Claude review, and merged as `e92bc97`. Exact-main CI `29635857169` passed all 18 jobs; crates run `29635955214` confirmed 3.6.4 was already public and skipped publication.
 
 ## Activity
 - 2026-07-17 10:18 — imported ND36-005 and converted it to a separate evidence PR (agent: codex)
 - 2026-07-17 22:39 — created the v3.6.4 qualification record, linked the accepted updater ADR, and aligned the technical/human changelogs and task board; Alienware elevation is the only evidence field still pending (agent: codex)
 - 2026-07-18 02:22 — replaced the pending physical section with the successful 3.5.2-to-3.6.4 Global MSI transaction, exact public hashes, fresh-shell ownership, cleanup, renderer/redaction, and unchanged-network evidence (agent: codex)
+- 2026-07-18 02:38 — PR #23 exact head `382b780` passed full CI `29635703388` and Claude review, merged as `e92bc97`, passed exact-main CI `29635857169`, and produced the expected idempotent crates.io skip in `29635955214`; #doc closed (agent: codex)

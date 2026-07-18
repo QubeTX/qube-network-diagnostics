@@ -13,15 +13,16 @@ Navigation and future releases become substantially less error-prone. The main r
 Both repositories are on current main, clean except explicitly preserved user files, have no stale worktrees, remote/local inventories contain only main and active unmerged work, and automatic merged-branch deletion is enabled.
 
 ## Verification
-- [ ] Every deleted branch has merged/closed/superseded PR and unique-work evidence
-- [ ] No dirty worktree or unpushed unique commit is removed
-- [ ] ND-300 repository ends on updated main with preserved `.agents/` and `.codex/`
-- [ ] Homepage repository ends on updated main
-- [ ] Both repositories have automatic merged-branch deletion enabled
-- [ ] `git remote prune` and `git worktree prune` leave accurate inventories
+- [x] Every deleted branch has merged/closed/superseded PR and unique-work evidence
+- [x] No dirty worktree or unpushed unique commit is removed
+- [x] ND-300 repository ends on updated main with preserved `.agents/` and `.codex/`
+- [x] Homepage repository ends on updated main
+- [x] Both repositories have automatic merged-branch deletion enabled
+- [x] `git remote prune` and `git worktree prune` leave accurate inventories
 
 ## Status
-Blocked on #doc. Initial inventory found one worktree per repository and only merged/superseded stale branches outside the active release PRs.
+Done. The safety audit tied every PR branch to a merged/closed PR, proved the two unmapped `emmett/wb-*` branches were ancestors of main with zero unique commits, and proved homepage PR #7 changed only the four fallbacks superseded by #8. ND deleted 21 remote and 16 local stale refs; the homepage deleted two remote and two local refs. Both repositories have one primary worktree, pruned metadata, automatic merged-branch deletion enabled, and only `main` outside this final auto-deleted record branch. ND's `.agents`, `.codex`, and generated installer output remain untouched.
 
 ## Activity
 - 2026-07-17 10:18 — created from the operator's explicit post-release cleanup order (agent: codex)
+- 2026-07-18 02:38 — audited PR state/reachability/unique work, deleted 21 ND remote plus 16 local refs and two homepage remote/local refs, pruned refs/worktree metadata, enabled automatic merged-branch deletion in both repositories, and verified one exact-main worktree per repository with preserved user files (agent: codex)
