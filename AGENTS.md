@@ -324,7 +324,7 @@ Supports `--json` mode with structured output matching the uninstall pattern. Ex
   "action": "update",
   "success": true,
   "current_version": "3.5.2",
-  "latest_version": "3.7.0",
+  "latest_version": "3.7.1",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",
@@ -335,7 +335,7 @@ Supports `--json` mode with structured output matching the uninstall pattern. Ex
 }
 ```
 
-## macOS Universal PKG-in-DMG (v3.7.0+)
+## macOS Universal PKG-in-DMG (v3.7.1+)
 
 `macos-installer.yml` is both the internal-PR candidate gate and the exact-tag
 reusable release job. It builds native thin pairs on `macos-15` and

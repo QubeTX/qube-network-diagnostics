@@ -118,7 +118,7 @@ jobs:
             echo "tag $tag resolves to $resolved, not trusted source $source_sha" >&2
             exit 1
           }
-          release_target=$(gh release view "$tag" --json targetCommitish --jq '.targetCommitish')
+          release_target=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish')
           [[ $release_target == "$source_sha" ]] || {
             echo "GitHub Release target does not match the exact tag source" >&2
             exit 1
@@ -145,7 +145,7 @@ jobs:
           mkdir upstream
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
             archive="nd300-${target}.tar.xz"
-            gh release download "$TAG" --dir upstream --pattern "$archive" --pattern "$archive.sha256"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir upstream --pattern "$archive" --pattern "$archive.sha256"
             (cd upstream && shasum -a 256 -c "$archive.sha256")
             gh attestation verify "upstream/$archive" \
               --repo "$GITHUB_REPOSITORY" \
@@ -221,7 +221,7 @@ jobs:
         run: |
           mkdir upstream
           archive="nd300-${TARGET}.tar.xz"
-          gh release download "$TAG" --dir upstream --pattern "$archive" --pattern "$archive.sha256"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir upstream --pattern "$archive" --pattern "$archive.sha256"
           (cd upstream && shasum -a 256 -c "$archive.sha256")
 
       - name: Mount, install, update-check, uninstall, and reinstall
@@ -392,7 +392,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          existing=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          existing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
           for asset in nd300-universal-apple-darwin.dmg nd300-universal-apple-darwin.dmg.sha256; do
             if grep -Fqx "$asset" <<< "$existing"; then
               echo "refusing to overwrite already-published immutable asset: $asset" >&2
@@ -410,7 +410,7 @@ jobs:
           TAG: ${{ needs.build.outputs.tag }}
         shell: bash
         run: |
-          gh release upload "$TAG" \
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
             artifact/nd300-universal-apple-darwin.dmg \
             artifact/nd300-universal-apple-darwin.dmg.sha256
       - name: Verify exact inventory, checksums, and source attestations
@@ -438,12 +438,12 @@ jobs:
             sha256.sum source.tar.gz source.tar.gz.sha256
           )
           printf '%s\n' "${expected[@]}" | sort > "$RUNNER_TEMP/expected.txt"
-          gh release view "$TAG" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/actual.txt"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/actual.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
           test "$(wc -l < "$RUNNER_TEMP/actual.txt" | tr -d ' ')" = 30
 
           mkdir public
-          gh release download "$TAG" --dir public
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir public
           pwsh -File scripts/verify-release-checksums.ps1 -Directory public
           (cd public && sha256sum -c nd300-universal-apple-darwin.dmg.sha256)
           for artifact in public/*; do
