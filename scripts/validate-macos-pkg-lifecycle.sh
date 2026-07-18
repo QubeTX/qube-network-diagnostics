@@ -102,8 +102,29 @@ set -e
 (( ascii_exit >= 0 && ascii_exit <= 2 ))
 jq -e 'type == "object" and has("interfaces") and has("gateway") and has("dns")' \
     "${work_dir}/diagnostic.json"
+set +e
 update=$(/usr/local/bin/speedqx update --json)
-jq -e '.success == true and .install_channel == "macos-dmg-pkg" and .requires_user_action == false' <<< "$update"
+update_exit=$?
+set -e
+if (( update_exit == 0 )); then
+    jq -e '
+      .success == true and
+      .install_channel == "macos-dmg-pkg" and
+      .requires_user_action == false
+    ' <<< "$update"
+else
+    # GitHub-hosted macOS runners share unauthenticated API egress quotas. A
+    # depleted 60/hour pool is not a package failure, but it must exercise the
+    # updater's documented safe-failure contract rather than becoming a skip.
+    (( update_exit == 2 ))
+    jq -e '
+      .success == false and
+      .install_channel == "macos-dmg-pkg" and
+      .requires_user_action == true and
+      .recovery_url == "https://github.com/QubeTX/qube-network-diagnostics/releases/latest" and
+      (.message | contains("GitHub API rate limit exceeded"))
+    ' <<< "$update"
+fi
 
 # A same-version repair and an explicitly launched downgrade are fresh-install
 # semantics. They never apply to the latest-only automatic update path.
