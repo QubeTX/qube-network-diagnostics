@@ -1,3 +1,3 @@
 # Qube machine-report homepage
 
-The separate homepage repository carries four ND-300 fallback-version call sites. PR #8 tracks the final forward-only release (currently v3.6.3) and must remain unmerged until that ND-300 version is public; PR #7 is obsolete and should be closed as superseded. Main deployment is handled by Vercel.
+The separate homepage repository carries four ND-300 fallback-version call sites. PR #8 updated all four to final public v3.6.4, merged as `fab1628`, and deployed successfully through Vercel production; PR #7 is closed as superseded. SD-300 and Shaughv OS remain deliberately delisted/WIP.

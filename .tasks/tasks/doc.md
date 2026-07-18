@@ -13,14 +13,16 @@ The repository becomes an evidence-backed source of truth without altering publi
 No completed claim lacks evidence, no completed gate remains described as pending, both changelogs stay in lockstep, task verification items are closed or explicitly waived, and the closeout PR is green and merged.
 
 ## Verification
-- [ ] Final version, release/main SHAs, and run URLs are recorded
-- [ ] Crates.io, Apple trust, assets, checksums, and attestations are recorded
-- [ ] Windows matrix, Alienware, and homepage results are recorded
-- [ ] Technical and human changelogs remain aligned
+- [x] Final version, release/main SHAs, and run URLs are recorded
+- [x] Crates.io, Apple trust, assets, checksums, and attestations are recorded
+- [x] Windows matrix, Alienware, and homepage results are recorded
+- [x] Technical and human changelogs remain aligned
 - [ ] Closeout PR CI passes and merges without unrelated files
 
 ## Status
-Blocked on #web.
+Active. Exact-source, public artifact, Apple, disposable matrix, successful Alienware Global MSI update, homepage, ADR, and changelog evidence are recorded on the dedicated v3.6.4 closeout branch. Only closeout-PR CI and merge remain.
 
 ## Activity
 - 2026-07-17 10:18 — imported ND36-005 and converted it to a separate evidence PR (agent: codex)
+- 2026-07-17 22:39 — created the v3.6.4 qualification record, linked the accepted updater ADR, and aligned the technical/human changelogs and task board; Alienware elevation is the only evidence field still pending (agent: codex)
+- 2026-07-18 02:22 — replaced the pending physical section with the successful 3.5.2-to-3.6.4 Global MSI transaction, exact public hashes, fresh-shell ownership, cleanup, renderer/redaction, and unchanged-network evidence (agent: codex)

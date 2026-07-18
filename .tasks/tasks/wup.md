@@ -13,20 +13,20 @@ This is the final Windows user-journey gate. Failure after tagging triggers the 
 Every supported origin reaches one matched final-version binary pair at the intended location; a failed copy/setup restores both old binaries and registration; the initiating old process is not killed; incorrect/unknown ownership is refused; sidecars validate; uninstall removes only the proven origin; supported Unix updates pass; and the Alienware upgrade succeeds without network-state mutation.
 
 ## Verification
-- [ ] Global MSI public updater case passes
-- [ ] Corporate MSI public updater case passes
-- [ ] Global EXE public updater case passes
-- [ ] Corporate EXE public updater case passes
-- [ ] Cargo public updater and stale-marker case pass
-- [ ] Windows locked-image and injected-rollback candidate matrix passes
-- [ ] Pre-marker v2.9 Global MSI candidate and public update pass
-- [ ] Same-scope Windows channel-takeover candidate and public matrix passes
-- [ ] Opposite-scope refusal preserves the original install byte-for-byte
-- [ ] Public macOS and Linux updater matrices pass
-- [ ] Alienware fresh shell resolves both binaries to the final Global MSI version
+- [x] Global MSI public updater case passes
+- [x] Corporate MSI public updater case passes
+- [x] Global EXE public updater case passes
+- [x] Corporate EXE public updater case passes
+- [x] Cargo public updater and stale-marker case pass
+- [x] Windows locked-image and injected-rollback candidate matrix passes
+- [x] Pre-marker v2.9 Global MSI candidate and public update pass
+- [x] Same-scope Windows channel-takeover candidate and public matrix passes
+- [x] Opposite-scope refusal preserves the original install byte-for-byte
+- [x] Public macOS and Linux updater matrices pass
+- [x] Alienware fresh shell resolves both binaries to the final Global MSI version
 
 ## Status
-Active. Public v3.6.2 matrix run `29610274431` failed all five origins. Diagnostic run `29611079431` proved Cargo and cargo-dist could not overwrite the running Windows image; installer origins were terminated by Restart Manager/application shutdown before reporting. v3.6.3 applies a channel-preserving, exact-release preserve/replace/restore transaction. PR #21 exact head `9e50332` is cross-platform green; replacement candidate matrix `29623077460` has proved Cargo, Corporate managed channels, same-scope takeover, and opposite-scope refusal while isolating the remaining Global MSI failure to a malformed quoted commit-action path. The corrected production and rollback MSI packages compile locally and await exact hosted proof. No merge or tag occurs before the entire disposable Windows candidate matrix passes.
+Done. Reviewed head `9cc8851` merged as exact main `e3bf6c5`; CI, crates.io, immutable v3.6.4, Apple trust, 28 public assets/checksums/attestations, public binaries, and both public updater matrices passed. The Alienware's installed 3.5.2 Global MSI then selected only `msi-global`, upgraded with operator-approved elevation, and returned exit 0. A fresh process resolves the exact public 3.6.4 pair from Program Files, with one ARP record/machine PATH entry, correct marker, no Cargo shadow, no retired files, no credential output, and unchanged Intel BE202/default-route state.
 
 ## Activity
 - 2026-07-17 10:18 — imported post-release portion of ND36-003 (agent: codex)
@@ -41,3 +41,13 @@ Active. Public v3.6.2 matrix run `29610274431` failed all five origins. Diagnost
 - 2026-07-17 19:08 — exact-head run `29622217262` passed all 321 Windows Rust tests and the hardener fixture's assertions, then revealed that an intentionally nonzero advisory cleanup leaked PowerShell's native exit code after printing `PASS`. The production shim now captures cleanup through `Start-Process` and regression-checks that a completed update exits successfully (agent: codex)
 - 2026-07-17 19:20 — exact-head CI `29622370475` is fully green, while candidate matrix `29622370440` separated one passing Cargo lifecycle and three passing same-scope takeovers from three concrete harness/ownership defects plus a still-unexplained Global MSI 1603. Corporate managed-MSI scope now follows proven channel instead of ARP hive, Inno fault injection uses its documented fatal preinstall result, refusal cleanup uses the exact old MSI registration, and permanent verbose MSI evidence is enabled for the replacement run (agent: codex)
 - 2026-07-17 19:34 — exact-head CI `29623077450` passed at `9e50332`; replacement matrix `29623077460` proved the Corporate and scope-classification fixes. Its first verbose Global MSI log identified the 1603 exactly: WiX quoted `[Bin]` and `[LegacyBin]`, whose trailing backslashes escaped the closing quotes and made `install-maintenance` exit 2. The action now constructs non-trailing `APPLICATIONFOLDER\bin` paths; production and rollback MSI builds both pass locally (agent: codex)
+- 2026-07-17 19:48 — PR #21 exact head `a68df09` passed all CI and candidate run `29623446981` passed all 13 Windows origin, legacy, takeover, refusal, and rollback cases; merge `59ab145` published crates.io and immutable v3.6.3 with 28 verified exact-source assets (agent: codex)
+- 2026-07-17 20:33 — public Unix run `29625373771` proved the v3.6.3 Intel Mac updater reached its verified archive strategy but failed closed when `codesign` misparsed the separate certificate-prefix argument; no installed pair or receipt changed. v3.6.4 binds the prefix to the option and tests both public signed architectures (agent: codex)
+- 2026-07-17 21:05 — PR #22 exact head `f0dc73b` passed six-target CI `29626132843` and Unix public qualification `29626132848`, including real signed/notarized trust verification on hosted Intel and ARM Macs. Local four-installer builds, non-mutating Alienware candidate smoke, cfg review, and installer LOCKSTEP review are green; Windows candidate run `29626132855` is the remaining merge gate (agent: codex)
+- 2026-07-17 21:18 — Windows run `29626132855` passed every lifecycle except Cargo-to-Global-MSI fresh takeover. Evidence showed setup and both 3.6.4 binaries succeeded, but the old Cargo `nd300.exe` remained during immediate inspection because the shared helper deferred every Windows deletion even when the target was not running. Head `e3f6646` now removes non-running allowlisted pairs synchronously, retains trusted delayed deletion for locked images, and passes strict Clippy, 322 tests, release build, and all four installer builds locally (agent: codex)
+- 2026-07-17 21:33 — installer review reproduced the paired edge case that a locked `speedqx.exe` could survive while `nd300.exe` was removed and cleanup claimed success. Head `9cc8851` schedules that sibling through the trusted helper, makes pending/failed pair state dominate classification, and retains the primary on an unschedulable sibling. The real Windows lock regression, full Rust gates, package/audit/publish dry-run, fixtures, and four installer builds pass; exact-head CI/Unix/Windows and final reviews are active (agent: codex)
+- 2026-07-17 21:47 — exact head `9cc8851` passed 18-job cross-platform CI `29627244812`, both hosted Mac plus all Linux updater lanes in `29627244820`, all 13 Windows candidate jobs in `29627244810`, and cfg/installer reviews with no blockers. Claude's optional action failed twice before execution with zero cost/comments and was recorded as transient infrastructure. PR #22 merged by merge commit `e3bf6c5`; exact-main CI `29627666901` is running (agent: codex)
+- 2026-07-17 22:01 — exact-main CI `29627666901` and crates publication `29627786358` passed at `e3bf6c5`; v3.6.4 was tagged once and release run `29627840024` completed with Apple Accepted on ARM/Intel, exactly 28 verified assets, valid sidecars/aggregate checksums, 28 exact-source attestations, and public 3.6.4 binaries (agent: codex)
+- 2026-07-17 22:20 — public Unix run `29628429359` passed all five Mac/Linux lanes and public Windows run `29628428697` passed all 12 substantive current, legacy, takeover, refusal, migration, rollback, and uninstall lanes (agent: codex)
+- 2026-07-17 22:33 — confirmed the Alienware baseline remains Global MSI 3.5.2 at its original pair hashes after unapproved Windows Installer elevation attempts returned 1602; no network state changed and further retries are paused for one coordinated prompt (agent: codex)
+- 2026-07-18 02:22 — operator approved the final UAC prompt; installed 3.5.2 `nd300 update --json` completed `msi_global` to 3.6.4 with exit 0, and fresh-shell ownership, exact-public hashes, ARP/marker/PATH, shadow cleanup, already-latest entrypoints, migration dry-run, JSON/technician/ASCII smokes, redaction, Intel BE202, and route checks all passed without mutation (agent: codex)
