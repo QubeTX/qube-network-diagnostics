@@ -110,6 +110,21 @@ else:
 PY
 }
 
+assert_rate_limit_failure_json() {
+    local path=$1
+    local wanted_version=$2
+    python3 - "$path" "$wanted_version" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert payload.get("success") is False, payload
+assert payload.get("current_version") == sys.argv[2], payload
+assert "rate limit" in str(payload.get("message", "")).lower(), payload
+PY
+}
+
 write_pair_fingerprint() {
     local path=$1
     python3 - "$bin_dir/nd300" "$bin_dir/speedqx" "$path" <<'PY'
@@ -241,8 +256,32 @@ if [[ "$invoker" == nd300 ]]; then
 else
     noop_invoker=nd300
 fi
+write_pair_fingerprint "$evidence_dir/before-noop-fingerprint.json"
+set +e
 "$bin_dir/$noop_invoker" update --json --no-color | tee "$evidence_dir/already-latest.json"
-assert_json "$evidence_dir/already-latest.json" false '-'
+noop_exit=${PIPESTATUS[0]}
+set -e
+noop_result=already-latest
+if [[ $noop_exit -eq 0 ]]; then
+    assert_json "$evidence_dir/already-latest.json" false '-'
+elif [[ "$expected_strategy" == macos_pre_fix_safe_fallback ]]; then
+    # GitHub-hosted macOS runners share unauthenticated API quotas. A frozen
+    # public client can therefore be rate-limited even after its versionless
+    # recovery succeeds. Treat only that explicit provider failure as
+    # transient, and prove it did not mutate the installed pair or receipt.
+    assert_rate_limit_failure_json "$evidence_dir/already-latest.json" "$expected"
+    assert_version "$bin_dir/nd300" "$expected"
+    assert_version "$bin_dir/speedqx" "$expected"
+    assert_receipt "$expected"
+    write_pair_fingerprint "$evidence_dir/after-noop-fingerprint.json"
+    cmp -s \
+        "$evidence_dir/before-noop-fingerprint.json" \
+        "$evidence_dir/after-noop-fingerprint.json" \
+        || fail "rate-limited no-op check mutated the installed binary pair"
+    noop_result=rate-limit-safe-failure
+else
+    fail "already-latest check exited $noop_exit"
+fi
 
 "$bin_dir/nd300" uninstall --json --no-color | tee "$evidence_dir/uninstall.json"
 python3 - "$evidence_dir/uninstall.json" <<'PY'
@@ -267,7 +306,7 @@ entrypoint=$invoker
 strategy=$expected_strategy
 legacy_recovery=$recovery
 paired_update=pass
-already_latest=pass
+already_latest=$noop_result
 uninstall=pass
 EOF
 

@@ -9,7 +9,9 @@
 use crate::platform::invoking_user::InvokingUser;
 use crate::VERSION;
 use sha2::{Digest, Sha256};
-use std::ffi::{CString, OsStr, OsString};
+#[cfg(target_os = "macos")]
+use std::ffi::OsString;
+use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
