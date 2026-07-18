@@ -72,7 +72,9 @@ jobs:
   build:
     name: Build, sign, and notarize universal PKG-in-DMG
     needs: credential-preflight
-    if: ${{ github.event_name == 'workflow_call' || (github.event_name == 'workflow_dispatch' && inputs.preflight_only == false) }}
+    # A reusable workflow retains the tag-push caller's event context, so the
+    # required source SHA—not `github.event_name`—identifies workflow_call.
+    if: ${{ inputs.source_sha != '' || (github.event_name == 'workflow_dispatch' && inputs.preflight_only == false) }}
     runs-on: macos-15-intel
     permissions:
       contents: read
@@ -125,6 +127,13 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
 
+      # Checkout cleans a pre-existing non-Git workspace. Do it before placing
+      # the exact release archives under upstream/ so they cannot be deleted.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.source_sha }}
+          persist-credentials: false
+
       - name: Download and verify exact signed architecture archives
         env:
           GH_TOKEN: ${{ github.token }}
@@ -147,11 +156,6 @@ jobs:
               --signer-repo "$GITHUB_REPOSITORY" \
               --source-digest "$SOURCE_SHA" --format json >/dev/null
           done
-
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ steps.release.outputs.source_sha }}
-          persist-credentials: false
 
       - name: Build signed and notarized universal DMG
         timeout-minutes: 45
@@ -200,6 +204,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@v7
         with:
           name: nd300-universal-macos-dmg
