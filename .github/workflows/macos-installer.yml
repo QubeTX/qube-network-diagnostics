@@ -1,4 +1,4 @@
-name: macOS Universal PKG-in-DMG
+name: macOS Universal Installer
 
 on:
   pull_request:
@@ -70,7 +70,7 @@ jobs:
         run: scripts/verify-apple-installer-identity.sh
 
   build:
-    name: Build, sign, and notarize universal PKG-in-DMG
+    name: Build, sign, and notarize universal PKG and compatibility DMG
     needs: credential-preflight
     # A reusable workflow retains the tag-push caller's event context, so the
     # required source SHA—not `github.event_name`—identifies workflow_call.
@@ -157,7 +157,7 @@ jobs:
               --source-digest "$SOURCE_SHA" --format json >/dev/null
           done
 
-      - name: Build signed and notarized universal DMG
+      - name: Build signed and notarized universal installers
         timeout-minutes: 45
         env:
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
@@ -180,9 +180,11 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: nd300-universal-macos-dmg
+          name: nd300-universal-macos-installers
           if-no-files-found: error
           path: |
+            output/nd300-universal-apple-darwin.pkg
+            output/nd300-universal-apple-darwin.pkg.sha256
             output/nd300-universal-apple-darwin.dmg
             output/nd300-universal-apple-darwin.dmg.sha256
             output/nd300-private-downgrade-test-fixture.pkg
@@ -210,7 +212,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v7
         with:
-          name: nd300-universal-macos-dmg
+          name: nd300-universal-macos-installers
           path: artifact
       - name: Download managed-archive takeover fixture
         env:
@@ -224,7 +226,7 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir upstream --pattern "$archive" --pattern "$archive.sha256"
           (cd upstream && shasum -a 256 -c "$archive.sha256")
 
-      - name: Mount, install, update-check, uninstall, and reinstall
+      - name: Verify containers, install, update-check, uninstall, and reinstall
         env:
           VERSION: ${{ needs.build.outputs.version }}
           TARGET: ${{ matrix.target }}
@@ -233,6 +235,7 @@ jobs:
         shell: bash
         run: |
           scripts/validate-macos-pkg-lifecycle.sh \
+            "$PWD/artifact/nd300-universal-apple-darwin.pkg" \
             "$PWD/artifact/nd300-universal-apple-darwin.dmg" \
             "$PWD/upstream/nd300-${TARGET}.tar.xz" \
             "$VERSION" \
@@ -279,7 +282,7 @@ jobs:
           path: ${{ runner.temp }}/nd300-${{ matrix.target }}.tar.xz
 
   candidate-package:
-    name: Candidate signed and notarized PKG-in-DMG
+    name: Candidate signed and notarized PKG and compatibility DMG
     needs: [credential-preflight, candidate-thin]
     if: ${{ github.event_name == 'pull_request' && needs.credential-preflight.result == 'success' && needs.candidate-thin.result == 'success' }}
     runs-on: macos-15-intel
@@ -323,6 +326,8 @@ jobs:
           name: candidate-macos-installer
           if-no-files-found: error
           path: |
+            output/nd300-universal-apple-darwin.pkg
+            output/nd300-universal-apple-darwin.pkg.sha256
             output/nd300-universal-apple-darwin.dmg
             output/nd300-universal-apple-darwin.dmg.sha256
             output/nd300-private-downgrade-test-fixture.pkg
@@ -363,13 +368,14 @@ jobs:
         shell: bash
         run: |
           scripts/validate-macos-pkg-lifecycle.sh \
+            "$PWD/artifact/nd300-universal-apple-darwin.pkg" \
             "$PWD/artifact/nd300-universal-apple-darwin.dmg" \
             "$PWD/upstream/nd300-${TARGET}.tar.xz" \
             "$VERSION" \
             "$PWD/artifact/nd300-private-downgrade-test-fixture.pkg"
 
   publish:
-    name: Attest, publish, and verify the exact 30-asset release
+    name: Attest, publish, and verify the exact 32-asset release
     needs: [build, validate]
     runs-on: ubuntu-22.04
     permissions:
@@ -383,7 +389,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v7
         with:
-          name: nd300-universal-macos-dmg
+          name: nd300-universal-macos-installers
           path: artifact
       - name: Refuse overwrite of immutable release assets
         env:
@@ -393,7 +399,9 @@ jobs:
         run: |
           set -euo pipefail
           existing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
-          for asset in nd300-universal-apple-darwin.dmg nd300-universal-apple-darwin.dmg.sha256; do
+          for asset in \
+            nd300-universal-apple-darwin.pkg nd300-universal-apple-darwin.pkg.sha256 \
+            nd300-universal-apple-darwin.dmg nd300-universal-apple-darwin.dmg.sha256; do
             if grep -Fqx "$asset" <<< "$existing"; then
               echo "refusing to overwrite already-published immutable asset: $asset" >&2
               exit 1
@@ -402,15 +410,19 @@ jobs:
       - uses: actions/attest-build-provenance@v3
         with:
           subject-path: |
+            artifact/nd300-universal-apple-darwin.pkg
+            artifact/nd300-universal-apple-darwin.pkg.sha256
             artifact/nd300-universal-apple-darwin.dmg
             artifact/nd300-universal-apple-darwin.dmg.sha256
-      - name: Upload versionless DMG assets
+      - name: Upload versionless Mac installer assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.build.outputs.tag }}
         shell: bash
         run: |
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+            artifact/nd300-universal-apple-darwin.pkg \
+            artifact/nd300-universal-apple-darwin.pkg.sha256 \
             artifact/nd300-universal-apple-darwin.dmg \
             artifact/nd300-universal-apple-darwin.dmg.sha256
       - name: Verify exact inventory, checksums, and source attestations
@@ -426,6 +438,7 @@ jobs:
             nd300-aarch64-apple-darwin.tar.xz nd300-aarch64-apple-darwin.tar.xz.sha256
             nd300-aarch64-unknown-linux-gnu.tar.xz nd300-aarch64-unknown-linux-gnu.tar.xz.sha256
             nd300-installer.ps1 nd300-installer.sh
+            nd300-universal-apple-darwin.pkg nd300-universal-apple-darwin.pkg.sha256
             nd300-universal-apple-darwin.dmg nd300-universal-apple-darwin.dmg.sha256
             nd300-x86_64-apple-darwin.tar.xz nd300-x86_64-apple-darwin.tar.xz.sha256
             nd300-x86_64-pc-windows-msvc-corporate-setup.exe nd300-x86_64-pc-windows-msvc-corporate-setup.exe.sha256
@@ -440,11 +453,12 @@ jobs:
           printf '%s\n' "${expected[@]}" | sort > "$RUNNER_TEMP/expected.txt"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/actual.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
-          test "$(wc -l < "$RUNNER_TEMP/actual.txt" | tr -d ' ')" = 30
+          test "$(wc -l < "$RUNNER_TEMP/actual.txt" | tr -d ' ')" = 32
 
           mkdir public
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir public
           pwsh -File scripts/verify-release-checksums.ps1 -Directory public
+          (cd public && sha256sum -c nd300-universal-apple-darwin.pkg.sha256)
           (cd public && sha256sum -c nd300-universal-apple-darwin.dmg.sha256)
           for artifact in public/*; do
             for attempt in 1 2 3 4 5 6; do
@@ -457,4 +471,123 @@ jobs:
               sleep 10
             done
           done
-          echo "Verified all 30 assets and exact-source attestations."
+          echo "Verified all 32 assets and exact-source attestations."
+
+  legacy-bridge:
+    name: Validate v3.7.x compatibility DMG (${{ matrix.name }})
+    needs: [build, publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-15
+          - name: Intel
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Install the immutable v3.7.2 package baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir baseline
+          gh release download v3.7.2 --repo "$GITHUB_REPOSITORY" \
+            --dir baseline \
+            --pattern nd300-universal-apple-darwin.dmg \
+            --pattern nd300-universal-apple-darwin.dmg.sha256
+          (cd baseline && shasum -a 256 -c nd300-universal-apple-darwin.dmg.sha256)
+          dmg="$PWD/baseline/nd300-universal-apple-darwin.dmg"
+          codesign --verify --deep --strict --verbose=4 "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+          mount="$RUNNER_TEMP/nd300-v372-mount"
+          mkdir "$mount"
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount" "$dmg"
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+          pkg="$mount/nd300.pkg"
+          signature=$(pkgutil --check-signature "$pkg")
+          grep -Fq '${{ vars.APPLE_INSTALLER_SIGNING_IDENTITY }}' <<< "$signature"
+          grep -Fq 'Signed with a trusted timestamp' <<< "$signature"
+          xcrun stapler validate "$pkg"
+          spctl --assess --type install --verbose=4 "$pkg"
+          sudo installer -pkg "$pkg" -target /
+          test "$(/usr/local/bin/nd300 --version)" = 'nd300 3.7.2'
+          test "$(/usr/local/bin/speedqx --version)" = 'speedqx 3.7.2'
+          jq -e '
+            .version == "3.7.2" and
+            .install_channel == "macos-dmg-pkg"
+          ' '/Library/Application Support/ND300/install-receipt.json'
+
+      - name: Prove the new public DMG bridges to the direct PKG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ needs.build.outputs.tag }}
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+            [[ $latest == "$EXPECTED_TAG" ]] && break
+            if [[ $attempt -eq 12 ]]; then
+              echo "latest release is $latest, expected $EXPECTED_TAG" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          mkdir candidate
+          gh release download "$EXPECTED_TAG" --repo "$GITHUB_REPOSITORY" \
+            --dir candidate \
+            --pattern nd300-universal-apple-darwin.pkg \
+            --pattern nd300-universal-apple-darwin.pkg.sha256 \
+            --pattern nd300-universal-apple-darwin.dmg \
+            --pattern nd300-universal-apple-darwin.dmg.sha256
+          (cd candidate && shasum -a 256 -c nd300-universal-apple-darwin.pkg.sha256)
+          (cd candidate && shasum -a 256 -c nd300-universal-apple-darwin.dmg.sha256)
+          direct_pkg="$PWD/candidate/nd300-universal-apple-darwin.pkg"
+          dmg="$PWD/candidate/nd300-universal-apple-darwin.dmg"
+          direct_signature=$(pkgutil --check-signature "$direct_pkg")
+          grep -Fq '${{ vars.APPLE_INSTALLER_SIGNING_IDENTITY }}' <<< "$direct_signature"
+          xcrun stapler validate "$direct_pkg"
+          spctl --assess --type install --verbose=4 "$direct_pkg"
+          codesign --verify --deep --strict --verbose=4 "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+
+          mount="$RUNNER_TEMP/nd300-compatibility-mount"
+          mkdir "$mount"
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount" "$dmg"
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+          nested_pkg="$mount/nd300.pkg"
+          [[ -f $nested_pkg && ! -L $nested_pkg ]]
+          cmp "$direct_pkg" "$nested_pkg"
+
+          # Completing Apple Installer is the only interactive step in the
+          # immutable updater. The hosted bridge invokes the exact nested PKG
+          # through Apple's CLI installer, then proves the old receipt/channel
+          # converges to the new version without a duplicate installation.
+          sudo installer -pkg "$nested_pkg" -target /
+          test "$(/usr/local/bin/nd300 --version)" = "nd300 $EXPECTED_VERSION"
+          test "$(/usr/local/bin/speedqx --version)" = "speedqx $EXPECTED_VERSION"
+          pkgutil --pkg-info com.qubetx.nd300.pkg | grep -F "version: $EXPECTED_VERSION"
+          jq -e --arg version "$EXPECTED_VERSION" '
+            .version == $version and
+            .install_channel == "macos-dmg-pkg"
+          ' '/Library/Application Support/ND300/install-receipt.json'
+          test ! -e "$HOME/.cargo/bin/nd300"
+          test ! -e "$HOME/.cargo/bin/speedqx"
+
+      - name: Remove the compatibility validation package
+        if: always()
+        shell: bash
+        run: |
+          if [[ -x /usr/local/bin/nd300 ]]; then
+            sudo /usr/local/bin/nd300 --json uninstall >/dev/null || true
+          fi
+          sudo rm -f /usr/local/bin/nd300 /usr/local/bin/speedqx
+          sudo pkgutil --forget com.qubetx.nd300.pkg >/dev/null 2>&1 || true

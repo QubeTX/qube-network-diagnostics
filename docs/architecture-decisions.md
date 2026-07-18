@@ -78,7 +78,7 @@ an attempted automatic reset. That is the intended fail-safe behavior.
 ## ADR-0002: Self-update preserves the proven channel and uses immutable transactions
 
 - **Date:** 2026-07-18
-- **Status:** Accepted; extended for v3.7.1
+- **Status:** Accepted; extended for the v3.7.3 direct-package transition
 
 ### Context
 
@@ -95,7 +95,7 @@ downloaded code or an installer is trusted by Apple.
 - `nd300 update` and `speedqx update` first prove one owner, then execute only
   that owner's channel. Cargo stays Cargo; a validated Unix receipt stays on the
   managed archive path; a receipt-and-hash-proven macOS package downloads the
-  exact tagged DMG and reopens Apple Installer; Windows standalone stays
+  exact tagged PKG and reopens Apple Installer; Windows standalone stays
   standalone; and each registered MSI/EXE edition downloads its exact matching
   installer. A marker or familiar path is supporting evidence, never authority
   over the running executable and a proven package-manager/installer record.
@@ -132,26 +132,37 @@ downloaded code or an installer is trusted by Apple.
 - macOS managed-archive binaries must pass Developer ID identity, per-binary
   identifier, Team ID `M9D5379H93`, hardened runtime, timestamp, and Gatekeeper
   install-policy acceptance with `source=Notarized Developer ID` before
-  installation. The preferred macOS artifact is a versionless universal DMG
-  signed with Developer ID Application. It contains only a versionless PKG
-  signed with Developer ID Installer; both containers must be notarized,
-  stapled, and accepted by Gatekeeper. The PKG owns exactly the universal
+  installation. The native macOS installer artifact is the versionless universal
+  `nd300-universal-apple-darwin.pkg`, signed with Developer ID Installer,
+  notarized, stapled, and accepted by Gatekeeper. The PKG owns exactly the universal
   `nd300`/`speedqx` pair plus a root-owned hash-bound install receipt, and its
   identifier, version, payload, signing identity, and trusted timestamp are
-  verified before Apple Installer opens.
-- Package update downloads the exact-tag DMG and checksum sidecar to private
-  temporary storage, validates the outer DMG and nested PKG, opens Apple
-  Installer with a bounded wait, and then re-proves the receipt, hashes, and
+  verified before Apple Installer opens. The public JSON strategy
+  `mac_dmg_pkg` and receipt channel `macos-dmg-pkg` remain stable compatibility
+  identifiers; changing transport does not break installed receipts or consumers.
+- Package update downloads the exact-tag PKG and checksum sidecar to private
+  temporary storage, validates the Developer ID Installer identity, timestamp,
+  stapled ticket, Gatekeeper install policy, exact payload, package metadata,
+  and version, opens Apple Installer with a bounded wait, and then re-proves the receipt, hashes, and
   versions. Cancellation or failure leaves the installed pair in place and
   reports the exact matching tagged artifact plus the versionless install page.
   Package uninstall removes only the proven pair and receipt and forgets
   `com.qubetx.nd300.pkg` through an authorized native command.
+- The signed/notarized/stapled DMG and its sidecar remain public solely because
+  immutable v3.7.1 and v3.7.2 clients request that name. It contains the exact
+  same PKG bytes as the preferred direct artifact. Native Intel and Apple
+  Silicon validation proves that byte identity in addition to the direct-PKG
+  install, repair, downgrade, update-selection, uninstall, and reinstall lifecycle.
 - Release CI requires Apple notarization status `Accepted`, re-verifies the
   candidate on native Intel and ARM hosts, and later re-verifies the exact public
-  quarantined bytes on both architectures.
+  quarantined bytes on both architectures. After publication, both native hosts
+  install the immutable v3.7.2 package baseline and prove the new compatibility
+  DMG contains the exact direct-PKG bytes and converges the receipt-bound pair
+  without a duplicate. Completing the old GUI updater remains the final
+  physical-Mac acceptance because hosted runners cannot approve Apple Installer prompts.
 - A release tag is created once at the exact green default-branch SHA only after
   the matching crate is public. Release and reusable Windows workflows retain
-  that tag context, publish exactly 30 assets, verify every sidecar and aggregate
+  that tag context, publish exactly 32 assets, verify every sidecar and aggregate
   checksum, and bind every attestation to the tag SHA before announcement.
 
 The managed archive remains supported for existing users and is a standalone
@@ -167,15 +178,17 @@ exact-version, paired-binary, rollback, or trust rules.
 
 ND300 never changes channel merely because the intended strategy failed. A
 failure retains or restores the last working pair and gives same-channel manual
-recovery guidance. Already-published old clients cannot be changed retroactively;
-their compatibility boundary is a safe, explicit no-mutation failure followed
-by a versionless fresh installer. Releases stop when ownership, checksum,
+recovery guidance. Already-published clients cannot be changed retroactively,
+so release artifacts named by a safe older updater remain available while the
+versionless entrypoints evolve. Documentation recommends the managed-archive
+shell installer on macOS/Linux and the PowerShell standalone installer on
+Windows; native packages remain explicit channel choices. Releases stop when ownership, checksum,
 rollback, Apple trust, asset inventory, or provenance cannot be proved.
 
 The first complete archive-channel qualification is documented in [ND-300
-v3.6.4 release qualification](release-evidence-v3.6.4.md). The native package
-and JSON-output qualification record is finalized after the immutable v3.7.2
-fix-forward release and physical acceptance.
+v3.6.4 release qualification](release-evidence-v3.6.4.md). The direct-package
+transition receives its final exact-SHA, Apple, public-matrix, and physical-Mac
+qualification record after the immutable v3.7.3 release completes.
 
 ## ADR-0003: Elevated Unix actions operate in the invoking user's context
 

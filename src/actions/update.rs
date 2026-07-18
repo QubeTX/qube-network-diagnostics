@@ -77,7 +77,7 @@ enum UpdateStrategy {
     #[cfg(unix)]
     UnixArchive,
     #[cfg(target_os = "macos")]
-    MacDmgPackage,
+    MacPackage,
     InstallerPowerShell,
     InstallerPwsh,
     /// Re-runs the Global perMachine MSI (UAC required).
@@ -97,7 +97,7 @@ impl UpdateStrategy {
             #[cfg(unix)]
             UpdateStrategy::UnixArchive => "verified release archive",
             #[cfg(target_os = "macos")]
-            UpdateStrategy::MacDmgPackage => "macOS DMG / PKG installer",
+            UpdateStrategy::MacPackage => "macOS Apple Installer package",
             UpdateStrategy::InstallerPowerShell => "PowerShell installer",
             UpdateStrategy::InstallerPwsh => "pwsh installer",
             UpdateStrategy::MsiGlobal => "Global MSI installer",
@@ -113,7 +113,9 @@ impl UpdateStrategy {
             #[cfg(unix)]
             UpdateStrategy::UnixArchive => "unix_archive",
             #[cfg(target_os = "macos")]
-            UpdateStrategy::MacDmgPackage => "mac_dmg_pkg",
+            // This public identifier predates the direct-PKG transport. Keep it
+            // stable for existing JSON consumers and installed receipts.
+            UpdateStrategy::MacPackage => "mac_dmg_pkg",
             UpdateStrategy::InstallerPowerShell => "installer_powershell",
             UpdateStrategy::InstallerPwsh => "installer_pwsh",
             UpdateStrategy::MsiGlobal => "msi_global",
@@ -922,7 +924,7 @@ async fn build_strategy_list() -> Result<Vec<UpdateStrategy>, String> {
             UnixOriginKind::MacPackage => {
                 #[cfg(target_os = "macos")]
                 {
-                    Ok(vec![UpdateStrategy::MacDmgPackage])
+                    Ok(vec![UpdateStrategy::MacPackage])
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
@@ -991,7 +993,7 @@ async fn try_strategy(strategy: UpdateStrategy, latest: &str) -> Result<(), Stra
         #[cfg(unix)]
         UpdateStrategy::UnixArchive => try_unix_archive(latest).await,
         #[cfg(target_os = "macos")]
-        UpdateStrategy::MacDmgPackage => try_macos_package(latest).await,
+        UpdateStrategy::MacPackage => try_macos_package(latest).await,
         UpdateStrategy::InstallerPowerShell => try_installer_powershell("powershell", latest),
         UpdateStrategy::InstallerPwsh => try_installer_powershell("pwsh", latest),
         UpdateStrategy::MsiGlobal => {
@@ -1137,7 +1139,7 @@ fn install_channel_json_id() -> String {
 fn recovery_asset_for_strategy(strategy: UpdateStrategy) -> Option<&'static str> {
     match strategy {
         #[cfg(target_os = "macos")]
-        UpdateStrategy::MacDmgPackage => Some("nd300-universal-apple-darwin.dmg"),
+        UpdateStrategy::MacPackage => Some("nd300-universal-apple-darwin.pkg"),
         UpdateStrategy::MsiGlobal => Some(MSI_GLOBAL_ASSET),
         UpdateStrategy::MsiCorporate => Some(MSI_CORPORATE_ASSET),
         UpdateStrategy::ExeGlobal => Some(EXE_GLOBAL_ASSET),
@@ -2650,7 +2652,16 @@ mod tests {
         assert_eq!(UpdateStrategy::ExeGlobal.json_id(), "exe_global");
         assert_eq!(UpdateStrategy::ExeCorporate.json_id(), "exe_corporate");
         #[cfg(target_os = "macos")]
-        assert_eq!(UpdateStrategy::MacDmgPackage.json_id(), "mac_dmg_pkg");
+        assert_eq!(UpdateStrategy::MacPackage.json_id(), "mac_dmg_pkg");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_package_recovery_uses_the_direct_versionless_pkg() {
+        assert_eq!(
+            recovery_asset_for_strategy(UpdateStrategy::MacPackage),
+            Some("nd300-universal-apple-darwin.pkg")
+        );
     }
 
     #[test]
@@ -2723,7 +2734,7 @@ mod tests {
             UpdateStrategy::InstallerPowerShell.label(),
             UpdateStrategy::InstallerPwsh.label(),
             UpdateStrategy::UnixArchive.label(),
-            UpdateStrategy::MacDmgPackage.label(),
+            UpdateStrategy::MacPackage.label(),
         ];
         let unique: std::collections::HashSet<_> = labels.iter().collect();
         assert_eq!(

@@ -29,7 +29,7 @@ use super::uninstall::CleanupReport;
 const RELEASE_BASE: &str = "https://github.com/QubeTX/qube-network-diagnostics/releases/download";
 const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(target_os = "macos")]
-const MAX_DMG_BYTES: usize = 256 * 1024 * 1024;
+const MAX_PKG_BYTES: usize = 256 * 1024 * 1024;
 const MAX_SIDECAR_BYTES: usize = 8 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const MAX_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
@@ -49,9 +49,7 @@ const MACOS_PKG_ID: &str = "com.qubetx.nd300.pkg";
 #[cfg(target_os = "macos")]
 const MACOS_INSTALL_RECEIPT: &str = "/Library/Application Support/ND300/install-receipt.json";
 #[cfg(target_os = "macos")]
-const MACOS_DMG_ASSET: &str = "nd300-universal-apple-darwin.dmg";
-#[cfg(target_os = "macos")]
-const MACOS_DMG_IDENTIFIER: &str = "com.qubetx.nd300.dmg";
+const MACOS_PKG_ASSET: &str = "nd300-universal-apple-darwin.pkg";
 const TRANSACTION_MARKER: &str = ".nd300-update-transaction-v1";
 const COMMIT_MARKER_STAGE: &str = ".nd300-update-transaction-v1-commit";
 const NEW_ND300: &str = ".nd300-update-new-nd300";
@@ -432,27 +430,6 @@ fn path_has_symlink_component(path: &Path) -> bool {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
-        if fs::symlink_metadata(&current)
-            .ok()
-            .is_some_and(|metadata| metadata.file_type().is_symlink())
-        {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn path_has_symlink_beneath(root: &Path, path: &Path) -> bool {
-    let Ok(relative) = path.strip_prefix(root) else {
-        return true;
-    };
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(name) = component else {
-            return true;
-        };
-        current.push(name);
         if fs::symlink_metadata(&current)
             .ok()
             .is_some_and(|metadata| metadata.file_type().is_symlink())
@@ -1061,49 +1038,16 @@ pub(crate) async fn update_from_macos_package(
         ));
     }
 
-    let asset = MACOS_DMG_ASSET;
+    let asset = MACOS_PKG_ASSET;
     let url = format!("{RELEASE_BASE}/v{latest}/{asset}");
     let sidecar_url = format!("{url}.sha256");
     let temp = SecureTempDir::new()?;
-    let dmg = temp.path().join(asset);
-    download_limited(&url, &dmg, MAX_DMG_BYTES).await?;
+    let pkg = temp.path().join(asset);
+    download_limited(&url, &pkg, MAX_PKG_BYTES).await?;
     let sidecar = download_bytes_limited(&sidecar_url, MAX_SIDECAR_BYTES).await?;
     let expected = parse_sha256_sidecar(&sidecar, asset)
         .ok_or_else(|| format!("malformed SHA-256 sidecar at {sidecar_url}"))?;
-    checksum_verdict(&compute_sha256(&dmg)?, &expected)?;
-    verify_macos_dmg_trust(&dmg).await?;
-
-    let mount_path = temp.path().join("mount");
-    fs::create_dir(&mount_path)
-        .map_err(|error| format!("create private DMG mount point: {error}"))?;
-    let attach = run_bounded_command(
-        "/usr/bin/hdiutil",
-        &[
-            OsStr::new("attach"),
-            OsStr::new("-nobrowse"),
-            OsStr::new("-readonly"),
-            OsStr::new("-noautoopen"),
-            OsStr::new("-owners"),
-            OsStr::new("off"),
-            OsStr::new("-mountpoint"),
-            mount_path.as_os_str(),
-            dmg.as_os_str(),
-        ],
-    )
-    .await?;
-    if !attach.status.success() {
-        return Err(format!(
-            "could not mount the verified DMG: {}",
-            summarize_output(&attach.stdout, &attach.stderr)
-        ));
-    }
-    let mount = MountedDmg::new(mount_path);
-    let pkg = mount.path().join("nd300.pkg");
-    let metadata = fs::symlink_metadata(&pkg)
-        .map_err(|error| format!("verified DMG does not contain nd300.pkg: {error}"))?;
-    if !metadata.file_type().is_file() || path_has_symlink_beneath(mount.path(), &pkg) {
-        return Err("nd300.pkg inside the verified DMG is not a regular file".to_string());
-    }
+    checksum_verdict(&compute_sha256(&pkg)?, &expected)?;
     verify_macos_pkg(&pkg, latest, &temp).await?;
 
     eprintln!("  · Opening Apple Installer; complete or cancel the prompts there...");
@@ -1145,9 +1089,7 @@ pub(crate) async fn update_from_macos_package(
     )
     .await?;
 
-    mount.detach().map_err(|error| {
-        format!("update succeeded but the installer DMG could not detach: {error}")
-    })
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1800,106 +1742,6 @@ async fn verify_macos_trust(path: &Path, expected_identifier: &str) -> Result<()
 }
 
 #[cfg(target_os = "macos")]
-async fn verify_macos_dmg_trust(path: &Path) -> Result<(), String> {
-    let verify = run_bounded_command(
-        "/usr/bin/codesign",
-        &[
-            OsStr::new("--verify"),
-            OsStr::new("--deep"),
-            OsStr::new("--strict"),
-            OsStr::new("--verbose=4"),
-            path.as_os_str(),
-        ],
-    )
-    .await?;
-    if !verify.status.success() {
-        return Err(format!(
-            "codesign rejected the DMG: {}",
-            summarize_output(&verify.stdout, &verify.stderr)
-        ));
-    }
-
-    let details = run_bounded_command(
-        "/usr/bin/codesign",
-        &[
-            OsStr::new("-d"),
-            OsStr::new("--verbose=4"),
-            path.as_os_str(),
-        ],
-    )
-    .await?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&details.stdout),
-        String::from_utf8_lossy(&details.stderr)
-    );
-    if !details.status.success()
-        || signing_field(&text, "Identifier") != Some(MACOS_DMG_IDENTIFIER)
-        || signing_field(&text, "TeamIdentifier") != Some(MACOS_TEAM_ID)
-        || !signing_field(&text, "Authority")
-            .is_some_and(|value| value.starts_with("Developer ID Application:"))
-        || signing_field(&text, "Timestamp").is_none()
-    {
-        return Err("DMG signature identity, team, authority, or timestamp is invalid".to_string());
-    }
-
-    let cert_temp = SecureTempDir::new()?;
-    let cert_prefix = cert_temp.path().join("dmg-cert-");
-    let extract = codesign_extract_certificates_arg(&cert_prefix);
-    let extracted = run_bounded_command(
-        "/usr/bin/codesign",
-        &[OsStr::new("-d"), extract.as_os_str(), path.as_os_str()],
-    )
-    .await?;
-    if !extracted.status.success() {
-        return Err("could not extract the DMG signing certificate".to_string());
-    }
-    let mut leaf_path = cert_prefix.into_os_string();
-    leaf_path.push("0");
-    let leaf = read_limited(Path::new(&leaf_path), 128 * 1024)
-        .map_err(|error| format!("read DMG leaf certificate: {error}"))?;
-    fingerprint_verdict(&sha1_fingerprint(&leaf), MACOS_LEAF_SHA1)?;
-
-    let staple = run_bounded_command(
-        "/usr/bin/xcrun",
-        &[
-            OsStr::new("stapler"),
-            OsStr::new("validate"),
-            path.as_os_str(),
-        ],
-    )
-    .await?;
-    if !staple.status.success() {
-        return Err(format!(
-            "the DMG has no valid stapled notarization ticket: {}",
-            summarize_output(&staple.stdout, &staple.stderr)
-        ));
-    }
-    let assess = run_bounded_command(
-        "/usr/sbin/spctl",
-        &[
-            OsStr::new("--assess"),
-            OsStr::new("--type"),
-            OsStr::new("open"),
-            OsStr::new("--context"),
-            OsStr::new("context:primary-signature"),
-            OsStr::new("--ignore-cache"),
-            OsStr::new("--no-cache"),
-            OsStr::new("--verbose=4"),
-            path.as_os_str(),
-        ],
-    )
-    .await?;
-    if !assess.status.success() {
-        return Err(format!(
-            "Gatekeeper rejected the DMG: {}",
-            summarize_output(&assess.stdout, &assess.stderr)
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
 async fn verify_macos_pkg(
     pkg: &Path,
     expected_version: &str,
@@ -2022,54 +1864,6 @@ async fn run_installer_command(
         .await
         .map_err(|_| format!("{launcher} exceeded the 30-minute safety deadline"))?
         .map_err(|error| format!("failed to launch {launcher}: {error}"))
-}
-
-#[cfg(target_os = "macos")]
-struct MountedDmg {
-    path: PathBuf,
-    attached: bool,
-}
-
-#[cfg(target_os = "macos")]
-impl MountedDmg {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            attached: true,
-        }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn detach(mut self) -> Result<(), String> {
-        let output = std::process::Command::new("/usr/bin/hdiutil")
-            .arg("detach")
-            .arg(&self.path)
-            .output()
-            .map_err(|error| format!("launch hdiutil detach: {error}"))?;
-        if output.status.success() {
-            self.attached = false;
-            Ok(())
-        } else {
-            Err(summarize_output(&output.stdout, &output.stderr))
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl Drop for MountedDmg {
-    fn drop(&mut self) {
-        if self.attached {
-            let _ = std::process::Command::new("/usr/bin/hdiutil")
-                .arg("detach")
-                .arg(&self.path)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2998,25 +2792,6 @@ mod tests {
         assert!(!validate_macos_install_receipt(
             &receipt, "3.7.1", &nd300, &speedqx
         ));
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn mounted_package_check_ignores_ancestors_but_rejects_links_beneath_mount() {
-        use std::os::unix::fs::symlink;
-
-        let dir = temp_dir("mounted-package-links");
-        let mount = dir.join("mount");
-        fs::create_dir(&mount).unwrap();
-        let pkg = mount.join("nd300.pkg");
-        fs::write(&pkg, b"package").unwrap();
-        assert!(!path_has_symlink_beneath(&mount, &pkg));
-
-        let linked = mount.join("linked.pkg");
-        symlink(&pkg, &linked).unwrap();
-        assert!(path_has_symlink_beneath(&mount, &linked));
-        assert!(path_has_symlink_beneath(&mount, &dir.join("outside.pkg")));
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Validate the signed universal PKG-in-DMG lifecycle on a native macOS host.
+# Validate the preferred direct PKG and legacy-compatible DMG lifecycle.
 
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-    echo "usage: $0 <dmg> <native-archive> <version> <downgrade-fixture-pkg>" >&2
+if [[ $# -ne 5 ]]; then
+    echo "usage: $0 <pkg> <legacy-dmg> <native-archive> <version> <downgrade-fixture-pkg>" >&2
     exit 64
 fi
 
-dmg=$1
-archive=$2
-version=${3#v}
-fixture=$4
+pkg=$1
+dmg=$2
+archive=$3
+version=${4#v}
+fixture=$5
 : "${APPLE_TEAM_ID:?APPLE_TEAM_ID is required}"
 : "${APPLE_INSTALLER_SIGNING_IDENTITY:?APPLE_INSTALLER_SIGNING_IDENTITY is required}"
 [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 64
-for required in "$dmg" "${dmg}.sha256" "$archive" "$fixture"; do
+for required in "$pkg" "${pkg}.sha256" "$dmg" "${dmg}.sha256" "$archive" "$fixture"; do
     [[ -f $required ]] || {
         echo "missing validation input: $required" >&2
         exit 66
@@ -36,6 +37,18 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 (
+    cd "$(dirname "$pkg")"
+    shasum -a 256 -c "$(basename "$pkg").sha256"
+)
+signature=$(pkgutil --check-signature "$pkg")
+grep -Fq "$APPLE_INSTALLER_SIGNING_IDENTITY" <<< "$signature"
+grep -Fq 'Signed with a trusted timestamp' <<< "$signature"
+xcrun stapler validate "$pkg"
+spctl --assess --type install --verbose=4 "$pkg"
+
+# Keep the DMG indefinitely for immutable v3.7.1/v3.7.2 clients that already
+# request it, but prove it contains byte-for-byte the direct public PKG.
+(
     cd "$(dirname "$dmg")"
     shasum -a 256 -c "$(basename "$dmg").sha256"
 )
@@ -48,13 +61,11 @@ spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg
 
 hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount" "$dmg"
 mounted=true
-pkg="$mount/nd300.pkg"
-[[ -f $pkg && ! -L $pkg ]]
-signature=$(pkgutil --check-signature "$pkg")
-grep -Fq "$APPLE_INSTALLER_SIGNING_IDENTITY" <<< "$signature"
-grep -Fq 'Signed with a trusted timestamp' <<< "$signature"
-xcrun stapler validate "$pkg"
-spctl --assess --type install --verbose=4 "$pkg"
+mounted_pkg="$mount/nd300.pkg"
+[[ -f $mounted_pkg && ! -L $mounted_pkg ]]
+cmp "$pkg" "$mounted_pkg"
+hdiutil detach "$mount"
+mounted=false
 
 # A fresh PKG is the newest user intent. Seed a supported managed-archive
 # channel and prove package postinstall removes the exact old pair and receipt.
@@ -153,4 +164,4 @@ sudo installer -pkg "$pkg" -target /
 [[ $(/usr/local/bin/nd300 --version) == "nd300 $version" ]]
 sudo /usr/local/bin/nd300 --json uninstall >/dev/null
 
-echo "Validated universal PKG lifecycle, takeover, repair, downgrade, and uninstall."
+echo "Validated direct universal PKG, legacy DMG byte identity, takeover, repair, downgrade, and uninstall."

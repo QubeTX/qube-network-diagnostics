@@ -12,7 +12,7 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **25 deep diagnostics** (technician mode): ARP (+ gateway health), routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy (+ PAC/WPAD), VPN, firewall, DNS cache, IPv6 (+ real v6 fetch), MTU (+ path-MTU probe), connection states, real bufferbloat (loaded latency during saturation), reverse DNS, TLS inspection, traffic counters, route path (traceroute analysis), sustained packet loss, NAT/CGNAT analysis, Wi-Fi link quality, DNS resolver benchmark (+ hijack/DNSSEC checks), captive portal detection, clock sync (NTP)
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
 - **Eight-source SpeedQX engine** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) + M-Lab MSAK + Apple networkQuality + CacheFly + Vultr, using Methodology v4 capacity/consensus merging, agreement, confidence intervals, PDV jitter, and RPM. ND300's core diagnostic keeps the shorter Cloudflare + NDT7 run; standalone `speedqx` uses all eight.
-- **Channel-preserving self-update** — `nd300 update` / `speedqx update` proves how the running copy was installed and updates through that same channel: Cargo stays Cargo, a managed macOS/Linux archive stays a managed archive, a macOS PKG reopens its exact signed DMG/PKG channel, and each Windows MSI/EXE edition downloads its exact matching installer. Unknown, conflicted, local-build, and package-manager ownership is refused instead of guessed. Downloads are pinned to one exact release and verified before the two-binary transaction; a failure retains the old install and points to an exact matching artifact plus the versionless install page.
+- **Channel-preserving self-update** — `nd300 update` / `speedqx update` proves how the running copy was installed and updates through that same channel: Cargo stays Cargo, a managed macOS/Linux archive stays a managed archive, a macOS PKG downloads and opens its exact signed PKG, and each Windows MSI/EXE edition downloads its exact matching installer. Unknown, conflicted, local-build, and package-manager ownership is refused instead of guessed. Downloads are pinned to one exact release and verified before the two-binary transaction; a failure retains the old install and points to an exact matching artifact plus the versionless install page.
 - **SpeedQX** standalone speed test binary — all 8 providers (Methodology v4: capacity + consensus merge, I² agreement, PDV jitter, RPM) with per-provider breakdown and real-time progress; `--fast` for the quick 3-provider early-stopping run, `--skip-msak`/`--skip-apple` to trim the full run
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
@@ -22,31 +22,45 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 
 ## Installation
 
-### macOS preferred installer (universal PKG-in-DMG)
+### Shell (macOS/Linux preferred)
 
-Download `nd300-universal-apple-darwin.dmg` from the
-[latest release](https://github.com/QubeTX/qube-network-diagnostics/releases/latest),
-open `nd300.pkg`, and follow Apple Installer. The versionless universal download
-installs both commands system-wide in `/usr/local/bin` and works natively on
-Apple Silicon and Intel. The DMG and nested PKG are Developer ID signed,
-notarized, and stapled; installation uses the normal macOS authorization prompt.
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.sh | sh
+```
+
+This versionless entrypoint installs the managed-archive channel and future CLI
+updates preserve it. It installs both commands without requiring Cargo or a
+platform installer.
+
+### macOS native installer option (universal PKG)
+
+Download [`nd300-universal-apple-darwin.pkg`](https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-universal-apple-darwin.pkg)
+and follow Apple Installer. The versionless universal package installs both
+commands system-wide in `/usr/local/bin` and works natively on Apple Silicon
+and Intel. It is Developer ID Installer signed, notarized, stapled, and
+Gatekeeper assessed; installation uses the normal macOS authorization prompt.
+
+The release also retains a signed `nd300-universal-apple-darwin.dmg` solely so
+immutable v3.7.1/v3.7.2 updaters remain compatible. New downloads and package
+updates use the direct PKG; native release gates prove the compatibility DMG
+contains the exact same package bytes.
 
 A deliberate fresh PKG is the newest channel choice, including a same-version
 repair or explicit downgrade. It replaces the system pair and consolidates a
 receipt-proven managed archive in the standard Cargo home. Automatic updates
 remain latest-only and never change a proven installation channel.
 
-### Shell (macOS/Linux alternative)
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.sh | sh
-```
-
-### PowerShell (Windows)
+### PowerShell (Windows preferred)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/QubeTX/qube-network-diagnostics/releases/latest/download/nd300-installer.ps1 | iex"
 ```
+
+This versionless `irm` entrypoint installs the standalone Windows channel and
+future CLI updates preserve it. The MSI/EXE packages below remain available for
+managed deployment or an explicit installer-channel choice. A conflicting
+opposite-scope registered install is refused with uninstall guidance rather than
+leaving two active copies.
 
 ### Windows installers (MSI + EXE, Global + Corporate)
 
@@ -523,7 +537,7 @@ The updater follows a **prove, pin, verify, replace** contract:
    validated invoking user. A valid Unix receipt selects only the native archive
    transaction. On macOS, an exact root-owned `/usr/local/bin` pair, Apple
    package receipt, payload inventory, version, and hash-bound install metadata
-   select only the DMG/PKG installer transaction. Windows registry,
+   select only the direct PKG installer transaction. Windows registry,
    path, marker, and Cargo evidence select exactly one of Cargo, standalone, or
    MSI/EXE × Global/Corporate. A conflict or unknown owner changes nothing.
 3. Public commands and download links use `releases/latest`; after the latest tag
@@ -538,10 +552,10 @@ The updater follows a **prove, pin, verify, replace** contract:
    requires the pinned Developer ID certificate, Team ID `M9D5379H93`, identifiers
    `com.qubetx.nd300` and `com.qubetx.speedqx`, hardened runtime, and timestamp.
 6. Managed archives atomically replace both binaries with backups. A proven
-   macOS package instead downloads and verifies the exact-tag versionless DMG,
-   validates the outer Developer ID Application signature and nested Developer
-   ID Installer signature plus both notarization tickets, then opens Apple
-   Installer and verifies the new package receipt and pair after it closes.
+   macOS package instead downloads and verifies the exact-tag versionless PKG,
+   validates its Developer ID Installer signature, trusted timestamp, stapled
+   notarization ticket, Gatekeeper policy, payload, metadata, and version, then
+   opens Apple Installer and verifies the new package receipt and pair after it closes.
    Cancellation or failure retains the prior installation as the recovery point.
 7. On Windows, a Cargo-bin path wins over any stale installer marker. Otherwise
    ND300 proves a matching MSI/Inno owner from Add/Remove Programs and its
@@ -608,7 +622,7 @@ and safe recovery state; a failed known installer route also includes
   "action": "update",
   "success": true,
   "current_version": "3.5.2",
-  "latest_version": "3.7.2",
+  "latest_version": "3.7.3",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",
