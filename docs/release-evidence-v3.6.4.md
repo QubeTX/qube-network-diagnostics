@@ -58,6 +58,12 @@ with exit 0. A new PowerShell process proved:
 - A no-cache request to [`reports.qubetx.com/nd300`](https://reports.qubetx.com/nd300) returned HTTP 200; the production bundle contains the 3.6.4 fallback in all four source call sites and no 3.6.2 fallback. The live GitHub lookup resolves `v3.6.4`.
 - Obsolete homepage PR #7 was closed as superseded. SD-300 and Shaughv OS remain intentionally delisted/WIP.
 
+## Repository closeout
+
+- Documentation PR [#23](https://github.com/QubeTX/qube-network-diagnostics/pull/23) changed only task-board/changelog/ADR/evidence files. Head `382b7809e9f0ea6c4623cb18ae7ff67b54709ea1` passed all 18 jobs in [PR CI](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/29635703388) plus Claude review and merged as `e92bc97dc521325fc48186646931e07b56ac469f`.
+- [Exact-main CI](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/29635857169) passed all 18 jobs. [Crates publication](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/29635955214) reported that 3.6.4 was already public and skipped idempotently.
+- The cleanup audit mapped every deleted ref to merged/closed/superseded work or zero unique commits. ND removed 21 remote and 16 local stale refs; the homepage removed two remote and two local stale refs. Both repositories have one pruned primary worktree, automatic merged-branch deletion enabled, and only `main` after this record branch auto-deletes. ND's unrelated `.agents`, `.codex`, and generated installer output remain preserved.
+
 ## Deferred, non-release-blocking work
 
 - The destructive macOS service-cycle gate remains disabled pending disposable-hardware qualification.
