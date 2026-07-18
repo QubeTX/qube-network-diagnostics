@@ -1046,6 +1046,25 @@ try {
         } elseif ($safeRecoveryKind) {
             $safeRecovery = 'historical-updater-succeeded'
         }
+        if ($result.ExitCode -eq 0) {
+            # v3.7.2 establishes the strict stdout contract. Older released
+            # clients may prefix their final object with installer progress and
+            # cannot be fixed retroactively, so parse their trailing object only
+            # at that historical boundary. Every v3.7.2+ upgrade must parse as
+            # one JSON document without stripping output.
+            $updatePayload = if ([version]$BaselineVersion -ge [version]'3.7.2') {
+                $result.StdOut | ConvertFrom-Json
+            } else {
+                ConvertFrom-TrailingJsonObject $result.StdOut 'Historical successful updater output'
+            }
+            if ($updatePayload.success -ne $true -or
+                $updatePayload.update_available -ne $true -or
+                $updatePayload.current_version -ne $BaselineVersion -or
+                $updatePayload.latest_version -ne $ExpectedVersion -or
+                $updatePayload.requires_user_action -ne $false) {
+                throw "Public updater success payload was incomplete or inconsistent: $($result.StdOut)"
+            }
+        }
         if ($safeRecoveryKind) {
             [ordered]@{
                 recovery_kind = $safeRecoveryKind
@@ -1066,6 +1085,35 @@ try {
 
 Assert-InstallState $ExpectedVersion
 Write-Snapshot 'upgraded'
+
+# The installed release must always reserve stdout for one JSON document. This
+# assertion is immediately useful for the new binary and becomes a full
+# transaction-output gate once v3.7.2 is the next matrix baseline.
+$currentUpdate = Invoke-Captured $installedNd300 @('update', '--json') 'Verify strict current-version update JSON'
+$currentPayload = $currentUpdate.StdOut | ConvertFrom-Json
+if ($currentUpdate.ExitCode -eq 0) {
+    if ($currentPayload.success -ne $true -or
+        $currentPayload.update_available -ne $false -or
+        $currentPayload.current_version -ne $ExpectedVersion -or
+        $currentPayload.requires_user_action -ne $false) {
+        throw "Current-version update JSON payload was incomplete or inconsistent: $($currentUpdate.StdOut)"
+    }
+    if ($Mode -eq 'public' -and $currentPayload.latest_version -ne $ExpectedVersion) {
+        throw "Public current-version probe resolved unexpected latest version: $($currentUpdate.StdOut)"
+    }
+    if ($Mode -eq 'candidate' -and
+        [version]$currentPayload.latest_version -gt [version]$ExpectedVersion) {
+        throw "Candidate current-version probe resolved a newer public release: $($currentUpdate.StdOut)"
+    }
+} elseif ($currentUpdate.ExitCode -eq 2 -and
+          $currentPayload.success -eq $false -and
+          $currentPayload.current_version -eq $ExpectedVersion -and
+          $currentPayload.requires_user_action -eq $true -and
+          $currentPayload.message -like '*GitHub API rate limit exceeded*') {
+    Write-Host 'Current-version probe hit the documented pre-mutation GitHub API limit; strict JSON stdout still verified.'
+} else {
+    throw "Current-version update JSON probe failed unexpectedly with exit $($currentUpdate.ExitCode): $($currentUpdate.StdOut)"
+}
 
 # 3. Hidden migration interface must be dry-run safe and accept all origins.
 $migrationArgs = @('migrate-cleanup', '--json', '--dry-run', '--cargo-copy', '--other-edition')

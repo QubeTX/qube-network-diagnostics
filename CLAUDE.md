@@ -395,13 +395,17 @@ const PS_INSTALLER_ASSET: &str = "nd300-installer.ps1";
 
 ### JSON Output
 
-Supports backward-compatible `--json`. Every result adds `install_channel`, `recovery_url`, and `requires_user_action`; a failed known installer adds `exact_installer_url`. Windows retains `install_origin`:
+Supports backward-compatible `--json`. Stdout contains exactly one final JSON
+object; transaction progress and child-process status belong on stderr. Every
+result adds `install_channel`, `recovery_url`, and `requires_user_action`; a
+failed known installer adds `exact_installer_url`. Windows retains
+`install_origin`:
 ```json
 {
   "action": "update",
   "success": true,
   "current_version": "3.5.2",
-  "latest_version": "3.7.1",
+  "latest_version": "3.7.2",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",

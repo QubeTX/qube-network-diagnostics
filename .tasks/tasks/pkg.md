@@ -16,13 +16,13 @@ The DMG and nested PKG are signed, notarized, stapled, versionless, and exact-SH
 - [x] Package origin requires the exact `/usr/local/bin` pair and valid `com.qubetx.nd300.pkg` receipt
 - [x] Universal `nd300` and `speedqx` signatures, hardened runtime, team, versions, and architectures verify
 - [x] PKG and DMG Developer ID signatures, notarization tickets, Gatekeeper assessments, and checksums verify
-- [ ] Fresh-install takeover and same-channel updates pass on hosted Intel and Apple Silicon
-- [ ] Cancellation, corruption, stale receipt, ambiguous ownership, and rollback paths fail safely
-- [ ] Public release has exactly 30 expected assets and every attestation binds to the exact tag SHA
+- [x] Fresh-install takeover and same-channel updates pass on hosted Intel and Apple Silicon
+- [x] Cancellation, corruption, stale receipt, ambiguous ownership, and rollback paths fail safely
+- [x] Public release has exactly 30 expected assets and every attestation binds to the exact tag SHA
 - [ ] Physical-Mac acceptance, homepage preference, ADR, evidence, and repository cleanup finish
 
 ## Status
-Active. Implementation and the native hosted candidate are green on `fc108ebb591fd132d2c362e5333b3908bc95d66d`; public release, public updater qualification, physical-Mac acceptance, homepage, evidence, and cleanup remain. No package artifact has been published yet.
+Active. v3.7.1 is public at exact source `1ec87a7c933d2b8627fb7ef2763f9c6ce485753c`; all 30 assets, attestations, Apple trust checks, native hosted lifecycles, public Unix/Windows updater matrices, and homepage production deployment are green. The closeout audit found Windows installer progress sharing JSON stdout, so immutable v3.7.2 will isolate progress on stderr before physical acceptance, final evidence, and cleanup.
 
 ## Activity
 - 2026-07-18 04:20 — audited the dirty local TR-300 prototype and Apple notarization requirements; retained its universal/signing shape but replaced its default-branch `workflow_run`, overwrite upload, and unattested publication model with ND-300's exact-tag reusable release contract (agent: codex)
@@ -31,3 +31,7 @@ Active. Implementation and the native hosted candidate are green on `fc108ebb591
 - 2026-07-18 09:54 UTC — final cfg review found that reusable workflows retain the tag-push caller's `push` event and that release-only checkout ordering could delete downloaded archives; changed the release gate to the required source-SHA input, moved checkout before archive download, added the missing exact-SHA checkout to release lifecycle validation, and passed actionlint (agent: codex)
 - 2026-07-18 10:57 UTC — immutable v3.7.0 release run `29641288466` completed all six target builds, public archive checks, and Windows add-ons, then the reusable macOS build stopped before checkout because `gh release view` tried to infer a repository from a clean workspace; retained v3.7.0 unchanged and opened the forward-only v3.7.1 fix to bind every release lookup/download/upload/inventory command explicitly to `QubeTX/qube-network-diagnostics` (agent: codex)
 - 2026-07-18 10:08 UTC — final installer-lockstep review found the shared hidden origin could write an orphan `macos-pkg` Windows marker; Windows maintenance now rejects that macOS-only origin before opening HKCU, with a regression test. All four MSI/Inno builds, paths, scopes, paired binaries, markers, GUIDs, and macOS package identifiers are lockstep-green on the fixed tree (agent: codex)
+- 2026-07-18 11:18 UTC — merged fix-forward PR #26 as `1ec87a7c933d2b8627fb7ef2763f9c6ce485753c` after exact-head CI, native Intel/Apple-Silicon package lifecycle, Windows origin matrix, release plan, local 325-test Rust suite, and four zero-exit installer builds passed (agent: codex)
+- 2026-07-18 11:55 UTC — release run https://github.com/QubeTX/qube-network-diagnostics/actions/runs/29642484902 published v3.7.1 from the exact merge; Apple accepted and the workflow stapled the PKG and DMG, both native package lifecycles passed, exactly 30 assets were published, and every attestation bound to the tag SHA (agent: codex)
+- 2026-07-18 13:05 UTC — fresh public Unix run 29643187777 passed five channel-preserving rows and Windows run 29643187134 passed all 12 installer/Cargo/legacy/takeover/refusal rows after one pre-mutation public API 403 was retried on a fresh VM; homepage PR #9 merged and its Vercel production bundle recommends the versionless universal DMG with four 3.7.1 fallbacks (agent: codex)
+- 2026-07-18 13:35 UTC — ADR/evidence reconciliation found the original Windows installer-aware updater wrote direct download/checksum/launch messages and standalone PowerShell child progress to stdout before its final JSON object. The transaction remained safe, but automation needed trailing-object recovery. Started forward-only v3.7.2 to route all transaction/child progress to stderr, add a subprocess-routing regression, and make strict stdout parsing a permanent public-matrix requirement for v3.7.2+ starting versions (agent: codex)

@@ -592,14 +592,23 @@ Current releases publish the canonical `nd300-installer.sh` and `nd300-installer
 
 ### Update JSON output
 
-In `--json` mode, the response includes `"strategy"` (the precise variant that ran or was attempted) and, on failure, an `"attempts"` array. The legacy `"method"` field still maps to `"cargo"` or `"installer"` for backward compatibility. Additive `"install_channel"`, `"recovery_url"`, and `"requires_user_action"` fields describe the proven owner and safe recovery state; a failed known installer route also includes `"exact_installer_url"`. On **Windows**, every update payload also carries `"install_origin"` — one of `msi-global`, `msi-corporate`, `exe-global`, `exe-corporate`, `cargo-or-installer`, or `unknown`.
+In `--json` mode, stdout contains exactly one response object; download,
+verification, and installer progress use stderr. The response includes
+`"strategy"` (the precise variant that ran or was attempted) and, on failure,
+an `"attempts"` array. The legacy `"method"` field still maps to `"cargo"` or
+`"installer"` for backward compatibility. Additive `"install_channel"`,
+`"recovery_url"`, and `"requires_user_action"` fields describe the proven owner
+and safe recovery state; a failed known installer route also includes
+`"exact_installer_url"`. On **Windows**, every update payload also carries
+`"install_origin"` — one of `msi-global`, `msi-corporate`, `exe-global`,
+`exe-corporate`, `cargo-or-installer`, or `unknown`.
 
 ```json
 {
   "action": "update",
   "success": true,
   "current_version": "3.5.2",
-  "latest_version": "3.7.1",
+  "latest_version": "3.7.2",
   "update_available": true,
   "method": "installer",
   "strategy": "msi_corporate",

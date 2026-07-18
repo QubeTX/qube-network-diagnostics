@@ -24,6 +24,8 @@ use crate::config::{Config, OutputFormat};
 use crate::render::color;
 use crate::VERSION;
 
+#[cfg(any(windows, test))]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::process::{Command, Output, Stdio};
@@ -1443,9 +1445,12 @@ fn cargo_failure_suggests_existing_binary_collision(message: &str) -> bool {
 /// - `Err(other)` → `Preflight` (couldn't even spawn).
 /// - non-zero exit → `Runtime` (ran but failed).
 /// - zero exit → `Ok`.
+///
+/// Child stdout/stderr is captured and forwarded only to parent stderr so JSON
+/// mode retains one machine-readable stdout document.
 #[cfg(windows)]
 fn run_command_status(launcher: &Path, args: &[&str]) -> Result<(), StrategyError> {
-    let res = Command::new(launcher).args(args).status();
+    let res = Command::new(launcher).args(args).output();
     match res {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(StrategyError::Preflight(
             format!("{} was not found", launcher.display()),
@@ -1455,13 +1460,38 @@ fn run_command_status(launcher: &Path, args: &[&str]) -> Result<(), StrategyErro
             launcher.display(),
             e
         ))),
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(StrategyError::Runtime(format!(
-            "{} exited with code {}",
-            launcher.display(),
-            s.code().unwrap_or(-1)
-        ))),
+        Ok(output) => {
+            forward_child_output(&output);
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(StrategyError::Runtime(format!(
+                    "{} exited with code {}",
+                    launcher.display(),
+                    output.status.code().unwrap_or(-1)
+                )))
+            }
+        }
     }
+}
+
+/// Preserve human-visible installer output without allowing a child process to
+/// contaminate the final JSON object on the parent's stdout.
+#[cfg(windows)]
+fn forward_child_output(output: &Output) {
+    let mut stderr = std::io::stderr().lock();
+    let _ = write_child_output(&mut stderr, &output.stdout, &output.stderr);
+}
+
+#[cfg(any(windows, test))]
+fn write_child_output<W: Write>(
+    writer: &mut W,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> std::io::Result<()> {
+    writer.write_all(stdout)?;
+    writer.write_all(stderr)?;
+    writer.flush()
 }
 
 #[cfg(windows)]
@@ -1673,7 +1703,9 @@ fn compute_sha256(path: &std::path::Path) -> Result<String, String> {
 /// separate trust layer.
 #[cfg(windows)]
 fn verify_checksum(installer_path: &std::path::Path, installer_url: &str) -> Result<(), String> {
-    println!("  Verifying SHA256 checksum...");
+    // Transaction progress belongs on stderr so `update --json` reserves
+    // stdout for its one final machine-readable object.
+    eprintln!("  Verifying SHA256 checksum...");
     let sidecar_content = fetch_sha256_sidecar(installer_url)?;
     let expected = parse_sha256_sidecar(&sidecar_content).ok_or_else(|| {
         format!(
@@ -1807,31 +1839,32 @@ fn try_msi_install(url: &str, latest: &str) -> Result<(), StrategyError> {
     let temp_path = std::env::temp_dir().join(format!("nd300-update-{}.msi", latest));
 
     let result = (|| -> Result<(), StrategyError> {
-        println!("  Downloading MSI installer...");
+        eprintln!("  Downloading MSI installer...");
         download_to_file(url, &temp_path)
             .map_err(|e| StrategyError::Runtime(format!("Download failed: {}", e)))?;
 
         verify_checksum(&temp_path, url).map_err(StrategyError::Runtime)?;
 
-        println!("  Launching Windows Installer...");
+        eprintln!("  Launching Windows Installer...");
         // /passive shows a progress dialog with no user interaction; /norestart
         // suppresses any reboot prompt. For the Global perMachine MSI, msiexec
         // triggers UAC; for the Corporate perUser MSI, it installs silently into
         // LocalAppData with no elevation prompt.
         let msiexec = super::uninstall::system_msiexec_path().map_err(StrategyError::Preflight)?;
-        let status = Command::new(&msiexec)
+        let output = Command::new(&msiexec)
             .args(["/i", &temp_path.to_string_lossy(), "/passive", "/norestart"])
-            .status()
+            .output()
             .map_err(|e| StrategyError::Preflight(format!("Failed to spawn msiexec: {}", e)))?;
+        forward_child_output(&output);
 
-        let code = status.code().unwrap_or(-1);
+        let code = output.status.code().unwrap_or(-1);
         if code == MSI_EXIT_REBOOT_REQUIRED {
             return Err(StrategyError::Runtime(format!(
                 "MSI install completed but requires a reboot to finalize (msiexec exit {}). Reboot, then verify with `nd300 --version`.",
                 MSI_EXIT_REBOOT_REQUIRED
             )));
         }
-        if !status.success() {
+        if !output.status.success() {
             return Err(StrategyError::Runtime(format!(
                 "msiexec exited with code {} (likely user cancel, UAC denied, or install error)",
                 code
@@ -1861,24 +1894,25 @@ fn try_exe_install(url: &str, latest: &str) -> Result<(), StrategyError> {
     let temp_path = std::env::temp_dir().join(format!("nd300-update-{}-setup.exe", latest));
 
     let result = (|| -> Result<(), StrategyError> {
-        println!("  Downloading EXE installer...");
+        eprintln!("  Downloading EXE installer...");
         download_to_file(url, &temp_path)
             .map_err(|e| StrategyError::Runtime(format!("Download failed: {}", e)))?;
 
         verify_checksum(&temp_path, url).map_err(StrategyError::Runtime)?;
 
-        println!("  Launching Inno Setup installer...");
-        let status = Command::new(&temp_path)
+        eprintln!("  Launching Inno Setup installer...");
+        let output = Command::new(&temp_path)
             .args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
-            .status()
+            .output()
             .map_err(|e| {
                 StrategyError::Preflight(format!("Failed to spawn EXE installer: {}", e))
             })?;
+        forward_child_output(&output);
 
-        if !status.success() {
+        if !output.status.success() {
             return Err(StrategyError::Runtime(format!(
                 "EXE installer exited with code {} (likely user cancel, UAC denied, or install error)",
-                status.code().unwrap_or(-1)
+                output.status.code().unwrap_or(-1)
             )));
         }
 
@@ -2360,6 +2394,54 @@ fn normalize_product_code(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_output_writer_routes_both_streams_to_one_destination() {
+        let mut destination = Vec::new();
+        write_child_output(&mut destination, b"child stdout\n", b"child stderr\n")
+            .expect("write child output");
+        assert_eq!(destination, b"child stdout\nchild stderr\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn command_runner_keeps_child_progress_off_parent_stdout() {
+        const HELPER_ENV: &str = "ND300_TEST_CHILD_OUTPUT_ROUTING";
+        const STDOUT_SENTINEL: &str = "nd300-child-stdout-sentinel";
+        const STDERR_SENTINEL: &str = "nd300-child-stderr-sentinel";
+
+        if std::env::var_os(HELPER_ENV).is_some() {
+            let powershell = super::super::uninstall::system_powershell_path()
+                .expect("resolve system PowerShell");
+            let script = format!(
+                "[Console]::Out.WriteLine('{STDOUT_SENTINEL}'); [Console]::Error.WriteLine('{STDERR_SENTINEL}')"
+            );
+            run_command_status(
+                &powershell,
+                &["-NoProfile", "-NonInteractive", "-Command", &script],
+            )
+            .expect("run child-output fixture");
+            return;
+        }
+
+        let current_test = std::env::current_exe().expect("resolve current test binary");
+        let output = Command::new(current_test)
+            .args([
+                "command_runner_keeps_child_progress_off_parent_stdout",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "1")
+            .output()
+            .expect("run nested output-routing test");
+        assert!(output.status.success());
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stdout.contains(STDOUT_SENTINEL), "{stdout}");
+        assert!(!stdout.contains(STDERR_SENTINEL), "{stdout}");
+        assert!(stderr.contains(STDOUT_SENTINEL), "{stderr}");
+        assert!(stderr.contains(STDERR_SENTINEL), "{stderr}");
+    }
 
     #[test]
     fn retired_update_names_match_the_migration_allowlist() {
