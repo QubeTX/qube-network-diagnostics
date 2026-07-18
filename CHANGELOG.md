@@ -24,7 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletion first and uses its trusted retry helper only when Windows proves the
   target is still locked. Previously every `nd300.exe` removal was deferred even
   when the old Cargo copy was not running, creating a timing window where a fresh
-  shell could still resolve the superseded channel.
+  shell could still resolve the superseded channel. Pair cleanup now tracks a
+  locked `speedqx.exe` independently: a successfully armed retry is reported as
+  scheduled, while failure to arm it retains `nd300.exe` and reports incomplete
+  cleanup instead of claiming that a partial pair was removed.
 
 ## [3.6.3] - 2026-07-17
 
