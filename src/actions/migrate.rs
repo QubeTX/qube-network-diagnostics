@@ -294,6 +294,7 @@ async fn execute_macos_cargo_copy(args: &MigrateArgs) -> TargetReport {
         cargo_dist_receipt_valid, cargo_package_registered, cargo_uninstall,
         uninstall_managed_archive, UnixInstallOrigin, UnixOriginKind,
     };
+    use crate::cli::MigrateInstallOrigin;
     use crate::platform::invoking_user::InvokingUser;
 
     let id = "cargo_copy";
