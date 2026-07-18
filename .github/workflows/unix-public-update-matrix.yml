@@ -1,0 +1,141 @@
+name: Unix Public Update Matrix
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/unix-public-update-matrix.yml'
+      - 'scripts/unix-public-update-matrix.sh'
+  workflow_dispatch:
+    inputs:
+      baseline_version:
+        description: 'Receipt-aware public baseline for normal channel updates'
+        required: true
+        type: string
+        default: '3.6.2'
+      legacy_baseline_version:
+        description: 'Pre-receipt-aware public baseline for migration coverage'
+        required: true
+        type: string
+        default: '3.5.2'
+      expected_version:
+        description: 'Expected public latest version'
+        required: true
+        type: string
+        default: '3.6.3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unix-public-update-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-update:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: macos-arm-managed
+            label: macOS ARM managed archive
+            runner: macos-15
+            channel: managed
+            baseline_kind: current
+            invoker: nd300
+            strategy: macos_pre_fix_safe_fallback
+            hide_cargo: 'true'
+            target: aarch64-apple-darwin
+          - id: macos-intel-managed
+            label: macOS Intel managed archive via speedqx
+            runner: macos-15-intel
+            channel: managed
+            baseline_kind: current
+            invoker: speedqx
+            strategy: macos_pre_fix_safe_fallback
+            hide_cargo: 'true'
+            target: x86_64-apple-darwin
+          - id: linux-current-managed
+            label: Linux x86_64 managed archive
+            runner: ubuntu-24.04
+            channel: managed
+            baseline_kind: current
+            invoker: speedqx
+            strategy: unix_archive
+            hide_cargo: 'true'
+          - id: linux-legacy-managed
+            label: Linux x86_64 legacy shell migration
+            runner: ubuntu-24.04
+            channel: managed
+            baseline_kind: legacy
+            invoker: nd300
+            strategy: legacy_safe_fallback
+            hide_cargo: 'true'
+          - id: linux-cargo
+            label: Linux x86_64 Cargo via speedqx
+            runner: ubuntu-24.04
+            channel: cargo
+            baseline_kind: current
+            invoker: speedqx
+            strategy: cargo
+            hide_cargo: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up release Rust toolchain for Cargo or macOS trust fixture
+        if: matrix.channel == 'cargo' || startsWith(matrix.id, 'macos-')
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Exercise published update and uninstall lifecycle
+        shell: bash
+        env:
+          CURRENT_BASELINE_VERSION: ${{ inputs.baseline_version || '3.6.2' }}
+          LEGACY_BASELINE_VERSION: ${{ inputs.legacy_baseline_version || '3.5.2' }}
+          EXPECTED_VERSION: ${{ inputs.expected_version || '3.6.3' }}
+          BASELINE_KIND: ${{ matrix.baseline_kind }}
+          EVIDENCE_DIR: ${{ runner.temp }}/nd300-unix-public-evidence
+        run: |
+          if [[ "$BASELINE_KIND" == legacy ]]; then
+            baseline=$LEGACY_BASELINE_VERSION
+          else
+            baseline=$CURRENT_BASELINE_VERSION
+          fi
+          bash scripts/unix-public-update-matrix.sh \
+            '${{ matrix.channel }}' \
+            "$baseline" \
+            "$EXPECTED_VERSION" \
+            '${{ matrix.invoker }}' \
+            '${{ matrix.strategy }}' \
+            '${{ matrix.hide_cargo }}'
+
+      - name: Verify current trust reader against signed public Mac binaries
+        if: always() && startsWith(matrix.id, 'macos-')
+        shell: bash
+        env:
+          FIXTURE_VERSION: ${{ inputs.expected_version || '3.6.3' }}
+          FIXTURE_TARGET: ${{ matrix.target }}
+        run: |
+          fixture_root="$RUNNER_TEMP/nd300-signed-trust-fixture"
+          mkdir -p "$fixture_root"
+          asset="nd300-${FIXTURE_TARGET}.tar.xz"
+          base="https://github.com/QubeTX/qube-network-diagnostics/releases/download/v${FIXTURE_VERSION}"
+          curl --proto '=https' --tlsv1.2 -fLsS "$base/$asset" -o "$fixture_root/$asset"
+          curl --proto '=https' --tlsv1.2 -fLsS "$base/$asset.sha256" -o "$fixture_root/$asset.sha256"
+          (
+            cd "$fixture_root"
+            shasum -a 256 -c "$asset.sha256"
+            tar -xJf "$asset"
+          )
+          export ND300_TEST_SIGNED_PAIR_DIR="$fixture_root/nd300-${FIXTURE_TARGET}"
+          cargo test --locked --lib public_macos_signed_pair_passes_runtime_trust_verifier \
+            -- --ignored --nocapture
+
+      - name: Upload lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unix-public-update-${{ matrix.id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/nd300-unix-public-evidence
+          if-no-files-found: error

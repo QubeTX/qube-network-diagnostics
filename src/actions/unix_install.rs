@@ -9,6 +9,8 @@
 use crate::platform::invoking_user::InvokingUser;
 use crate::VERSION;
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::ffi::OsString;
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -504,6 +506,8 @@ pub(crate) async fn cargo_uninstall(user: &InvokingUser) -> Result<CleanupReport
         binary_removal_scheduled: false,
         target_retained: false,
         sibling_removed: true,
+        sibling_removal_scheduled: false,
+        sibling_removal_failed: false,
         receipt_removed,
         path_cleaned: false,
         notes,
@@ -528,6 +532,8 @@ pub(crate) async fn uninstall_detected(user: &InvokingUser) -> CleanupReport {
                     binary_removal_scheduled: false,
                     target_retained: true,
                     sibling_removed: false,
+                    sibling_removal_scheduled: false,
+                    sibling_removal_failed: false,
                     receipt_removed: false,
                     path_cleaned: false,
                     notes: vec![format!(
@@ -616,6 +622,8 @@ fn uninstall_managed_archive(user: &InvokingUser, origin: &UnixInstallOrigin) ->
             binary_removal_scheduled: false,
             target_retained: false,
             sibling_removed: speedqx_present,
+            sibling_removal_scheduled: false,
+            sibling_removal_failed: false,
             receipt_removed: false,
             path_cleaned: false,
             notes: vec![format!(
@@ -643,6 +651,8 @@ fn uninstall_managed_archive(user: &InvokingUser, origin: &UnixInstallOrigin) ->
         binary_removal_scheduled: false,
         target_retained: false,
         sibling_removed: speedqx_present,
+        sibling_removal_scheduled: false,
+        sibling_removal_failed: false,
         receipt_removed,
         path_cleaned: false,
         notes,
@@ -655,6 +665,8 @@ fn refused_cleanup(message: String) -> CleanupReport {
         binary_removal_scheduled: false,
         target_retained: false,
         sibling_removed: false,
+        sibling_removal_scheduled: false,
+        sibling_removal_failed: false,
         receipt_removed: false,
         path_cleaned: false,
         notes: vec![message],
@@ -1267,12 +1279,12 @@ async fn verify_macos_trust(path: &Path, expected_identifier: &str) -> Result<()
 
     let cert_temp = SecureTempDir::new()?;
     let cert_prefix = cert_temp.path().join("embedded-cert-");
+    let extract_certificates = codesign_extract_certificates_arg(&cert_prefix);
     let extracted = run_bounded_command(
         "/usr/bin/codesign",
         &[
             OsStr::new("-d"),
-            OsStr::new("--extract-certificates"),
-            cert_prefix.as_os_str(),
+            extract_certificates.as_os_str(),
             path.as_os_str(),
         ],
     )
@@ -1318,6 +1330,16 @@ async fn verify_macos_trust(path: &Path, expected_identifier: &str) -> Result<()
         )
     })?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn codesign_extract_certificates_arg(prefix: &Path) -> OsString {
+    // `--extract-certificates` has an optional prefix. Current codesign parses
+    // a separate following token as another code path, so bind the absolute
+    // prefix to the option itself. OsString preserves non-UTF-8 path bytes.
+    let mut argument = OsString::from("--extract-certificates=");
+    argument.push(prefix.as_os_str());
+    argument
 }
 
 #[cfg(target_os = "macos")]
@@ -2353,6 +2375,31 @@ mod tests {
         assert!(fingerprint_verdict(MACOS_LEAF_SHA1, MACOS_LEAF_SHA1).is_ok());
         let error = fingerprint_verdict(&fingerprint, MACOS_LEAF_SHA1).unwrap_err();
         assert!(error.contains("leaf certificate mismatch"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn codesign_certificate_prefix_is_bound_to_the_option() {
+        let prefix = Path::new("/tmp/nd300 certificates/embedded-cert-");
+        assert_eq!(
+            codesign_extract_certificates_arg(prefix),
+            OsString::from("--extract-certificates=/tmp/nd300 certificates/embedded-cert-")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "requires a downloaded, signed, Apple-notarized public binary pair"]
+    async fn public_macos_signed_pair_passes_runtime_trust_verifier() {
+        let fixture = std::env::var_os("ND300_TEST_SIGNED_PAIR_DIR")
+            .map(PathBuf::from)
+            .expect("ND300_TEST_SIGNED_PAIR_DIR must name the extracted public archive root");
+        verify_macos_trust(&fixture.join("nd300"), "com.qubetx.nd300")
+            .await
+            .expect("public nd300 trust verification");
+        verify_macos_trust(&fixture.join("speedqx"), "com.qubetx.speedqx")
+            .await
+            .expect("public speedqx trust verification");
     }
 
     #[cfg(target_os = "macos")]

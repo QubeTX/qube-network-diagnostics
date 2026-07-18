@@ -1048,17 +1048,21 @@ pub(crate) enum ShadowCleanupDecision {
     NotRemoved,
 }
 
-/// Map a cleanup report to a shadow-cleanup decision. `binary_removed` wins;
-/// otherwise a Windows scheduled-on-exit removal is an honest warning; otherwise
-/// it's a hard failure.
+/// Map a cleanup report to a pair-cleanup decision. Any unscheduled sibling
+/// failure is a hard failure. A delayed target or sibling is reported as
+/// scheduled even if the other member is already gone; only a fully synchronous
+/// pair cleanup is `Removed`.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn classify_shadow_cleanup(
     report: &super::uninstall::CleanupReport,
 ) -> ShadowCleanupDecision {
-    if report.binary_removed {
-        ShadowCleanupDecision::Removed
-    } else if report.binary_removal_scheduled {
+    if report.sibling_removal_failed || (!report.binary_removed && !report.binary_removal_scheduled)
+    {
+        ShadowCleanupDecision::NotRemoved
+    } else if report.binary_removal_scheduled || report.sibling_removal_scheduled {
         ShadowCleanupDecision::Scheduled
+    } else if report.binary_removed {
+        ShadowCleanupDecision::Removed
     } else {
         ShadowCleanupDecision::NotRemoved
     }
@@ -2535,6 +2539,8 @@ mod tests {
             binary_removal_scheduled: scheduled,
             target_retained: false,
             sibling_removed: false,
+            sibling_removal_scheduled: false,
+            sibling_removal_failed: false,
             receipt_removed: false,
             path_cleaned: false,
             notes: Vec::new(),
@@ -2558,10 +2564,33 @@ mod tests {
             classify_shadow_cleanup(&cleanup_report(false, false)),
             ShadowCleanupDecision::NotRemoved
         );
-        // `binary_removed` wins even if both happen to be set.
+        // Any delayed member keeps the pair outcome honest until it is gone.
         assert_eq!(
             classify_shadow_cleanup(&cleanup_report(true, true)),
-            ShadowCleanupDecision::Removed
+            ShadowCleanupDecision::Scheduled
+        );
+
+        let mut sibling_scheduled = cleanup_report(true, false);
+        sibling_scheduled.sibling_removal_scheduled = true;
+        assert_eq!(
+            classify_shadow_cleanup(&sibling_scheduled),
+            ShadowCleanupDecision::Scheduled
+        );
+
+        let mut sibling_failed = cleanup_report(true, false);
+        sibling_failed.sibling_removal_failed = true;
+        assert_eq!(
+            classify_shadow_cleanup(&sibling_failed),
+            ShadowCleanupDecision::NotRemoved,
+            "an unscheduled sibling failure must dominate primary removal"
+        );
+
+        let mut primary_failed = cleanup_report(false, false);
+        primary_failed.sibling_removal_scheduled = true;
+        assert_eq!(
+            classify_shadow_cleanup(&primary_failed),
+            ShadowCleanupDecision::NotRemoved,
+            "scheduling only the sibling must not hide primary removal failure"
         );
     }
 

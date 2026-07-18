@@ -18,15 +18,25 @@ pub(crate) struct CleanupReport {
     /// `binary_removal_scheduled`.
     pub(crate) binary_removed: bool,
     /// Windows-only: the running exe couldn't be removed now, but a background
-    /// `cmd /C … del` was successfully spawned to delete it once this process
-    /// exits. Kept distinct from `binary_removed` so the updater's shadow-cleanup
-    /// guard can tell "already gone" from "scheduled for removal on exit" and not
-    /// be silently defeated by an optimistic "removed".
+    /// trusted PowerShell retry helper was successfully spawned to delete it
+    /// once this process exits. Kept distinct from `binary_removed` so the
+    /// updater's shadow-cleanup guard can tell "already gone" from "scheduled
+    /// for removal on exit" and not be silently defeated by an optimistic
+    /// "removed".
     pub(crate) binary_removal_scheduled: bool,
     /// Unix symlink invocation: only the link was removed; the underlying
     /// package-manager/Cargo/archive target remains installed.
     pub(crate) target_retained: bool,
+    /// True when a present allowlisted sibling was removed synchronously.
     pub(crate) sibling_removed: bool,
+    /// Windows-only: at least one present allowlisted sibling was locked, but a
+    /// trusted delayed-delete helper was started for it successfully.
+    pub(crate) sibling_removal_scheduled: bool,
+    /// At least one present allowlisted sibling could neither be removed now
+    /// nor scheduled for trusted delayed deletion. This is kept internal so the
+    /// public JSON schema remains stable while pair cleanup is classified
+    /// honestly.
+    pub(crate) sibling_removal_failed: bool,
     pub(crate) receipt_removed: bool,
     pub(crate) path_cleaned: bool,
     pub(crate) notes: Vec<String>,
@@ -157,6 +167,13 @@ pub async fn run(config: &Config) -> i32 {
 
     if report.sibling_removed {
         print_ok("speedqx binary removed", config);
+    } else if report.sibling_removal_scheduled {
+        print_ok(
+            "speedqx binary scheduled for removal (completes after its process exits)",
+            config,
+        );
+    } else if report.sibling_removal_failed {
+        print_fail("Failed to remove speedqx binary", config);
     }
 
     if report.receipt_removed {
@@ -182,7 +199,9 @@ pub async fn run(config: &Config) -> i32 {
             ),
         );
         0
-    } else if report.binary_removed || report.binary_removal_scheduled {
+    } else if !report.sibling_removal_failed
+        && (report.binary_removed || report.binary_removal_scheduled)
+    {
         println!(
             "  {} {}",
             color::green(success_icon(config), config),
@@ -269,8 +288,8 @@ async fn run_json(exe_path: &Path, _config: &Config) -> i32 {
     // `binary_removed` stays a literal "is it gone right now?" so existing
     // scripts read the same field; `success` and the exit code also accept a
     // Windows scheduled removal or a Unix symlink-only removal.
-    let succeeded =
-        report.binary_removed || report.binary_removal_scheduled || report.target_retained;
+    let succeeded = !report.sibling_removal_failed
+        && (report.binary_removed || report.binary_removal_scheduled || report.target_retained);
     let output = serde_json::json!({
         "action": "uninstall",
         "success": succeeded,
@@ -305,6 +324,8 @@ async fn execute_uninstall(_exe_path: &Path) -> CleanupReport {
                     binary_removal_scheduled: false,
                     target_retained: false,
                     sibling_removed: false,
+                    sibling_removal_scheduled: false,
+                    sibling_removal_failed: false,
                     receipt_removed: false,
                     path_cleaned: false,
                     notes: vec![format!("Could not identify invoking user: {error}")],
@@ -524,6 +545,8 @@ fn empty_cleanup_report() -> CleanupReport {
         binary_removal_scheduled: false,
         target_retained: false,
         sibling_removed: false,
+        sibling_removal_scheduled: false,
+        sibling_removal_failed: false,
         receipt_removed: false,
         path_cleaned: false,
         notes: Vec::new(),
@@ -577,15 +600,46 @@ fn uninstall_path_impl(exe_path: &Path, full_cleanup: bool) -> CleanupReport {
 
             if sibling.exists() {
                 match std::fs::remove_file(&sibling) {
-                    Ok(_) => report.sibling_removed = true,
-                    Err(e) => {
-                        report
-                            .notes
-                            .push(format!("Could not remove {}: {}", sibling.display(), e))
+                    Ok(()) => report.sibling_removed = true,
+                    Err(_) if !sibling.exists() => report.sibling_removed = true,
+                    Err(error) => {
+                        report.notes.push(format!(
+                            "Immediate sibling removal was deferred because {}: {}",
+                            sibling.display(),
+                            error
+                        ));
+                        match spawn_delayed_delete(&sibling) {
+                            Ok(()) => {
+                                report.sibling_removal_scheduled = true;
+                                report.notes.push(format!(
+                                    "Scheduled trusted delayed removal for {}",
+                                    sibling.display()
+                                ));
+                            }
+                            Err(schedule_error) => {
+                                report.sibling_removal_failed = true;
+                                report.notes.push(format!(
+                                    "Could not schedule removal for {}: {}",
+                                    sibling.display(),
+                                    schedule_error
+                                ));
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+
+    // Keep the primary executable in place when a sibling could not even be
+    // scheduled. That preserves a retryable old pair instead of creating the
+    // partial state that this helper is intended to prevent.
+    if report.sibling_removal_failed {
+        report.notes.push(
+            "Primary binary retained because its sibling cleanup could not be scheduled"
+                .to_string(),
+        );
+        return report;
     }
 
     // Step 3: Clean up PATH on Windows
@@ -621,16 +675,25 @@ fn uninstall_path_impl(exe_path: &Path, full_cleanup: bool) -> CleanupReport {
 
     #[cfg(windows)]
     {
-        // On Windows, a running exe cannot be deleted directly. Spawn a trusted
-        // background PowerShell helper that retries until the process releases
-        // its image mapping. The path travels in an environment variable and is
-        // consumed with .NET LiteralPath-equivalent APIs, never shell-expanded.
-        // The file is NOT gone yet, so we set `binary_removal_scheduled` (not
-        // `binary_removed`) — the updater's shadow guard depends on the
-        // distinction.
-        match spawn_delayed_delete(exe_path) {
-            Ok(()) => report.binary_removal_scheduled = true,
-            Err(error) => report.notes.push(error),
+        // A migration target is normally an old, non-running copy and should be
+        // removed synchronously so it cannot win PATH resolution after a fresh
+        // installer completes. The top-level uninstall path may instead name
+        // this running image; Windows rejects that direct deletion, so retain
+        // the trusted retry helper only for the locked-image case. The path
+        // travels in an environment variable and is never shell-expanded.
+        match std::fs::remove_file(exe_path) {
+            Ok(()) => report.binary_removed = true,
+            Err(_) if !exe_path.exists() => report.binary_removed = true,
+            Err(error) => {
+                report.notes.push(format!(
+                    "Immediate binary removal was deferred because {}",
+                    error
+                ));
+                match spawn_delayed_delete(exe_path) {
+                    Ok(()) => report.binary_removal_scheduled = true,
+                    Err(error) => report.notes.push(error),
+                }
+            }
         }
     }
 
@@ -905,6 +968,87 @@ mod tests {
                 .as_deref(),
             Some("powershell.exe"),
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn files_only_cleanup_removes_a_non_running_pair_synchronously() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "nd300-synchronous-cleanup-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).expect("create cleanup fixture directory");
+        let nd300 = directory.join("nd300.exe");
+        let speedqx = directory.join("speedqx.exe");
+        std::fs::write(&nd300, b"old nd300").expect("create old nd300");
+        std::fs::write(&speedqx, b"old speedqx").expect("create old speedqx");
+
+        let report = uninstall_path_files_only(&nd300);
+
+        assert!(report.binary_removed, "{:#?}", report.notes);
+        assert!(!report.binary_removal_scheduled, "{:#?}", report.notes);
+        assert!(report.sibling_removed, "{:#?}", report.notes);
+        assert!(!nd300.exists());
+        assert!(!speedqx.exists());
+        std::fs::remove_dir(&directory).expect("remove cleanup fixture directory");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn files_only_cleanup_reports_a_locked_sibling_as_scheduled() {
+        use crate::actions::update::{classify_shadow_cleanup, ShadowCleanupDecision};
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "nd300-locked-sibling-cleanup-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).expect("create cleanup fixture directory");
+        let nd300 = directory.join("nd300.exe");
+        let speedqx = directory.join("speedqx.exe");
+        std::fs::write(&nd300, b"old nd300").expect("create old nd300");
+        std::fs::write(&speedqx, b"old speedqx").expect("create old speedqx");
+        let speedqx_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&speedqx)
+            .expect("open speedqx without delete sharing");
+
+        let report = uninstall_path_files_only(&nd300);
+
+        assert!(report.binary_removed, "{:#?}", report.notes);
+        assert!(!report.sibling_removed, "{:#?}", report.notes);
+        assert!(report.sibling_removal_scheduled, "{:#?}", report.notes);
+        assert!(!report.sibling_removal_failed, "{:#?}", report.notes);
+        assert_eq!(
+            classify_shadow_cleanup(&report),
+            ShadowCleanupDecision::Scheduled,
+            "a still-present sibling must never classify as Removed"
+        );
+        assert!(!nd300.exists());
+        assert!(speedqx.exists());
+
+        drop(speedqx_lock);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while speedqx.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            !speedqx.exists(),
+            "trusted helper did not remove the released sibling"
+        );
+        std::fs::remove_dir(&directory).expect("remove cleanup fixture directory");
     }
 
     #[cfg(windows)]
