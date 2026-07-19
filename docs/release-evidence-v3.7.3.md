@@ -70,11 +70,12 @@ it is not a build, signing, notarization, or release prerequisite.
 
 ## Repository closeout
 
-Pending the final closeout merge. The final closeout PR will name its exact
-head/main CI, then the branch/worktree audit will delete only
-merged/closed/superseded refs with no unpreserved unique work. ND's untracked
-`.agents`, `.codex`, and generated installer output remain outside cleanup, and
-the homepage's unrelated dirty SD-300 worktree remains untouched.
+- Evidence PR [#29](https://github.com/QubeTX/qube-network-diagnostics/pull/29) passed final exact-head CI and review at `0968b2e30ed1b74cd8fbd85a2f1f11e158d148e6` and merged as `2b1714fecbb594077ee8dc49e421a0fd6d6a4dd9`.
+- [Exact-main CI](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/29666384735) passed all 18 jobs. [Crates publication](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/29666485805) succeeded after confirming `nd300 3.7.3 is already published; skipping.`
+- ND's merged direct-PKG, release-fix, feature, and closeout local branches and task-created worktree were removed. Its remote contains only `main`; the sole local worktree is updated `main`. The unrelated untracked `.agents`, `.codex`, and generated `inno/Output` assets remain preserved.
+- The homepage's two older merged ND fallback branches, merged ND v3.7.3 branch, and task-created ND worktree were removed, including the stopped local Vite/esbuild processes and their generated dependencies. Its remote contains only `main`.
+- The homepage's dirty SD-300 branch/worktree and the TR-300 task's current `main` worktree are active unrelated work, not stale cleanup candidates, and remain untouched. This leaves both repositories at the required `main` plus explicitly active work boundary.
+- Automatic deletion of merged pull-request branches is enabled in both repositories. Refs and worktree metadata were fetched, pruned, and re-inventoried after cleanup.
 
 ## Deferred, non-release-blocking work
 
