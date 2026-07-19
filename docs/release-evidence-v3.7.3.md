@@ -60,16 +60,18 @@ user action, and no cross-channel fallback. Fresh processes then proved:
 
 ## Physical Mac result
 
-Pending only if the temporary testing Mac is available. Hosted native Intel and
-Apple Silicon evidence above is complete and release-blocking. The remaining
-physical batch is an additional GUI acceptance of an immutable v3.7.2
-DMG-driven update into the direct-PKG era plus a direct-PKG fresh/update smoke;
-it must not be represented as complete without an actual machine result.
+No physical Mac was attached to the Alienware continuation. This record does
+not claim otherwise. The required native Intel and Apple Silicon release gates
+above completed the immutable-v3.7.2 legacy-DMG to v3.7.3 direct-PKG bridge,
+trust, receipt, ownership, update-selection, install, repair, downgrade,
+uninstall, and reinstall lifecycles. A future physical Mac may repeat the
+standard Apple Installer UI as optional visual acceptance under task `#mrd`;
+it is not a build, signing, notarization, or release prerequisite.
 
 ## Repository closeout
 
-Pending the two physical-machine dispositions. The final closeout PR will name
-its exact head/main CI, then the branch/worktree audit will delete only
+Pending the final closeout merge. The final closeout PR will name its exact
+head/main CI, then the branch/worktree audit will delete only
 merged/closed/superseded refs with no unpreserved unique work. ND's untracked
 `.agents`, `.codex`, and generated installer output remain outside cleanup, and
 the homepage's unrelated dirty SD-300 worktree remains untouched.

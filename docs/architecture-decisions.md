@@ -158,8 +158,11 @@ downloaded code or an installer is trusted by Apple.
   quarantined bytes on both architectures. After publication, both native hosts
   install the immutable v3.7.2 package baseline and prove the new compatibility
   DMG contains the exact direct-PKG bytes and converges the receipt-bound pair
-  without a duplicate. Completing the old GUI updater remains the final
-  physical-Mac acceptance because hosted runners cannot approve Apple Installer prompts.
+  without a duplicate. These native two-architecture trust, receipt, package,
+  update-selection, and lifecycle gates are the release requirement. A physical
+  Mac may repeat the standard Apple Installer UI as optional visual acceptance
+  when one is available, but it is not a build, signing, notarization, or release
+  prerequisite and must never be inferred when no machine was attached.
 - A release tag is created once at the exact green default-branch SHA only after
   the matching crate is public. Release and reusable Windows workflows retain
   that tag context, publish exactly 32 assets, verify every sidecar and aggregate
