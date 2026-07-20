@@ -10,9 +10,9 @@
 ## To-Do
 
 ## Active
-- [ ] **Commit portable cross-agent project tooling** - promote the local Codex projections, refresh release guidance, and leave generated installer output ignored (ms #p36) #agt
 
 ## Done
+- [x] **Commit portable cross-agent project tooling** - PR #31 merged portable Claude/Codex safeguards and ignored generated installer output (ms #p36) #agt
 - [x] **Ship the direct native macOS PKG channel** - v3.7.3 published the versionless direct PKG, preserved legacy DMG updates, passed hosted/public/Alienware gates, deployed the homepage, and closed exact evidence (ms #p36) #pkg
 - [x] **Clean merged branches and worktrees in both repositories** - audited and pruned refs/worktrees, preserved user files, enabled automatic deletion, and left only main (ms #v36) #cln
 - [x] **Close release documentation with exact evidence** - PR #23 passed exact-head/main CI, merged, and skipped the already-published crate idempotently (ms #v36) #doc
