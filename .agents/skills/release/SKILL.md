@@ -8,10 +8,9 @@ allowed-tools: Read, Edit, Bash, Glob, Grep
 # release (ND-300 tag-push deploy)
 
 Drive an ND-300 release end to end. This is a checklist + the ND-300-specific
-glue; **`CLAUDE.md` and `AGENTS.md` are the source of truth** for the deploy
-mechanics, the patch-bump loop, the CI-watch Monitor pattern, and the don't-do
-safety list. Read the "Release Process" section in both before starting and defer
-to them on any conflict.
+glue; **`AGENTS.md` is the source of truth** for the deploy mechanics, the
+patch-bump loop, the CI-watch pattern, and the don't-do safety list. Read its
+"Release Process" section before starting and defer to it on any conflict.
 
 ## Deploy model (read this first)
 
@@ -29,7 +28,7 @@ then push the `vX.Y.Z` tag (release + installers build). The final GitHub Releas
 carries 22 cargo-dist base assets, 6 add-on Windows assets, and 4 macOS package
 assets: **32 assets total**.
 Confirm the exact trigger wiring against `.github/workflows/*.yml` at release
-time — the workflows are authoritative; CLAUDE.md/AGENTS.md describe intent.
+time — the workflows are authoritative; `AGENTS.md` describes intent.
 
 ## Steps
 
@@ -41,15 +40,15 @@ time — the workflows are authoritative; CLAUDE.md/AGENTS.md describe intent.
    the host's **current** date (not the training-data date).
 
 3. **Update `HUMAN_CHANGELOG.md` IN THE SAME COMMIT** (lockstep — non-negotiable;
-   see the "Changelog rule" in CLAUDE.md and the `human-changelog` skill). Strip
+   see the "Changelog rule" in `AGENTS.md` and the `human-changelog` skill). Strip
    version numbers, file paths, function names, metrics, and jargon; keep what
    changed and why it matters, under plain category labels. The repo's
    PostToolUse hook will remind you if you edit `CHANGELOG.md` without touching
    `HUMAN_CHANGELOG.md`.
 
 4. **Update `README.md`** if the release adds/changes user-visible flags,
-   commands, or behavior; **update `CLAUDE.md` + `AGENTS.md`** if the
-   architecture or workflow changed.
+   commands, or behavior; update **`AGENTS.md`** if the architecture or workflow
+   changed.
 
 5. **Bump the homepage version fallbacks** in the
    `qube-machine-report-homepage` sibling repo. Update the fallback version
@@ -96,13 +95,13 @@ time — the workflows are authoritative; CLAUDE.md/AGENTS.md describe intent.
    crate publish via `crates-publish.yml`.
 
 9. **Push the `vX.Y.Z` tag** to trigger `release.yml` and its reusable Windows
-   and macOS installer jobs. Follow CLAUDE.md's exact tag procedure — do NOT
+   and macOS installer jobs. Follow `AGENTS.md`'s exact tag procedure — do NOT
    re-tag an existing version; always go forward to a new patch.
 
-10. **Watch CI via the `Monitor` tool — never foreground `gh run watch`.** Use
-    the poll-loop pattern in CLAUDE.md / AGENTS.md (one notification per job
+10. **Watch CI without blocking the control session.** Use the poll-loop pattern
+    in `AGENTS.md` (one notification per job
     state-change + a terminal `RUN_DONE` line; `gh --jq`, never pipe to `jq`;
-    verify Monitor liveness within 60s).
+    verify monitor liveness within 60s).
 
 11. **Verify publish outputs** after CI is green:
     ```bash
@@ -114,18 +113,18 @@ time — the workflows are authoritative; CLAUDE.md/AGENTS.md describe intent.
     Confirm the GitHub Release carries exactly 32 assets: 22 cargo-dist base
     assets, 6 Windows add-ons, and the direct PKG/compatibility DMG with both
     sidecars. Verify Apple trust, byte identity, checksums, and exact-tag-SHA
-    attestations as documented in CLAUDE.md / AGENTS.md.
+    attestations as documented in `AGENTS.md`.
 
 ## If CI fails (patch-bump loop)
 
 A green local build does NOT prove a green CI build — CI builds macOS aarch64/
 x86_64, Linux gnu/musl/aarch64, and Windows MSVC. A `#[cfg(target_os=...)]`
 block can compile on Windows and break only on the gated target. Follow the
-"Patch-bump loop" in CLAUDE.md / AGENTS.md: pull the failing job log
+"Patch-bump loop" in `AGENTS.md`: pull the failing job log
 (`gh run view <id> --log-failed`), fix the root cause, **bump the PATCH version**
 (never re-tag), add CHANGELOG + HUMAN_CHANGELOG entries, re-verify, and re-ship.
 
-## Safety (from CLAUDE.md's don't-do list)
+## Safety (from `AGENTS.md`'s don't-do list)
 
 - Never `git push --force` / `--force-with-lease` to `main` during a release.
 - Never re-tag an already-pushed version — always go forward.

@@ -47,7 +47,7 @@ History this prevents:
 The bundled PowerShell script does everything. From the repo root:
 
 ```powershell
-pwsh -File .claude/skills/validate-installers/scripts/validate-installers.ps1
+pwsh -File .agents/skills/validate-installers/scripts/validate-installers.ps1
 ```
 
 It will:

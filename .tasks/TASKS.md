@@ -10,6 +10,7 @@
 ## To-Do
 
 ## Active
+- [ ] **Commit portable cross-agent project tooling** - promote the local Codex projections, refresh release guidance, and leave generated installer output ignored (ms #p36) #agt
 
 ## Done
 - [x] **Ship the direct native macOS PKG channel** - v3.7.3 published the versionless direct PKG, preserved legacy DMG updates, passed hosted/public/Alienware gates, deployed the homepage, and closed exact evidence (ms #p36) #pkg

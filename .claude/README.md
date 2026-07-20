@@ -1,8 +1,10 @@
 # Repo-local Claude Code automations
 
 This directory holds ND-300's repo-local Claude Code configuration: hooks,
-user-invocable skills, and read-only review subagents. The team-shared MCP server
-lives in `.mcp.json` at the repo root. Everything here is **additive** — it
+user-invocable skills, and read-only review subagents. Portable skill mirrors
+live under `.agents/skills/`; Codex-native reviewer/config/hook manifests live
+under `.codex/`; and the team-shared Claude MCP server lives in `.mcp.json` at
+the repo root. Everything here is **additive** — it
 encodes the deploy process, the installer LOCKSTEP contract, and the
 installer-build pitfalls already documented in the repo's `CLAUDE.md` /
 `AGENTS.md`, so the same mistakes that broke past releases get caught earlier.
@@ -64,8 +66,21 @@ Codifies the canonical tag-push deploy: version bump → `CHANGELOG.md` +
 `qube-machine-report-homepage` → local verify (fmt/clippy/test/publish-dry-run +
 `validate-installers`) → PR + merge to `main` (crate publishes) → push the
 `vX.Y.Z` tag (release + installers) → watch CI via Monitor → verify the crate and
-release assets. It summarizes the steps and points to `CLAUDE.md` / `AGENTS.md`
-as the source of truth rather than duplicating them.
+the exact 32 release assets, including the direct PKG and compatibility DMG. It
+summarizes the steps and points to `CLAUDE.md` / `AGENTS.md` as the source of
+truth rather than duplicating them.
+
+## Cross-agent mirrors (`.agents/` + `.codex/`)
+
+- `.agents/skills/` carries portable copies of the two skills. Keep behavior in
+  sync with `.claude/skills/`, changing only host-specific paths/references.
+- `.codex/agents/*.toml` carries the same two read-only reviewer contracts in
+  Codex's agent schema.
+- `.codex/hooks/` deliberately duplicates the two Python hook bodies; keep those
+  files byte-identical to `.claude/hooks/`. `.codex/hooks.json` uses relative
+  repository paths and must never contain a user-profile path.
+- `.codex/config.toml` is the Codex equivalent of the Context7 declaration in
+  `.mcp.json`; it names the environment variable but never stores its value.
 
 ## Subagents (`.claude/agents/`)
 
