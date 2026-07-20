@@ -35,6 +35,7 @@ const TASK_DETAIL_DIR = path.join(TASKS_DIR, 'tasks'); // per-task detail files:
 const MILESTONE_DETAIL_DIR = path.join(TASKS_DIR, 'milestones'); // per-milestone detail files: milestones/<id>.md
 const SECURE_DIR_NAME = 'secure'; // .tasks/secure — never served, never watched (secrets; see tasks-memory)
 const CONFIG_FILE = path.join(TASKS_DIR, 'config.json'); // setup-owned; served read-only at /api/config
+const BOARD_CONFIG_JS = path.join(TASKS_DIR, 'board-config.js'); // derived project title; works over http + file://
 const DASHBOARD = path.join(TASKS_DIR, 'dashboard.html');
 const STATE_FILE = path.join(TASKS_DIR, '.board-server.json');     // {port, pid, startedAt} — written by the server
 const NUDGE_FILE = path.join(TASKS_DIR, '.board-nudge.json');      // {<event>: epochMs} — written by hook, separate to avoid contention
@@ -283,6 +284,15 @@ async function serve({ open = false, port: requested } = {}) {
         return send(res, 200, 'text/html; charset=utf-8', html);
       }
 
+      if (pathname === '/board-config.js' && req.method === 'GET') {
+        const body = await fsp.readFile(BOARD_CONFIG_JS, 'utf8').catch(
+          () => 'window.SHAUGHV_TASKS_BOARD = {};\n'
+        );
+        return send(res, 200, 'application/javascript; charset=utf-8', body, {
+          'Cache-Control': 'no-store',
+        });
+      }
+
       if (pathname === '/api/tasks') {
         if (req.method === 'GET') {
           const md = await fsp.readFile(TASKS_MD, 'utf8').catch(() => '# Tasks\n');
@@ -494,7 +504,7 @@ async function serve({ open = false, port: requested } = {}) {
     if (n === 'TASKS.md') return onChange('tasks');
     if (n === 'MILESTONES.md' || n === 'milestones' || n.startsWith('milestones' + path.sep)) return onChange('milestones');
     if (n === 'tasks' || n.startsWith('tasks' + path.sep)) return onChange('detail');
-    if (n === 'config.json') return onChange('config');
+    if (n === 'config.json' || n === 'board-config.js') return onChange('config');
     onChange('memory');
   }); } catch { /* recursive watch unsupported on some Linux — watchFile above still covers TASKS.md + MILESTONES.md */ }
 

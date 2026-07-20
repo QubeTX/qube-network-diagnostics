@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TASKS / SHAUGHV</title>
+  <script src="./board-config.js"></script>
   <link rel="icon" type="image/svg+xml" href="https://cdn.shaughv.com/brand/shaughv/favicons/SHAUGHV-Favicon-Dark.svg" media="(prefers-color-scheme: light)">
   <link rel="icon" type="image/svg+xml" href="https://cdn.shaughv.com/brand/shaughv/favicons/SHAUGHV-Favicon-Light.svg" media="(prefers-color-scheme: dark)">
   <link rel="preconnect" href="https://cdn.shaughv.com" crossorigin>
@@ -1443,7 +1444,7 @@
     <div class="header-left">
       <shaughv-mark class="brand-mark" data-icon-only aria-label="SHAUGHV" style="height: 44px; width: 44px; margin-right: 16px; flex-shrink: 0; color: var(--accent);"></shaughv-mark>
       <div>
-        <h1 class="app-title">Tasks</h1>
+        <h1 id="appTitle" class="app-title">Tasks</h1>
         <div id="filePath" class="file-path"></div>
       </div>
       <div class="view-toggle" id="mainTabToggle">
@@ -1582,7 +1583,25 @@
     const SERVER_MODE = location.protocol === 'http:' || location.protocol === 'https:';
 
     const statusEl = document.getElementById('status');
+    const appTitleEl = document.getElementById('appTitle');
     const filePathEl = document.getElementById('filePath');
+
+    let boardTitle = '';
+
+    function cleanBoardTitle(value) {
+      return typeof value === 'string' ? value.trim() : '';
+    }
+
+    function applyBoardIdentity(configuredTitle, repoName) {
+      const title = cleanBoardTitle(configuredTitle) || cleanBoardTitle(repoName) || 'Tasks';
+      boardTitle = title;
+      appTitleEl.textContent = title;
+      document.title = title.toUpperCase() + ' / TASKS / SHAUGHV';
+      if (repoName) boardRepoName = repoName;
+      if (activeMainTab === 'tasks' && taskFileName) {
+        filePathEl.textContent = boardRepoName ? boardRepoName + '/.tasks/TASKS.md' : 'TASKS.md';
+      }
+    }
 
     function showStatus(msg) {
       statusEl.textContent = msg;
@@ -2461,6 +2480,27 @@
     // ===== SERVER MODE: live task I/O via board-server.mjs (fetch + SSE) =====
     let evtSource = null;
 
+    async function loadBoardIdentityFromServer() {
+      if (!SERVER_MODE) return;
+      let config = {};
+      let info = {};
+      try {
+        const res = await fetch('/api/config', { cache: 'no-store' });
+        if (res.ok) config = await res.json();
+      } catch (_) {}
+      try {
+        const res = await fetch('/api/ping', { cache: 'no-store' });
+        if (res.ok) info = await res.json();
+      } catch (_) {}
+
+      let repo = '';
+      if (info && info.root) {
+        const parts = String(info.root).replace(/[\\/]+$/, '').split(/[\\/]/);
+        repo = parts.length >= 2 ? parts[parts.length - 2] : parts[parts.length - 1];
+      }
+      applyBoardIdentity(config?.boardTitle, repo);
+    }
+
     async function loadTasksFromServer(initial) {
       try {
         const res = await fetch('/api/tasks');
@@ -2533,7 +2573,7 @@
               }).catch(() => {});
             }
           } else if (kind === 'config') {
-            /* setup-owned; nothing to redraw */
+            loadBoardIdentityFromServer();
           } else if (kind === 'memory' && activeMainTab === 'memory') {
             loadMemoryFromServer();
           }
@@ -5197,6 +5237,10 @@
     // ===== SERVER MODE: boot the live board automatically =====
     // Served by board-server.mjs → no manual file pickers: auto-load tasks + memory and
     // open the live (SSE) connection. The pickers become "Reload" buttons.
+    // board-config.js is a tiny per-board identity companion generated from config.json.
+    // Unlike the versioned dashboard bundle it survives app upgrades, and because it is a
+    // normal script it works in both localhost and file:// mode.
+    applyBoardIdentity(window.SHAUGHV_TASKS_BOARD?.boardTitle, '');
     startFreshnessClock();              // live/seconds/stale badge (both modes)
 
     if (SERVER_MODE) {
@@ -5206,17 +5250,9 @@
       loadMilestonesFromServer().then(() => loadTasksFromServer(true));
       startWatching();
       loadMemoryFromServer();
-      // Board identity → tab title + header path, so two boards on one machine are
-      // distinguishable at a glance (see the tasks-boards skill).
-      fetch('/api/ping').then(r => r.json()).then(info => {
-        if (!info || !info.root) return;
-        const parts = String(info.root).replace(/[\\/]+$/, '').split(/[\\/]/);
-        const repo = parts.length >= 2 ? parts[parts.length - 2] : parts[parts.length - 1];
-        if (!repo) return;
-        boardRepoName = repo;
-        document.title = 'TASKS / ' + repo.toUpperCase() + ' / SHAUGHV';
-        if (activeMainTab === 'tasks') filePathEl.textContent = repo + '/.tasks/TASKS.md';
-      }).catch(() => {});
+      // Durable board identity → visible heading + tab title. config.json owns the title;
+      // /api/ping supplies only the repo-path fallback and multi-board path label.
+      loadBoardIdentityFromServer();
     }
   </script>
 </body>

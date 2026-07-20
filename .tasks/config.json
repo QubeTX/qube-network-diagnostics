@@ -3,5 +3,6 @@
   "git": "tracked",
   "hooks": "shared",
   "createdAt": "2026-07-17",
-  "pluginVersion": "0.2.2"
+  "pluginVersion": "1.0.0",
+  "boardTitle": "ND-300"
 }
