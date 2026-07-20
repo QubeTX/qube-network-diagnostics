@@ -114,6 +114,17 @@ Both `nd300` and `speedqx` use the shared `speedtest` module. CLI definitions li
 
 aarch64-apple-darwin, x86_64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl, x86_64-pc-windows-msvc
 
+## Repo-local agent tooling
+
+Project automation is shared across supported coding agents. `.claude/` is the
+Claude Code configuration, `.agents/skills/` exposes the portable release and
+installer-validation skills, and `.codex/` contains Codex reviewer definitions,
+portable hooks, and the Context7 MCP declaration. The equivalent skill,
+reviewer, and hook bodies must remain behaviorally aligned when one copy changes;
+manifests may differ only where the host products require different schemas or
+paths. Never commit user-specific absolute paths or secret values. Generated
+installer binaries under `inno/Output/` are ignored build output, not source.
+
 ## Release Process
 
 Releases use **cargo-dist v0.31.0, tag-triggered**, plus CI-gated crates.io publish. Five workflows: **`ci.yml`** (cross-platform code/audit/dist gates), **`crates-publish.yml`** (the only crate publisher), **`release.yml`** (six targets, Global MSI, base GitHub Release), **`windows-installers.yml`** (Corporate MSI + two Inno EXEs and sidecars → 28 assets), and **`macos-installer.yml`** (direct native universal Developer ID Installer PKG plus a legacy-compatible Developer ID Application DMG and both sidecars → **32 assets**). The macOS workflow has an internal-PR candidate path that builds/signs/notarizes and runs the direct-package lifecycle on native Intel and Apple Silicon before merge; it also proves the DMG contains byte-identical PKG bytes for immutable older updaters. After tag publication, both native hosts install immutable v3.7.2 and exercise the compatibility package transition before the reusable workflow can complete. Tag publication reuses the validated tag/SHA context, starts from the exact signed architecture archives, refuses asset overwrite, and separately attests all four additions. Release announcement requires all platform workflows, both compatibility-bridge rows, and exact 32-asset verification. Workflow defaults stay `contents: read`; only hosting gets write/id-token permission. **A deploy is two pushes: merge to `main` (→ crate), then push immutable `vX.Y.Z` (→ binaries/installers/release).**

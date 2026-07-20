@@ -118,6 +118,17 @@ Both `nd300` and `speedqx` use the shared `speedtest` module. CLI definitions li
 
 aarch64-apple-darwin, x86_64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl, x86_64-pc-windows-msvc
 
+## Repo-local agent tooling
+
+Project automation is shared across supported coding agents. `.claude/` is the
+Claude Code configuration, `.agents/skills/` exposes the portable release and
+installer-validation skills, and `.codex/` contains Codex reviewer definitions,
+portable hooks, and the Context7 MCP declaration. The equivalent skill,
+reviewer, and hook bodies must remain behaviorally aligned when one copy changes;
+manifests may differ only where the host products require different schemas or
+paths. Never commit user-specific absolute paths or secret values. Generated
+installer binaries under `inno/Output/` are ignored build output, not source.
+
 ## Release Process
 
 Releases use **cargo-dist v0.31.0, tag-triggered**, plus a CI-gated crates.io publish — the same build+deploy cycle as TR-300. Five workflows:
@@ -139,10 +150,10 @@ Triggers in user prompts: "release", "ship it", "deploy", "tag the release", "pu
 2. **Update `CHANGELOG.md` + `HUMAN_CHANGELOG.md`** in lockstep (every technical entry needs a plain-English counterpart — see "Changelog rule"). Date = the host's current date.
 3. **Update `README.md`** (user-visible flags/commands/behavior) and **`CLAUDE.md` / `AGENTS.md`** (architecture/workflow changes).
 4. **Bump the homepage version fallbacks** in the `qube-machine-report-homepage` repo — the `useGitHubVersion('QubeTX/qube-network-diagnostics', '<new>')` calls in `ND300Install.jsx`, `ND300Hero.jsx`, `ND300Footer.jsx`, and `InstallGuideContent.jsx` (the live GitHub fetch overrides on a healthy network; this keeps the offline fallback current). Ship as its own PR → merge to `main` → Vercel auto-deploys.
-5. **Local verification:** `cargo fmt --all -- --check`, Rust 1.97 `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets`, `cargo build --release --locked`, `cargo package --locked --list`, `cargo publish --dry-run --locked`, `cargo audit`, `dist plan`, actionlint, ShellCheck, archive/man inspection, updater fault tests, Windows installer validation, and read-only smokes. Hosted native Intel/ARM direct-package candidate lifecycle, accepted PKG/DMG notarization, byte identity, exact-SHA release, all 32 assets/attestations, public updater matrices, and physical Alienware/Mac acceptance remain release gates until evidenced.
+5. **Local verification:** `cargo fmt --all -- --check`, Rust 1.97 `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets`, `cargo build --release --locked`, `cargo package --locked --list`, `cargo publish --dry-run --locked`, `cargo audit`, `dist plan`, actionlint, ShellCheck, archive/man inspection, updater fault tests, Windows installer validation, and read-only smokes. Hosted native Intel/ARM direct-package candidate lifecycle, accepted PKG/DMG notarization, byte identity, exact-SHA release, all 32 assets/attestations, public updater matrices, and the physical Alienware Windows update are release gates until evidenced. A physical-Mac visual repeat is supplementary; the required Mac proof comes from the two native hosted architectures.
 6. **Stage specific files** (never `git add -A` — risks `nul`, `.env`, artifacts). **Commit** (`feat:`/`fix:`/`docs:`) with a `Co-Authored-By: Claude <model name> <noreply@anthropic.com>` trailer naming the model actually in use (e.g. `Claude Fable 5`). Open a PR (git-workflow); the PR runs `ci.yml` across macOS + Linux + Windows.
 7. **Merge the PR to `main`.** `ci.yml` runs on the main push → `crates-publish.yml` then publishes the `nd300` crate (idempotent — a docs-only / unchanged-version merge safely skips).
-8. **Push the release tag:** `git fetch origin main && git tag vX.Y.Z origin/main && git push origin vX.Y.Z`. This fires `release.yml` (6 targets + Global MSI + shell/PS installers + GitHub Release) → which chains `windows-installers.yml` (Corporate MSI + 2 Inno EXEs + sidecars). **Never reuse a tag** — cargo-dist treats tags as immutable; always go forward.
+8. **Push the release tag:** `git fetch origin main && git tag vX.Y.Z origin/main && git push origin vX.Y.Z`. This fires `release.yml` (6 targets + Global MSI + shell/PS installers + GitHub Release), which calls the tag/SHA-bound reusable `windows-installers.yml` (Corporate MSI + 2 Inno EXEs + sidecars) and then `macos-installer.yml` (direct PKG + compatibility DMG + sidecars). **Never reuse a tag** — cargo-dist treats tags as immutable; always go forward.
 9. **Watch + verify:** watch `release.yml` and both reusable installer jobs. Confirm: crate published, exactly **32 assets**, accepted/stapled/Gatekeeper-valid direct PKG and compatibility DMG, byte identity, exact-SHA attestations, and `cargo install nd300 --force`.
 
     Pattern (parameterize `RUN_ID`, `timeout_ms` ~1500000 for 25 min headroom, `persistent: false`):
