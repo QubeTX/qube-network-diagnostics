@@ -13,8 +13,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     let endpoint = args.get(1).ok_or("Expected a loopback endpoint")?;
     let url = url::Url::parse(endpoint)?;
-    if !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")) {
-        return Err("Harness accepts loopback endpoints only".into());
+    let isolated_reference = std::env::var("SPEEDQX_ISOLATED_REFERENCE").as_deref() == Ok("1")
+        && url.host_str() == Some("192.0.2.2")
+        && url.scheme() == "http";
+    if !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")) && !isolated_reference {
+        return Err(
+            "Harness accepts loopback or the opt-in isolated TEST-NET-1 fixture only".into(),
+        );
     }
     let direction = args.get(2).map(String::as_str).unwrap_or("download");
     if !matches!(direction, "download" | "upload") {
