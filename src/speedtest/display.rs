@@ -92,6 +92,71 @@ impl SpeedQXDisplay {
 
 /// Render the final results table for SpeedQX output.
 pub fn render_results(result: &SpeedTestResult, use_ascii: bool, use_colors: bool) -> String {
+    if let Some(measurement) = &result.measurement {
+        let mut output = String::from("  SPEEDQX / SUSTAINED THROUGHPUT\n\n");
+        for (name, estimate) in [
+            ("Download", &measurement.download),
+            ("Upload", &measurement.upload),
+        ] {
+            output.push_str(&format!(
+                "  {name}: {}\n",
+                estimate
+                    .sustained_mbps
+                    .map(format_mbps)
+                    .unwrap_or_else(|| "Unavailable".into())
+            ));
+            output.push_str(&format!(
+                "    Estimated ceiling: {}\n",
+                estimate
+                    .ceiling_mbps
+                    .map(format_mbps)
+                    .unwrap_or_else(|| "Not established".into())
+            ));
+            for warning in &estimate.warnings {
+                output.push_str(&format!("    {warning}\n"));
+            }
+        }
+        if let Some(ping) = result.ping_ms {
+            output.push_str(&format!("\n  Ping: {ping:.1} ms (median idle HTTP RTT)\n"));
+        }
+        if let Some(jitter) = result.jitter_ms {
+            output.push_str(&format!("  Jitter: {jitter:.1} ms (P95 - P50)\n"));
+        }
+        if let Some(latency) = &result.http_latency {
+            for (name, values) in [("Download", &latency.download), ("Upload", &latency.upload)] {
+                if let Some(stats) = super::LatencyStats::from_rtts(values) {
+                    output.push_str(&format!(
+                        "  {name}-loaded HTTP RTT: {:.1} ms (median)\n",
+                        stats.p50
+                    ));
+                }
+            }
+        }
+        output.push_str(&format!("\n  Payload confirmed: {} · budget used: {} / {}\n  Ended: {} · {:.1}s · Methodology 5.0\n", format_bytes(measurement.bytes_transferred), format_bytes(measurement.budget_bytes), format_bytes(measurement.byte_limit), measurement.stop_reason, result.duration_s));
+        for provider in &result.providers {
+            output.push_str(&format!(
+                "  {}{}: {} down / {} up\n",
+                provider.provider,
+                if provider.provider == "M-Lab NDT7" {
+                    " (single stream)"
+                } else {
+                    ""
+                },
+                provider
+                    .download_mbps
+                    .map(format_mbps)
+                    .unwrap_or_else(|| "Unavailable".into()),
+                provider
+                    .upload_mbps
+                    .map(format_mbps)
+                    .unwrap_or_else(|| "Unavailable".into())
+            ));
+        }
+        for warning in &result.warnings {
+            output.push_str(&format!("  {warning}\n"));
+        }
+        return output;
+    }
     let chars = if use_ascii {
         BoxChars::ascii()
     } else {

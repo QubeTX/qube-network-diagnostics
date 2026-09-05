@@ -6,6 +6,27 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## September 5, 2026 — Sustained measurement and a clearer instrument
+
+- A slower repeated stretch can no longer appear as a ceiling below your sustained result. The app shows no ceiling when the run does not support one.
+This release includes the testing limits described below.
+
+**Changed**
+
+- Speed results now describe the data the tested device sustained over the measurement period. Slow stretches and brief stalls count, including during uploads. This describes the tested device and route, not the physical capacity promised by an internet plan.
+- Quick is the starting choice everywhere. Deep spends longer checking the same main networks and adds supporting tests. A result based on only one main source says so, and extra tests cannot silently raise the headline.
+- An estimated ceiling appears only when a higher speed repeats for long enough. The details expose disagreement and variation instead of presenting a precise-looking accuracy guarantee.
+- Ping now describes a typical idle web request. Delay during downloads, delay during uploads, failed web probes and server connection signals have distinct labels; missing packet-loss evidence stays unavailable.
+- You can choose a data ceiling, see transferred data, and stop a run while retaining usable partial results. Backgrounding the app or changing networks ends comparable collection. The choice to use M-Lab includes its publication policy.
+
+**Validation**
+
+- New automated cases reproduce stalls, changing speed, incomplete transfers, provider failures and cancellation. Controlled local comparisons check the bytes actually delivered. Physical-device checks are still pending, and comparisons on paths with random packet loss missed the repeatability target. Publication was authorized with these limits disclosed; the results do not guarantee the capacity of an internet plan.
+
+**Command-line tools**
+
+- The standalone test and the full diagnostic use the same speed-test defaults. Existing shortcuts still work, and skipping speed testing still works in the full diagnostic. Stopping the standalone test preserves its useful readings.
+
 ## July 18, 2026 — Mac downloads open Apple Installer directly
 
 **Improved — the native Mac installer is now the package itself**

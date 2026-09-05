@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH nd300 1  "nd300 3.7.3"
+.TH nd300 1  "nd300 4.0.0"
 .SH NAME
 nd300 \- ND\-300 Network Diagnostic \- QubeTX Developer Tools
 .SH SYNOPSIS
-\fBnd300\fR [\fB\-t\fR|\fB\-\-tech\fR] [\fB\-T\fR|\fB\-\-title\fR] [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-verbose\fR] [\fB\-\-fast\fR] [\fB\-\-speed\-duration\fR] [\fB\-d\fR|\fB\-\-dns\fR] [\fB\-f\fR|\fB\-\-fix\fR] [\fB\-c\fR|\fB\-\-clear\-dns\fR] [\fB\-\-uninstall\fR] [\fB\-\-update\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
+\fBnd300\fR [\fB\-\-deep\fR] [\fB\-\-max\-bytes\fR] [\fB\-\-accept\-mlab\fR] [\fB\-t\fR|\fB\-\-tech\fR] [\fB\-T\fR|\fB\-\-title\fR] [\fB\-\-json\fR] [\fB\-\-ascii\fR] [\fB\-\-no\-color\fR] [\fB\-\-verbose\fR] [\fB\-\-fast\fR] [\fB\-\-speed\-duration\fR] [\fB\-d\fR|\fB\-\-dns\fR] [\fB\-f\fR|\fB\-\-fix\fR] [\fB\-c\fR|\fB\-\-clear\-dns\fR] [\fB\-\-uninstall\fR] [\fB\-\-update\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 ND\-300 Network Diagnostic \- QubeTX Developer Tools
 .PP
@@ -17,6 +17,22 @@ Print version
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH "SPEED TEST"
+.TP
+\fB\-\-deep\fR
+Deep speed measurement (five\-minute cap; Quick is the default)
+.TP
+\fB\-\-max\-bytes\fR \fI<MAX_BYTES>\fR
+Synthetic payload budget in bytes (default: Quick 5 GB, Deep 20 GB)
+.TP
+\fB\-\-accept\-mlab\fR
+Allow M\-Lab tests: M\-Lab publishes measurement results and your IP address
+.TP
+\fB\-\-fast\fR
+Skip the speed test (faster execution)
+.TP
+\fB\-\-speed\-duration\fR \fI<SPEED_DURATION>\fR [default: 15]
+Legacy duration option; v5 uses bounded Quick/Deep schedules
 .SH MODES
 .TP
 \fB\-t\fR, \fB\-\-tech\fR
@@ -37,13 +53,6 @@ Disable colored output
 .TP
 \fB\-\-verbose\fR
 Show additional debug/trace information
-.SH "SPEED TEST"
-.TP
-\fB\-\-fast\fR
-Skip the speed test (faster execution)
-.TP
-\fB\-\-speed\-duration\fR \fI<SPEED_DURATION>\fR [default: 15]
-Speed test duration in seconds (per direction, per provider)
 .SH ACTIONS
 .TP
 \fB\-d\fR, \fB\-\-dns\fR
@@ -98,6 +107,6 @@ EXAMPLES:
 
 Run \*(Aqnd300 \-\-help\*(Aq for full details, or \*(Aqnd300 \-h\*(Aq for a summary.
 .SH VERSION
-v3.7.3
+v4.0.0
 .SH AUTHORS
 Emmett S <hey@emmetts.dev>

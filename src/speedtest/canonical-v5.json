@@ -1,0 +1,20 @@
+{
+  "methodology": "5.0",
+  "source": "QubeTX/speedtest",
+  "sourceRevision": "19c83fa484cb65ba4d529d48cc5966cdd106f416",
+  "sourceDirty": false,
+  "files": {
+    "src/services/measurement-contract-v5.json": {
+      "target": "src/speedtest/measurement-contract-v5.json",
+      "sha256": "69d74d80634d65ef3116035bbc1379f0c274db0adc3d6f71617455b00ee2bfb7"
+    },
+    "measurement-v5-fixtures.json": {
+      "target": "src/speedtest/measurement-v5-fixtures.json",
+      "sha256": "bd89624e0acdfe82e5899e0c167d29aa3254b76a41028f06d63faccf9b2719bc"
+    },
+    "METHODOLOGY.md": {
+      "target": "METHODOLOGY.md",
+      "sha256": "3844b18dfc167f7bad86e341eb7b425963410459d58fce1f4f18a19cd930c761"
+    }
+  }
+}

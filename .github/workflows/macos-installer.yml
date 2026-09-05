@@ -123,9 +123,11 @@ jobs:
             echo "GitHub Release target does not match the exact tag source" >&2
             exit 1
           }
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "source_sha=$source_sha"
+          } >> "$GITHUB_OUTPUT"
 
       # Checkout cleans a pre-existing non-Git workspace. Do it before placing
       # the exact release archives under upstream/ so they cannot be deleted.

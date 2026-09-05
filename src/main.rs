@@ -35,6 +35,9 @@ async fn main() {
         config = config.with_title(title);
     }
     config = config.with_speed_duration(cli.speed_duration);
+    config.speed_deep = cli.deep;
+    config.speed_max_bytes = cli.max_bytes;
+    config.speed_mlab_consent = cli.accept_mlab;
 
     // Subcommand form takes precedence over the legacy action flags.
     // Both forms produce identical behavior — the subcommand is the preferred

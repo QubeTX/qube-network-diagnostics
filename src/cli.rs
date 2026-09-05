@@ -28,6 +28,15 @@ use crate::speedtest::TestDuration;
         Run 'nd300 --help' for full details, or 'nd300 -h' for a summary."
 )]
 pub struct Nd300Cli {
+    /// Deep speed measurement (five-minute cap; Quick is the default)
+    #[arg(long, help_heading = "Speed Test", global = true)]
+    pub deep: bool,
+    /// Synthetic payload budget in bytes (default: Quick 5 GB, Deep 20 GB)
+    #[arg(long, help_heading = "Speed Test", global = true, value_parser = clap::value_parser!(u64).range(1..=9_007_199_254_740_991))]
+    pub max_bytes: Option<u64>,
+    /// Allow M-Lab tests: M-Lab publishes measurement results and your IP address
+    #[arg(long, help_heading = "Speed Test", global = true)]
+    pub accept_mlab: bool,
     /// Technician mode - full technical report with deep diagnostics
     #[arg(
         short = 't',
@@ -62,7 +71,7 @@ pub struct Nd300Cli {
     #[arg(long, help_heading = "Speed Test", global = true)]
     pub fast: bool,
 
-    /// Speed test duration in seconds (per direction, per provider)
+    /// Legacy duration option; v5 uses bounded Quick/Deep schedules
     #[arg(long, default_value = "15", help_heading = "Speed Test", global = true)]
     pub speed_duration: u64,
 
@@ -277,9 +286,8 @@ pub enum InstallMaintenanceAction {
 
 /// SpeedQX Internet Speed Test - QubeTX Developer Tools
 ///
-/// Eight-provider speed test (SpeedQX Methodology v4) using Cloudflare, M-Lab
-/// NDT7, M-Lab MSAK, LibreSpeed, fast.com, CacheFly, Vultr, and Apple
-/// networkQuality.
+/// Sustained application throughput with Cloudflare and M-Lab MSAK primary
+/// measurements, separately labeled single-stream NDT7 and supplementary sources.
 #[derive(Parser)]
 #[command(
     name = "speedqx",
@@ -287,24 +295,19 @@ pub enum InstallMaintenanceAction {
     version,
     disable_version_flag = true,
     about = "SpeedQX Internet Speed Test - QubeTX Developer Tools",
-    long_about = "SpeedQX Internet Speed Test - QubeTX Developer Tools\n\n\
-        Eight-provider speed test (SpeedQX Methodology v4) using Cloudflare, M-Lab NDT7,\n\
-        M-Lab MSAK (multi-stream), LibreSpeed, fast.com (Netflix), CacheFly, Vultr, and\n\
-        Apple networkQuality. Providers run sequentially and are merged (capacity +\n\
-        consensus with confidence intervals) for maximum accuracy. --fast runs a quick\n\
-        three-provider subset with early stopping.",
-    after_long_help = "EXAMPLES:\n\
-        \x20 speedqx                     Run the full 8-provider test\n\
-        \x20 speedqx --fast              Quick run (Cloudflare + NDT7 + MSAK, early-stop)\n\
-        \x20 speedqx --duration 60       60s per direction for the fixed-duration providers\n\
-        \x20 speedqx --fastcom-duration 30  Override fast.com to 30s/dir\n\
-        \x20 speedqx --skip-msak --skip-apple  Drop MSAK + Apple from the full run\n\
-        \x20 speedqx update              Check for updates and install\n\
-        \x20 speedqx --update            Same as 'speedqx update' (legacy flag form)\n\
-        \x20 speedqx --json              Output results as JSON\n\n\
-        Run 'speedqx --help' for full details, or 'speedqx -h' for a summary."
+    long_about = "SpeedQX Internet Speed Test - QubeTX Developer Tools\n\nSustained application throughput on this device and path (Methodology v5). Quick is the default, capped at 90 seconds. --deep repeats the primary measurement and adds supplementary sources within five minutes. Cloudflare and M-Lab MSAK each get one primary vote; NDT7 is a separate single-stream comparison. M-Lab requires --accept-mlab because it publishes measurement results and IP addresses.",
+    after_long_help = "EXAMPLES:\n  speedqx                          Quick test\n  speedqx --accept-mlab            Quick with both primary networks\n  speedqx --deep --accept-mlab     Deep, five-minute cap\n  speedqx --max-bytes 250000000    Limit synthetic payload to 250 MB\n  speedqx --json                  Machine-readable results and raw traces\n  speedqx update                  Update both CLI tools\n\n--fast remains a Quick alias. Legacy duration and latency-count flags parse for compatibility; v5 schedules are fixed. Ctrl-C preserves valid partial results. Payload budgets exclude protocol overhead and may have in-flight WebSocket overshoot."
 )]
 pub struct SpeedQXCli {
+    /// Deep measurement (five-minute cap; Quick is the default)
+    #[arg(long, conflicts_with = "fast")]
+    pub deep: bool,
+    /// Synthetic payload budget in bytes (default: Quick 5 GB, Deep 20 GB)
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=9_007_199_254_740_991))]
+    pub max_bytes: Option<u64>,
+    /// Allow M-Lab tests: M-Lab publishes measurement results and your IP address
+    #[arg(long)]
+    pub accept_mlab: bool,
     /// Output results as JSON
     #[arg(long, help_heading = "Output", global = true)]
     pub json: bool,
@@ -317,7 +320,7 @@ pub struct SpeedQXCli {
     #[arg(long, help_heading = "Output", global = true)]
     pub no_color: bool,
 
-    /// Test duration per direction for CF/NDT7/LibreSpeed: seconds or "auto"
+    /// Legacy duration alias; v5 uses bounded Quick/Deep schedules
     #[arg(
         long,
         default_value = "30",
@@ -326,7 +329,7 @@ pub struct SpeedQXCli {
     )]
     pub duration: TestDuration,
 
-    /// Test duration per direction for fast.com: seconds or "auto" (default: auto)
+    /// Legacy fast.com duration alias; v5 uses a bounded supplementary schedule
     #[arg(
         long,
         default_value = "auto",
@@ -335,12 +338,11 @@ pub struct SpeedQXCli {
     )]
     pub fastcom_duration: TestDuration,
 
-    /// Number of latency probes (advisory; the dense engine is duration-scaled)
+    /// Legacy probe-count alias; v5 uses 12 idle probes
     #[arg(long, default_value = "20", help_heading = "Speed Test")]
     pub latency_probes: u32,
 
-    /// FAST mode: Cloudflare + NDT7 + MSAK with early-stop (default is the full
-    /// 8-provider run)
+    /// Alias for Quick, the default 90-second profile
     #[arg(long = "fast", help_heading = "Speed Test")]
     pub fast: bool,
 
@@ -348,7 +350,7 @@ pub struct SpeedQXCli {
     #[arg(long = "skip-msak", help_heading = "Speed Test")]
     pub skip_msak: bool,
 
-    /// Skip the Apple networkQuality provider
+    /// Legacy alias; Apple networkQuality is outside the common v5 profile
     #[arg(long = "skip-apple", help_heading = "Speed Test")]
     pub skip_apple: bool,
 

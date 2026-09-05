@@ -3,7 +3,7 @@
 [![Build Status](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml/badge.svg)](https://github.com/QubeTX/qube-network-diagnostics/actions/workflows/release.yml)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 
-Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes **SpeedQX**, a standalone eight-provider speed test (SpeedQX Methodology v4).
+Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes **SpeedQX**, a standalone speed test using SpeedQX Methodology v5.
 
 ## Features
 
@@ -11,9 +11,9 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **8 core diagnostics**: adapters, interfaces, gateway, DNS, public IP, latency, speed test, port connectivity
 - **25 deep diagnostics** (technician mode): ARP (+ gateway health), routing, connections, listening ports, DHCP, protocol stats, adapter hardware, proxy (+ PAC/WPAD), VPN, firewall, DNS cache, IPv6 (+ real v6 fetch), MTU (+ path-MTU probe), connection states, real bufferbloat (loaded latency during saturation), reverse DNS, TLS inspection, traffic counters, route path (traceroute analysis), sustained packet loss, NAT/CGNAT analysis, Wi-Fi link quality, DNS resolver benchmark (+ hijack/DNSSEC checks), captive portal detection, clock sync (NTP)
 - **Diagnostic-driven `nd300 fix`** — runs the diagnostics, identifies which checks failed, and applies only the recovery actions that target those specific failures. Clean and latency-only networks are advisory/no-op, DNS repair is staged from safest to most invasive, and medium/high-risk steps require confirmation. Re-tests after each step and repeats until everything passes or no further actions remain.
-- **Eight-source SpeedQX engine** — Cloudflare + M-Lab NDT7 + LibreSpeed + fast.com (Netflix) + M-Lab MSAK + Apple networkQuality + CacheFly + Vultr, using Methodology v4 capacity/consensus merging, agreement, confidence intervals, PDV jitter, and RPM. ND300's core diagnostic keeps the shorter Cloudflare + NDT7 run; standalone `speedqx` uses all eight.
+- **Common SpeedQX engine** — ND300 and standalone `speedqx` default to the same bounded Quick profile, with Cloudflare and consenting M-Lab MSAK primary measurements, separately labeled single-stream NDT7, and optional Deep supplementary measurements.
 - **Channel-preserving self-update** — `nd300 update` / `speedqx update` proves how the running copy was installed and updates through that same channel: Cargo stays Cargo, a managed macOS/Linux archive stays a managed archive, a macOS PKG downloads and opens its exact signed PKG, and each Windows MSI/EXE edition downloads its exact matching installer. Unknown, conflicted, local-build, and package-manager ownership is refused instead of guessed. Downloads are pinned to one exact release and verified before the two-binary transaction; a failure retains the old install and points to an exact matching artifact plus the versionless install page.
-- **SpeedQX** standalone speed test binary — all 8 providers (Methodology v4: capacity + consensus merge, I² agreement, PDV jitter, RPM) with per-provider breakdown and real-time progress; `--fast` for the quick 3-provider early-stopping run, `--skip-msak`/`--skip-apple` to trim the full run
+- **Sustained throughput and repeatable ceilings** — real byte counters retain stalls and partial intervals. Primary providers receive one vote each. Common idle HTTP latency, separate loaded directions, explicit data limits and partial-result cancellation replace unsupported confidence claims.
 - **Bufferbloat detection** with grade scoring (A+ through F)
 - **JSON output** for scripting and automation
 - **Unicode box-drawing** table rendering with ASCII fallback
@@ -169,8 +169,11 @@ nd300 --no-color
 # Custom report title
 nd300 -T "Office Network Check"
 
-# Custom speed test duration per provider (seconds)
-nd300 --speed-duration 20
+# Deep speed-test profile (the rest of ND300 is unchanged)
+nd300 --deep
+
+# Include M-Lab after consenting to publication of your IP and results
+nd300 --accept-mlab
 
 # Self-update — both forms work
 nd300 update
@@ -193,24 +196,20 @@ nd300 fix --help    # subcommand-specific help
 ### speedqx — Standalone Speed Test
 
 ```sh
-# Full eight-provider speed test (Cloudflare + NDT7 + MSAK + LibreSpeed + fast.com + CacheFly + Vultr + Apple)
+# Quick, 90-second overall cap, Cloudflare-only without M-Lab consent
 speedqx
 
-# Custom duration per direction (60s download + 60s upload per provider)
-speedqx --duration 60
+# Common two-network comparison; M-Lab publishes IP addresses and results
+speedqx --accept-mlab
 
-# Override fast.com duration (defaults to "auto")
-speedqx --fastcom-duration 30
+# Deep: repeat/extend the primary comparison, then supplementary sources
+speedqx --deep --accept-mlab
 
-# Classic 4-provider run
-speedqx --skip-msak --skip-apple
-
-# JSON output
+# Set a decimal payload byte ceiling; Ctrl-C preserves partial results
+speedqx --max-bytes 250000000
 speedqx --json
-
-# Quick test with shorter duration
-speedqx --duration 10 --latency-probes 5
 ```
+
 
 ## Example Output
 
@@ -241,7 +240,10 @@ speedqx --duration 10 --latency-probes 5
 | `--ascii` | Use ASCII characters instead of Unicode box-drawing |
 | `--no-color` | Disable colored output |
 | `--fast` | Skip the speed test (faster execution) |
-| `--speed-duration <SECS>` | Speed test duration in seconds, per direction per provider (default: 15, min: 4) |
+| `--deep` | Use the five-minute Deep speed profile; Quick is the default |
+| `--max-bytes <BYTES>` | Set a payload budget; defaults are 5 GB Quick / 20 GB Deep |
+| `--accept-mlab` | Consent to M-Lab publication of results and IP addresses |
+| `--speed-duration <SECS>` | Legacy parse-compatible alias; v5 uses its bounded profile schedule |
 | `--verbose` | Show additional debug/trace information |
 | `-d, --dns` | Change DNS servers and verify connectivity (requires elevated privileges) |
 | `-f, --fix` | Run the diagnostic-driven triage / fix loop (requires elevated privileges). Equivalent to `nd300 fix`. |
@@ -269,11 +271,15 @@ speedqx --duration 10 --latency-probes 5
 | `--json` | Output results as JSON |
 | `--ascii` | Use ASCII characters instead of Unicode box-drawing |
 | `--no-color` | Disable colored output |
-| `--duration <VALUE>` | Test duration per direction for CF/NDT7/LS/MSAK/Apple: seconds or "auto" (default: 30) |
-| `--fastcom-duration <VALUE>` | Test duration per direction for fast.com: seconds or "auto" (default: auto) |
-| `--latency-probes <N>` | Number of latency probes (default: 20) |
+| `--deep` | Five-minute Deep profile; Quick is the default |
+| `--fast` | Explicit alias for the default Quick profile |
+| `--accept-mlab` | Consent to M-Lab publication of results and IP addresses |
+| `--max-bytes <BYTES>` | Override the default 5 GB Quick / 20 GB Deep payload budget |
+| `--duration <VALUE>` | Legacy parse-compatible option; fixed v5 profile schedule applies |
+| `--fastcom-duration <VALUE>` | Legacy parse-compatible option; Deep supplementary schedule applies |
+| `--latency-probes <N>` | Legacy parse-compatible option; v5 uses twelve idle reference probes |
 | `--skip-msak` | Skip the M-Lab MSAK multi-stream provider |
-| `--skip-apple` | Skip the Apple networkQuality provider |
+| `--skip-apple` | Legacy alias; Apple is outside the common v5 profile |
 | `--update` | Check for updates and install the latest version |
 | `-v, --version` | Print version |
 | `-h, --help` | Print help |
@@ -293,7 +299,7 @@ speedqx --duration 10 --latency-probes 5
 4. DNS Resolution
 5. Public IP
 6. Latency
-7. Speed Test (Cloudflare + M-Lab NDT7 in nd300; all 8 providers in SpeedQX)
+7. Speed Test (common Quick profile in ND300 and SpeedQX; optional Deep)
 8. Port Connectivity
 
 ### Deep Diagnostics (technician mode only)
@@ -639,24 +645,11 @@ The precise `"strategy"` values are `cargo`, `unix_archive`, `mac_dmg_pkg`,
 
 ## Speed Test Methodology
 
-The CLI implements [SpeedQX Methodology v4](./METHODOLOGY.md), byte-identical
-with the website/app specification and protected by shared golden vectors:
+SpeedQX measures sustained application throughput on the device and paths tested. Methodology v5 uses monotonic byte counters, a fixed two-second warm-up, and the median of qualifying Cloudflare and M-Lab MSAK primary estimates. NDT7 remains a separate single-stream comparison. A repeatable ceiling needs two non-overlapping three-second windows within 10%; it does not describe the ISP's physical line capacity.
 
-- Dense warmed latency sampling and adaptive throughput transfers.
-- Plateau-based warm-up removal, IQR filtering, modified trimean, and a
-  Hodges–Lehmann stability cross-check per provider.
-- Circular block bootstrap with BCa 95% intervals for autocorrelated samples.
-- A capability-aware **capacity** headline plus conservative all-provider
-  **consensus**, random-effects heterogeneity, HKSJ confidence intervals, and a
-  70% per-provider weight cap.
-- I² agreement bands, PDV jitter, bufferbloat deltas, approximate RPM, and honest
-  provider availability/exclusion fields.
-- An anytime-valid empirical-Bernstein confidence sequence for `--fast`, avoiding
-  optional-stopping bias.
+Quick is the default, capped at 90 seconds and 5 GB of payload budget. Deep repeats the primary comparison with longer transfers, adds supplementary results, and is capped at five minutes and 20 GB. Both can use a smaller byte ceiling. M-Lab requires explicit consent to publication of measurement results and IP addresses. Without consent, the headline is labeled single-source. HTTP ping is the median idle RTT to the common Cloudflare reference; download-loaded and upload-loaded latency and HTTP failures are separate details. No nominal 95% accuracy claim or UDP loss estimate is inferred.
 
-For the full equations, thresholds, provider registry, and parity contract, see
-[METHODOLOGY.md](./METHODOLOGY.md) or the
-[SpeedQX technical report](https://speedqx.com/how-it-works).
+Read [METHODOLOGY.md](METHODOLOGY.md) for counter, validity, acquisition and aggregation rules. Historical results retain their original version and interpretation. Full-trace TypeScript/Rust replay and controlled transfer evidence are required alongside native platform acceptance; green formulas alone do not establish accuracy.
 
 ## License
 

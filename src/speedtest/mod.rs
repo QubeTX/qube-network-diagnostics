@@ -1,3 +1,7 @@
+pub mod acquisition_v5;
+pub mod engine_v5;
+pub mod measurement_v5;
+pub use engine_v5::run;
 pub(crate) mod adaptive;
 pub mod applenq;
 pub mod cachefly;
@@ -80,6 +84,9 @@ pub enum ProviderSet {
 /// Configuration for the speed test orchestrator
 #[derive(Debug, Clone)]
 pub struct SpeedTestConfig {
+    pub max_bytes: Option<u64>,
+    pub mlab_consent: bool,
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
     /// Duration per direction for CF, NDT7, LibreSpeed, MSAK, Apple (default: 30s)
     pub duration: TestDuration,
     /// Duration per direction for fast.com (default: Auto)
@@ -99,10 +106,13 @@ pub struct SpeedTestConfig {
 impl Default for SpeedTestConfig {
     fn default() -> Self {
         Self {
+            max_bytes: None,
+            mlab_consent: false,
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             duration: TestDuration::Seconds(30),
             fastcom_duration: TestDuration::Auto,
             latency_probes: 20,
-            provider_set: ProviderSet::All,
+            provider_set: ProviderSet::Fast,
             msak_enabled: true,
             apple_enabled: true,
             use_colors: true,
@@ -223,6 +233,15 @@ pub struct MergedDirection {
     pub upload_ci: Option<statistics::CiBounds>,
 }
 
+impl MergedDirection {
+    fn is_empty(&self) -> bool {
+        self.download == 0.0
+            && self.upload == 0.0
+            && self.download_ci.is_none()
+            && self.upload_ci.is_none()
+    }
+}
+
 /// Provider agreement summary (`I²` + band) — replaces the v3 ">30% spread" flag.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgreementInfo {
@@ -316,19 +335,25 @@ pub struct ProviderResult {
 
 /// Aggregated speed test result (used by both speedqx and nd300).
 ///
-/// Carries the SpeedQX Methodology v4 payload (capacity/consensus + CIs, I²
-/// agreement, RPM, delta-ms bufferbloat, PDV jitter, per-provider availability)
-/// alongside the legacy v3 headline fields kept for one release.
+/// New runs carry v5 sustained measurements and acquisition provenance.
+/// Retained v4 fields support the historical reference path; empty legacy
+/// capacity/consensus objects are omitted from the v5 serialized result.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpeedTestResult {
-    /// Methodology version ("4.0").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<engine_v5::MeasurementSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_latency: Option<engine_v5::HttpLatency>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Interpretation contract: "5.0" for current runs, "4.0" for the reference.
     pub methodology_version: &'static str,
     /// Producer platform identifier ("cli").
     pub platform: &'static str,
     /// Test mode: "full" / "fast" / "diagnostic".
     pub provider_set: &'static str,
 
-    /// Headline min-RTT ping across engine + kernel MinRTT (METHODOLOGY.md §4).
+    /// V5 median idle HTTP RTT; the retained v4 path uses its original minimum.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ping_ms: Option<f64>,
     /// Canonical jitter — PDV (`P95 − P50`).
@@ -337,16 +362,18 @@ pub struct SpeedTestResult {
     /// Compatibility jitter (RFC 3550 EWMA).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jitter_rfc3550: Option<f64>,
-    /// Headline download = capacity (legacy field name kept for one release).
+    /// V5 sustained download alias. Consult measurement for nullable validity.
     pub download_mbps: f64,
-    /// Headline upload = capacity (legacy field name kept for one release).
+    /// V5 sustained upload alias. Consult measurement for nullable validity.
     pub upload_mbps: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub packet_loss_pct: Option<f64>,
 
     /// CAPACITY: capability-weighted top-tier robust mean ± CI (headline).
+    #[serde(skip_serializing_if = "MergedDirection::is_empty")]
     pub capacity: MergedDirection,
     /// CONSENSUS: conservative all-providers random-effects mean ± CI.
+    #[serde(skip_serializing_if = "MergedDirection::is_empty")]
     pub consensus: MergedDirection,
     /// Download-direction agreement (I² + band).
     pub agreement: AgreementInfo,
@@ -865,7 +892,7 @@ where
 /// Run the speed test with the given configuration and progress callback.
 /// The `on_provider_complete` callback is called after each provider finishes,
 /// allowing the UI to show per-provider summaries.
-pub async fn run<F>(
+pub async fn run_v4_reference<F>(
     config: SpeedTestConfig,
     progress: F,
     on_provider_complete: Option<ProviderCompleteCallback>,
@@ -1021,6 +1048,9 @@ where
     };
 
     SpeedTestResult {
+        measurement: None,
+        http_latency: None,
+        warnings: vec![],
         methodology_version: METHODOLOGY_VERSION,
         platform: "cli",
         provider_set,
