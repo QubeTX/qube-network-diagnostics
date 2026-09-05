@@ -42,34 +42,3 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
-
-      # Classify a failed reviewer without publishing its transcript, prompts,
-      # environment, credentials or arbitrary error text to public CI logs.
-      - name: Classify reviewer startup failure
-        if: ${{ failure() && steps.claude-review.outcome == 'failure' }}
-        env:
-          REVIEW_EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
-        shell: bash
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const file = process.env.REVIEW_EXECUTION_FILE;
-          if (!file || !fs.existsSync(file)) {
-            console.log('Reviewer failed before an execution record was available.');
-            process.exit(0);
-          }
-          const raw = fs.readFileSync(file, 'utf8');
-          let records;
-          try { records = JSON.parse(raw); }
-          catch { records = raw.trim().split('\n').map(line => JSON.parse(line)); }
-          const results = (Array.isArray(records) ? records : [records]).filter(r => r.type === 'result' && r.is_error);
-          const text = results.map(r => JSON.stringify({ result: r.result, errors: r.errors })).join('\n');
-          const categories = [
-            ['authentication rejected', /authentication_error|invalid.*(?:api.?key|oauth.?token)|oauth.*expired|401/i],
-            ['account or quota limit', /rate_limit_error|usage.?limit|quota|credit balance|billing_error|429/i],
-            ['model unavailable', /model.*(?:not found|not available|not supported)|not_found_error/i],
-            ['service unavailable', /overloaded_error|api_error|503|529/i],
-          ];
-          const matched = categories.filter(([, pattern]) => pattern.test(text)).map(([label]) => label);
-          console.log('Reviewer failure category: ' + (matched.join(', ') || 'unclassified; inspect privately'));
-          NODE
