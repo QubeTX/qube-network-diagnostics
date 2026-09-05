@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [4.0.0] - 2026-09-05
+## [4.0.1] - 2026-09-05
+
+### Fixed
+
+- Align the crate publisher with the Rust 1.97 toolchain validated by CI and release builds. Rewrite a late-initialized statistics value as an equivalent branch expression so newer Clippy versions accept it without suppressions. The attempted 4.0.0 crate failed before publication; no 4.0.0 tag or release was created. This is the first published CLI release containing the Methodology v5 changes below.
+
+## [4.0.0] - 2026-09-05 (unpublished)
 
 - Withhold repeatable ceiling candidates below sustained throughput at trace, repeated-provider and headline levels. Full TypeScript/Rust replay now includes 88 synthetic, production and packet-shaped traces.
 Release authorized on September 5 with the validation limits below.
