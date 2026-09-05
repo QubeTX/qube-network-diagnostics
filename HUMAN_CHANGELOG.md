@@ -6,6 +6,12 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## September 5, 2026 — Reliable publication of the new measurement tools
+
+**Fixed**
+
+- The package publisher now uses the same validated build tools as the release checks. A compatibility cleanup keeps an existing statistics calculation unchanged. The first publication attempt stopped before anything was released; this release includes the sustained-measurement improvements below.
+
 ## September 5, 2026 — Sustained measurement and a clearer instrument
 
 - A slower repeated stretch can no longer appear as a ceiling below your sustained result. The app shows no ceiling when the run does not support one.
