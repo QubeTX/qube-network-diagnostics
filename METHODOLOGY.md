@@ -18,7 +18,7 @@ M-Lab NDT7 is a separate single-stream measurement. NDT7 and MSAK share a networ
 
 ## Estimated ceiling
 
-A ceiling needs two non-overlapping windows of at least three seconds whose speeds are within 10%. The lower speed of the pair is the candidate. An isolated spike cannot establish it. The estimate describes repeatable throughput observed during this run; it is not the physical capacity of your ISP line.
+A ceiling needs two non-overlapping windows of at least three seconds whose speeds are within 10%. The lower speed of the pair is the candidate. An isolated spike cannot establish it. A candidate below the sustained result is withheld, including after repeated-provider and cross-provider aggregation; it is never raised artificially. The estimate describes repeatable throughput observed during this run; it is not the physical capacity of your ISP line.
 
 If provider ceilings differ by more than 20%, the common ceiling is withheld and the disagreement is shown. No ceiling is a valid outcome, especially for short, interrupted or unstable transfers.
 

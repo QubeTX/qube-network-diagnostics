@@ -707,5 +707,121 @@
       "measuredBytes": 45000000,
       "qualification": "measured"
     }
+  },
+  {
+    "name": "isolated spike cannot turn a lower plateau into a ceiling",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 1250000
+        },
+        {
+          "t": 2000,
+          "bytes": 2500000
+        },
+        {
+          "t": 3000,
+          "bytes": 3750000
+        },
+        {
+          "t": 4000,
+          "bytes": 5000000
+        },
+        {
+          "t": 5000,
+          "bytes": 6250000
+        },
+        {
+          "t": 6000,
+          "bytes": 18750000
+        },
+        {
+          "t": 7000,
+          "bytes": 20000000
+        },
+        {
+          "t": 8000,
+          "bytes": 21250000
+        },
+        {
+          "t": 9000,
+          "bytes": 22500000
+        },
+        {
+          "t": 10000,
+          "bytes": 23750000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 21.25,
+      "ceilingMbps": null,
+      "measuredMs": 8000,
+      "measuredBytes": 21250000,
+      "qualification": "measured"
+    }
+  },
+  {
+    "name": "four-second high rate has no two repeatable windows",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 22500000
+        },
+        {
+          "t": 2000,
+          "bytes": 45000000
+        },
+        {
+          "t": 3000,
+          "bytes": 67500000
+        },
+        {
+          "t": 4000,
+          "bytes": 90000000
+        },
+        {
+          "t": 5000,
+          "bytes": 112500000
+        },
+        {
+          "t": 6000,
+          "bytes": 135000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 180,
+      "ceilingMbps": null,
+      "measuredMs": 4000,
+      "measuredBytes": 90000000,
+      "qualification": "measured"
+    }
   }
 ]

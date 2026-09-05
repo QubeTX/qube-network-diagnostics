@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.0.0] - 2026-09-04
 
+- Withhold repeatable ceiling candidates below sustained throughput at trace, repeated-provider and headline levels. Full TypeScript/Rust replay now includes 88 synthetic, production and packet-shaped traces.
 Implementation candidate; release acceptance and publication are pending.
 
 ### Changed

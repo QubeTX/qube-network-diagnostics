@@ -114,6 +114,16 @@ fn unique(v: &mut Vec<String>) {
     v.retain(|s| seen.insert(s.clone()));
 }
 
+fn withhold_low_ceiling(out: &mut DirectionEstimate) {
+    if let (Some(ceiling), Some(sustained)) = (out.ceiling_mbps, out.sustained_mbps) {
+        if ceiling < sustained {
+            out.ceiling_mbps = None;
+            out.warnings
+                .push("No repeatable ceiling at or above sustained throughput".into());
+        }
+    }
+}
+
 pub fn estimate_trace(trace: &MeasurementTrace) -> DirectionEstimate {
     if let Some(error) = &trace.integrity_error {
         return DirectionEstimate {
@@ -208,6 +218,7 @@ pub fn estimate_trace(trace: &MeasurementTrace) -> DirectionEstimate {
             }
         }
     }
+    withhold_low_ceiling(&mut out);
     if let Some(r) = &out.repeatability {
         let speed = out.sustained_mbps.unwrap_or(0.0);
         if speed > 0.0 && (r.upper - r.lower) / speed > 0.2 {
@@ -262,6 +273,7 @@ pub fn summarize_traces(
             .collect();
         out.repeatability = range(&bounds);
         out.warnings = qualified.into_iter().flat_map(|e| e.warnings).collect();
+        withhold_low_ceiling(&mut out);
         estimates.push(out);
         providers.push(provider.to_string());
     }
@@ -292,6 +304,7 @@ pub fn summarize_traces(
                 .push("Ceiling estimates disagree across providers".into());
         }
     }
+    withhold_low_ceiling(&mut out);
     if rates.len() == 1 {
         out.warnings.push("Single primary source".into());
     } else if let Some(r) = range(&rates) {

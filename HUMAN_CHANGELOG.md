@@ -8,6 +8,7 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ## September 4, 2026 — Sustained measurement and a clearer instrument
 
+- A slower repeated stretch can no longer appear as a ceiling below your sustained result. The app shows no ceiling when the run does not support one.
 This is a release candidate. Validation and publication are still in progress.
 
 **Changed**

@@ -46,7 +46,8 @@
   "ceiling": {
     "minimumWindowMs": 3000,
     "nonOverlappingWindows": 2,
-    "relativeTolerance": 0.1
+    "relativeTolerance": 0.1,
+    "minimumCandidate": "at or above sustained throughput at trace, repeated-provider and headline aggregation"
   },
   "latency": {
     "reference": "https://speed.cloudflare.com/__down?bytes=0",
