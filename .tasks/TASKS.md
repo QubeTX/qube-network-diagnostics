@@ -14,6 +14,11 @@
 
 ## Active
 
+- [ ] **Compare live SpeedQX with Ookla and assess measurement accuracy** - alternating browser trials, inspect both measurement contracts, retain limits and correct demonstrated flaws (owner codex) #sqcmp
+  - [ ] Record predeclared alternating live comparisons on the same connection
+  - [x] Evaluate primary-source methods and SpeedQX implementation against an explicit measurement target
+  - [x] Record evidence and justified conclusions without claiming unproven comparative accuracy
+
 ## Done
 - [x] **Implement SpeedQX v5 measurement and instrument** - ND300 4.0.1 and all 32 assets verified, website/homepage live, iOS 3.0.0 (16) uploaded; physical qualification and lossy-path targets remain disclosed follow-ups #sq5
   - [x] Versioned traces and deterministic regression coverage
