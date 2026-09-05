@@ -13,15 +13,15 @@
 ## To-Do
 
 ## Active
-- [ ] **Implement SpeedQX v5 measurement and instrument** - shared byte-accounted engine, sustained results, repeatable ceilings, cassette redesign; physical qualification and lossy-path targets are disclosed follow-ups (owner codex) #sq5
+
+## Done
+- [x] **Implement SpeedQX v5 measurement and instrument** - ND300 4.0.1 and all 32 assets verified, website/homepage live, iOS 3.0.0 (16) uploaded; physical qualification and lossy-path targets remain disclosed follow-ups #sq5
   - [x] Versioned traces and deterministic regression coverage
   - [x] Bounded provider acquisition and cross-surface integration
   - [x] Cassette redesign and responsive visual checks
   - [x] Documentation and exact revision validation evidence
   - [x] Owner release authorization with dated physical/accuracy deferrals
-  - [ ] Independent security review and production release
-
-## Done
+  - [x] Independent security review and production release
 - [x] **Commit portable cross-agent project tooling** - PR #31 merged portable Claude/Codex safeguards and ignored generated installer output (ms #p36) #agt
 - [x] **Ship the direct native macOS PKG channel** - v3.7.3 published the versionless direct PKG, preserved legacy DMG updates, passed hosted/public/Alienware gates, deployed the homepage, and closed exact evidence (ms #p36) #pkg
 - [x] **Clean merged branches and worktrees in both repositories** - audited and pruned refs/worktrees, preserved user files, enabled automatic deletion, and left only main (ms #v36) #cln
