@@ -13,15 +13,21 @@ Contract and regressions -> acquisition and parity -> interface and local verifi
 Methodology becomes 5.0; current headline aliases become sustained measurements. Old results retain v4 meaning. User state, consent, and installation channels are preserved.
 
 ## Verification
-- [x] TS and Rust replay the same traces including stalls, counter resets, irregular intervals, and partial transfers (26 complete traces; implementation candidate, final-SHA rerun required)
-- [ ] Time/byte limits, cancellation, and foreground guards tested
-- [ ] Web/app shared source hashes and tests pass
-- [ ] Local browser visual states and accessibility checks
-- [ ] Platform CI and physical iOS/Android acceptance (not implied by browser preview)
-- [ ] Controlled v4/v5 accuracy and animation-impact evidence
+- [x] Full TypeScript/Rust replay: 88 synthetic, recorded Cloudflare and packet-shaped traces, plus repeated-provider and cross-provider ceiling regressions (hosted run 33945077402, source efbe6304057293559e92ddbc723190924c640fc6)
+- [x] Deterministic time/byte limits, cancellation, foreground guards and real Expo browser Stop/reset/restart during latency/download/upload
+- [x] Shared web/app source hashes pin clean canonical 08d1c337b977d07e2296fe3a2e57f2983afa298f; website 90 tests and app 38 tests pass
+- [x] Chrome/Firefox/WebKit visual journeys, narrow widths, metric explanations, trace details and reduced motion
+- [x] Rust 332 tests, strict Clippy, release build and isolated package publish dry-run; platform CI 33945077385 and signed/notarized native Mac lifecycle 33945077405 pass
+- [ ] Final native UI acceptance
+  - [x] Android five-flow suite, workflow 01a06fd9-f476-76ef-9c61-838bfe74e0c3, source 5ec3f6ec7a63f1d3d78baca4a74b0cd840e6e88c
+  - [ ] Four iPhone sizes; compact consent-sheet scroll investigation remains open
+- [ ] Physical iOS/Android large text, reduced motion, cancellation, network/background transitions and animation overhead
+- [ ] Controlled accuracy and cross-surface repeatability: paced payload cases pass; random-loss paired medians exceed 5%, retained with analysis in canonical evidence/v5/README.md
+- [ ] Substantive PR review: the existing Claude reviewer fails before any model usage; a workflow-edited apparent success was a validation skip and the original workflow was restored
+- [ ] Production merge, immutable CLI release, website/homepage production deployments and accepted Expo candidate; App Store review submission remains with the user
 
 ## Status
-Active: review candidates use a shared committed TypeScript contract and independent Rust acquisition. Canonical website commit efd4f4305dd8de5325ab99848f9fcb99d2764931 is pushed in draft PR QubeTX/speedtest#3. The app candidate a92b554 is pushed in RealEmmettS/speedtest-app-expo#3 and preserves the existing mobile redesign. Local website 87 tests, app 38 tests and Rust 332 tests pass. Paced application references and browser animation comparisons are recorded; physical/device and packet-shaped acceptance, native UI verification, hosted platform checks and release remain open.
+Active: all four review PRs are pushed. The canonical measurement implementation is committed and byte/time semantics agree across languages. Real Cloudflare and Linux packet impairment recordings are retained, including failed repeatability targets. The stop crash, web font rasterization error and native metric tap interception are fixed; native reels are visible in reviewed simulator recordings. Android passes all five UI flows. The compact iPhone consent sheet and remaining device matrix are being checked. A full signed iOS 3.0.0 build 15 is queued for TestFlight preparation, not published. Physical acceptance and final production release remain open.
 
 ## Activity
 - 2026-09-04 — codex: created from explicit implementation request; starting measurement trace contract and regression cases.
@@ -36,3 +42,7 @@ Active: review candidates use a shared committed TypeScript contract and indepen
 - 2026-09-04 — codex: final browser/Rust paced matrices each stay within 5% of delivered-payload references; Chromium MAPE 0.7102%, Firefox 0.5650%, WebKit 0.6016%. Original v4 Cloudflare transport comparisons and held-out correlated repeatability experiments are retained with limitations in website evidence/v5/README.md. No physical line-capacity or calibrated 95% accuracy claim is made.
 - 2026-09-04 — codex: inspected website idle/completion/settings screenshots after all three browser UI journeys passed. Native iOS/Android builds succeeded, but UI suites found harness issues and an independently reproduced iOS metric-sheet presentation failure. A native-host lifecycle correction and regression test are in app a92b554; fresh workflow 01a06fa5-afae-78bf-aed6-eb7ae5625960 is validating four iPhone sizes and Android. No failed suite counted as passed.
 - 2026-09-04 — codex: both generated source manifests now pin clean canonical efd4f4305dd8de5325ab99848f9fcb99d2764931. Final local Rust fmt, strict Clippy, 332 tests, release build, audit, dist plan, workflow and shell syntax checks passed; package/publication and hosted checks remain pending. Production merge/deployment remains conditional on the user's acceptance requirements.
+
+- 2026-09-04 — codex: recorded three fresh-client netem pairs per condition (33943631436). Clean/asymmetric/high-latency paired medians are below 5%; random-loss medians are 32.79% download and 10.80% upload, with substantial within-surface variability. Three real Cloudflare pairs completed; median differences were 2.20% download and 11.13% upload on the uncontrolled host path. No physical-capacity or all-device accuracy claim is inferred.
+- 2026-09-04 — codex: a live trace exposed a 154.27 Mbps ceiling below 159.68 Mbps sustained. Both engines now withhold unsupported lower ceilings rather than raising them. All 88 counter traces and explicit aggregation cases agree after the correction. Package verification uses an isolated target directory because the previous package dry-run left cached library dependencies pointing into the unpacked package; a fresh package-scoped rebuild resolved the stale replay executable.
+- 2026-09-04 — codex: restored the original reviewer workflow after confirming edited-workflow validation produces a skip. Its latest real attempt still fails before substantive review. Android full UI workflow succeeds; native iOS recording frames show reel motion and probe feedback. Production build af9b7680-9118-458b-8a68-fdd631205e8a is preparatory only; no merge, release tag, production deployment or TestFlight upload claimed.
