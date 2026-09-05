@@ -1,0 +1,711 @@
+[
+  {
+    "name": "steady 60 Mbps",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 7500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 22500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        },
+        {
+          "t": 5000,
+          "bytes": 37500000
+        },
+        {
+          "t": 6000,
+          "bytes": 45000000
+        },
+        {
+          "t": 7000,
+          "bytes": 52500000
+        },
+        {
+          "t": 8000,
+          "bytes": 60000000
+        },
+        {
+          "t": 9000,
+          "bytes": 67500000
+        },
+        {
+          "t": 10000,
+          "bytes": 75000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 60,
+      "ceilingMbps": 60,
+      "measuredMs": 8000,
+      "measuredBytes": 60000000,
+      "qualification": "measured"
+    }
+  },
+  {
+    "name": "alternating 20/100 Mbps download",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 2500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 17500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        },
+        {
+          "t": 5000,
+          "bytes": 32500000
+        },
+        {
+          "t": 6000,
+          "bytes": 45000000
+        },
+        {
+          "t": 7000,
+          "bytes": 47500000
+        },
+        {
+          "t": 8000,
+          "bytes": 60000000
+        },
+        {
+          "t": 9000,
+          "bytes": 62500000
+        },
+        {
+          "t": 10000,
+          "bytes": 75000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 60,
+      "ceilingMbps": 73.33333333333333,
+      "measuredMs": 8000,
+      "measuredBytes": 60000000,
+      "qualification": "measured"
+    }
+  },
+  {
+    "name": "alternating 20/100 Mbps upload",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "upload",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 2500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 17500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        },
+        {
+          "t": 5000,
+          "bytes": 32500000
+        },
+        {
+          "t": 6000,
+          "bytes": 45000000
+        },
+        {
+          "t": 7000,
+          "bytes": 47500000
+        },
+        {
+          "t": 8000,
+          "bytes": 60000000
+        },
+        {
+          "t": 9000,
+          "bytes": 62500000
+        },
+        {
+          "t": 10000,
+          "bytes": 75000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 60,
+      "ceilingMbps": 73.33333333333333,
+      "measuredMs": 8000,
+      "measuredBytes": 60000000,
+      "qualification": "measured"
+    }
+  },
+  {
+    "name": "zero throughput stalls count as elapsed time",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 7500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 22500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        },
+        {
+          "t": 5000,
+          "bytes": 30000000
+        },
+        {
+          "t": 6000,
+          "bytes": 30000000
+        },
+        {
+          "t": 7000,
+          "bytes": 30000000
+        },
+        {
+          "t": 8000,
+          "bytes": 30000000
+        },
+        {
+          "t": 9000,
+          "bytes": 37500000
+        },
+        {
+          "t": 10000,
+          "bytes": 45000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 30,
+      "ceilingMbps": 40,
+      "measuredMs": 8000,
+      "measuredBytes": 30000000,
+      "qualification": "measured"
+    }
+  },
+  {
+    "name": "partial final interval",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 7500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3500,
+          "bytes": 26250000
+        },
+        {
+          "t": 5000,
+          "bytes": 37500000
+        },
+        {
+          "t": 6500,
+          "bytes": 48750000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 60,
+      "ceilingMbps": null,
+      "measuredMs": 4500,
+      "measuredBytes": 33750000,
+      "qualification": "measured"
+    }
+  },
+  {
+    "name": "sender buffer is provisional",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "sender-drained",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 7500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 22500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        },
+        {
+          "t": 5000,
+          "bytes": 37500000
+        },
+        {
+          "t": 6000,
+          "bytes": 45000000
+        },
+        {
+          "t": 7000,
+          "bytes": 52500000
+        },
+        {
+          "t": 8000,
+          "bytes": 60000000
+        },
+        {
+          "t": 9000,
+          "bytes": 67500000
+        },
+        {
+          "t": 10000,
+          "bytes": 75000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 60,
+      "ceilingMbps": null,
+      "measuredMs": 8000,
+      "measuredBytes": 60000000,
+      "qualification": "provisional"
+    }
+  },
+  {
+    "name": "insufficient duration",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 7500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 22500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 60,
+      "ceilingMbps": null,
+      "measuredMs": 2000,
+      "measuredBytes": 15000000,
+      "qualification": "provisional"
+    }
+  },
+  {
+    "name": "no measurements",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": null,
+      "ceilingMbps": null,
+      "measuredMs": 0,
+      "measuredBytes": 0,
+      "qualification": "unavailable"
+    }
+  },
+  {
+    "name": "counter reset invalidates session",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 7500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 22500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        },
+        {
+          "t": 5000,
+          "bytes": 0
+        },
+        {
+          "t": 6000,
+          "bytes": 45000000
+        },
+        {
+          "t": 7000,
+          "bytes": 52500000
+        },
+        {
+          "t": 8000,
+          "bytes": 60000000
+        },
+        {
+          "t": 9000,
+          "bytes": 67500000
+        },
+        {
+          "t": 10000,
+          "bytes": 75000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": null,
+      "ceilingMbps": null,
+      "measuredMs": 0,
+      "measuredBytes": 0,
+      "qualification": "unavailable"
+    }
+  },
+  {
+    "name": "nonmonotonic time invalidates session",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 7500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 22500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        },
+        {
+          "t": 4000,
+          "bytes": 37500000
+        },
+        {
+          "t": 6000,
+          "bytes": 45000000
+        },
+        {
+          "t": 7000,
+          "bytes": 52500000
+        },
+        {
+          "t": 8000,
+          "bytes": 60000000
+        },
+        {
+          "t": 9000,
+          "bytes": 67500000
+        },
+        {
+          "t": 10000,
+          "bytes": 75000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": null,
+      "ceilingMbps": null,
+      "measuredMs": 0,
+      "measuredBytes": 0,
+      "qualification": "unavailable"
+    }
+  },
+  {
+    "name": "byte capped partial data survives",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 7500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 22500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        },
+        {
+          "t": 5000,
+          "bytes": 37500000
+        },
+        {
+          "t": 6000,
+          "bytes": 45000000
+        },
+        {
+          "t": 7000,
+          "bytes": 52500000
+        },
+        {
+          "t": 8000,
+          "bytes": 60000000
+        },
+        {
+          "t": 9000,
+          "bytes": 67500000
+        },
+        {
+          "t": 10000,
+          "bytes": 75000000
+        }
+      ],
+      "stopReason": "byte-limit"
+    },
+    "expected": {
+      "sustainedMbps": 60,
+      "ceilingMbps": 60,
+      "measuredMs": 8000,
+      "measuredBytes": 60000000,
+      "qualification": "measured"
+    }
+  },
+  {
+    "name": "background gap excludes adjacent intervals",
+    "trace": {
+      "provider": "cloudflare",
+      "endpoint": "https://example.test/payload",
+      "transport": "https",
+      "streams": 2,
+      "direction": "download",
+      "accounting": "received",
+      "warmupMs": 2000,
+      "points": [
+        {
+          "t": 0,
+          "bytes": 0
+        },
+        {
+          "t": 1000,
+          "bytes": 7500000
+        },
+        {
+          "t": 2000,
+          "bytes": 15000000
+        },
+        {
+          "t": 3000,
+          "bytes": 22500000
+        },
+        {
+          "t": 4000,
+          "bytes": 30000000
+        },
+        {
+          "t": 5000,
+          "bytes": 37500000,
+          "valid": false
+        },
+        {
+          "t": 6000,
+          "bytes": 45000000
+        },
+        {
+          "t": 7000,
+          "bytes": 52500000
+        },
+        {
+          "t": 8000,
+          "bytes": 60000000
+        },
+        {
+          "t": 9000,
+          "bytes": 67500000
+        },
+        {
+          "t": 10000,
+          "bytes": 75000000
+        }
+      ],
+      "stopReason": "complete"
+    },
+    "expected": {
+      "sustainedMbps": 60,
+      "ceilingMbps": null,
+      "measuredMs": 6000,
+      "measuredBytes": 45000000,
+      "qualification": "measured"
+    }
+  }
+]

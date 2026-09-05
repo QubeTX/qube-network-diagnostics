@@ -1,0 +1,37 @@
+name: Complete measurement parity
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  recorded-traces:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Read canonical pin
+        id: canonical
+        run: node -e "const m=require('./src/speedtest/canonical-v5.json');if(m.sourceDirty||!/^[a-f0-9]{40}$/.test(m.sourceRevision))process.exit(1);require('fs').appendFileSync(process.env.GITHUB_OUTPUT,'revision='+m.sourceRevision+'\n')"
+      - uses: actions/checkout@v4
+        with:
+          repository: QubeTX/speedtest
+          ref: ${{ steps.canonical.outputs.revision }}
+          path: canonical-speedqx
+          persist-credentials: false
+      - run: node scripts/sync-v5-contract.mjs --check --source-check
+        env:
+          SPEEDQX_CANONICAL: canonical-speedqx
+      - run: cargo build --locked --example v5-replay
+      - run: npm ci
+        working-directory: canonical-speedqx
+      - name: Compare complete trace estimates and aggregations
+        run: npx --no-install vite-node scripts/validate-v5.ts
+        working-directory: canonical-speedqx
+        env:
+          SPEEDQX_REPLAY: ${{ github.workspace }}/target/debug/examples/v5-replay

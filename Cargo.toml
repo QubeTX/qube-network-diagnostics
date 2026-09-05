@@ -1,6 +1,6 @@
 [package]
 name = "nd300"
-version = "3.7.3"
+version = "4.0.0"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -47,7 +47,7 @@ tokio = { version = "1", features = ["full"] }
 # requests follow the host trust policy; the TLS-inspection diagnostic also
 # compares a native-root handshake with a public-root-only control so a
 # locally trusted enterprise interception certificate remains observable.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots", "json", "http2"] }
 serde = { version = "1", features = ["derive"] }
 # `float_roundtrip` makes serde_json's float parser correctly-rounded so the v4
 # golden-vectors.json f64 literals load bit-identically to V8/Rust-std (the
@@ -63,6 +63,7 @@ sysinfo = "0.32"
 default-net = "0.22"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+rand = "0.8"
 url = "2"
 # Release artifact integrity and TLS certificate inspection are shared across
 # platforms. Keep SHA-256 outside a target-specific section because the native

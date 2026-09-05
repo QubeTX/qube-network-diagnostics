@@ -2,7 +2,7 @@ use clap::Parser;
 use nd_300::cli::{SpeedQXCli, SpeedQXCommand};
 use nd_300::speedtest::display::{render_results, SpeedQXDisplay};
 use nd_300::speedtest::{
-    format_mbps, Phase, ProviderCompleteCallback, ProviderSet, SpeedTestConfig, TestDuration,
+    format_mbps, Phase, ProviderCompleteCallback, ProviderSet, SpeedTestConfig,
 };
 use std::sync::{Arc, Mutex};
 
@@ -174,29 +174,12 @@ impl DisplayState {
 /// executes. Phase counts per provider: Cloudflare 3, NDT7 3, MSAK 3,
 /// LibreSpeed 3, fast.com 3, CacheFly 2 (download-only), Vultr 3, Apple 3,
 /// plus 1 for the final Computing step.
-fn plan_counts(fast: bool, skip_msak: bool, skip_apple: bool) -> (u32, u32) {
-    let mut provider_count: u32 = 2; // Cloudflare + NDT7
-    let mut phase_steps: u32 = 6; // 3 + 3
-
-    // MSAK: FAST always runs it; FULL runs it unless skipped.
-    if fast || !skip_msak {
-        provider_count += 1;
-        phase_steps += 3;
-    }
-
-    if !fast {
-        // FULL adds LibreSpeed (3), fast.com (3), CacheFly (2), Vultr (3).
-        provider_count += 4;
-        phase_steps += 3 + 3 + 2 + 3;
-        if !skip_apple {
-            provider_count += 1;
-            phase_steps += 3;
-        }
-    }
-
-    (provider_count, phase_steps + 1) // + Computing
+fn plan_counts(fast: bool, skip_msak: bool, no_mlab: bool) -> (u32, u32) {
+    let primary = if skip_msak { 1 } else { 2 };
+    let count =
+        primary * if fast { 1 } else { 2 } + if no_mlab { 0 } else { 1 } + if fast { 0 } else { 4 };
+    (count, count * 3 + 1 - if fast { 0 } else { 3 })
 }
-
 #[tokio::main]
 async fn main() {
     let cli = SpeedQXCli::parse();
@@ -231,7 +214,7 @@ async fn main() {
     let use_ascii = cli.ascii;
     let use_colors = !cli.no_color;
     let json_mode = cli.json;
-    let fast = cli.fast;
+    let fast = !cli.deep;
 
     let provider_set = if fast {
         ProviderSet::Fast
@@ -249,56 +232,31 @@ async fn main() {
         msak_enabled: !cli.skip_msak,
         apple_enabled: !cli.skip_apple,
         use_colors,
+        max_bytes: cli.max_bytes,
+        mlab_consent: cli.accept_mlab,
+        ..SpeedTestConfig::default()
     };
 
-    let (provider_count, total_steps) = plan_counts(fast, cli.skip_msak, cli.skip_apple);
+    let (provider_count, total_steps) =
+        plan_counts(fast, !cli.accept_mlab || cli.skip_msak, !cli.accept_mlab);
 
-    // Outer wall-clock cap. The providers run sequentially; each fixed-duration
-    // provider does `duration` per direction plus a dense latency phase, and
-    // fast.com uses `fastcom_duration`. FAST providers are additionally capped
-    // at 25 s each with early stopping. This generous ceiling only trips on a
-    // genuinely stuck provider.
-    let cap_dur_secs = match &config.duration {
-        TestDuration::Seconds(s) => *s,
-        TestDuration::Auto => 15,
-    };
-    let cap_fc_secs = match &config.fastcom_duration {
-        TestDuration::Seconds(s) => *s,
-        TestDuration::Auto => 15,
-    };
-    let outer_cap = std::time::Duration::from_secs(
-        (provider_count as u64) * (2 * cap_dur_secs + 25) + 2 * cap_fc_secs + 90,
-    )
-    .max(std::time::Duration::from_secs(120));
-
-    // Print header with an estimated time.
     if !json_mode {
-        let display = SpeedQXDisplay::new(use_ascii, use_colors, json_mode);
-        display.print_header();
-
-        let per_dir_secs = if fast { 8 } else { cap_dur_secs };
-        let total_est = (provider_count as u64) * (2 * per_dir_secs + 6);
-        let mins = total_est / 60;
-        let secs = total_est % 60;
-        let mode = if fast { "FAST" } else { "FULL" };
-
-        if use_colors {
-            println!(
-                "  {}",
-                owo_colors::OwoColorize::dimmed(&format!(
-                    "Estimated test time: ~{}:{:02} ({} mode, {} providers, {}s/direction)",
-                    mins, secs, mode, provider_count, per_dir_secs
-                ))
-            );
+        SpeedQXDisplay::new(use_ascii, use_colors, json_mode).print_header();
+        println!(
+            "  {} · up to {} seconds · up to {} payload bytes",
+            if fast { "Quick" } else { "Deep" },
+            if fast { 90 } else { 300 },
+            config
+                .max_bytes
+                .unwrap_or(if fast { 5_000_000_000 } else { 20_000_000_000 })
+        );
+        if cli.accept_mlab {
+            println!("  M-Lab publishes measurement results and your IP address.");
         } else {
-            println!(
-                "  Estimated test time: ~{}:{:02} ({} mode, {} providers, {}s/direction)",
-                mins, secs, mode, provider_count, per_dir_secs
-            );
+            println!("  Cloudflare is the only primary source. Add --accept-mlab to consent to M-Lab data publication.");
         }
         println!();
     }
-
     let state = Arc::new(Mutex::new(DisplayState {
         display: SpeedQXDisplay::new(use_ascii, use_colors, json_mode),
         current_phase: None,
@@ -373,39 +331,24 @@ async fn main() {
     });
 
     let state_clone = state.clone();
-    let result = match tokio::time::timeout(
-        outer_cap,
-        nd_300::speedtest::run(
-            config,
-            move |phase, progress| {
-                if let Ok(mut s) = state_clone.lock() {
-                    s.handle_phase(phase, progress);
-                }
-            },
-            Some(on_complete),
-        ),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => {
-            if json_mode {
-                println!(
-                    "{{\"error\":\"timeout\",\"timed_out\":true,\"timeout_secs\":{}}}",
-                    outer_cap.as_secs()
-                );
-            } else {
-                eprintln!();
-                eprintln!(
-                    "Speed test timed out after {}s — a provider appears to be stuck or the \
-                     network is severely degraded. Try again, or use --duration to shorten the test.",
-                    outer_cap.as_secs()
-                );
+    let cancellation = config.cancel.clone();
+    let running = nd_300::speedtest::run(
+        config,
+        move |phase, progress| {
+            if let Ok(mut s) = state_clone.lock() {
+                s.handle_phase(phase, progress);
             }
-            std::process::exit(2);
+        },
+        Some(on_complete),
+    );
+    tokio::pin!(running);
+    let result = tokio::select! {
+        result = &mut running => result,
+        _ = tokio::signal::ctrl_c() => {
+            cancellation.store(true, std::sync::atomic::Ordering::Relaxed);
+            running.await
         }
     };
-
     if json_mode {
         match serde_json::to_string_pretty(&result) {
             Ok(json) => println!("{}", json),
@@ -419,12 +362,15 @@ async fn main() {
         print!("{}", render_results(&result, use_ascii, use_colors));
     }
 
+    if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
+        std::process::exit(130);
+    }
     // Honest exit code: non-zero when no provider produced positive throughput
     // in either direction (mirrors diagnostics/speed.rs).
-    let measured = result.providers.iter().any(|p| {
-        p.error.is_none()
-            && (p.download_mbps.unwrap_or(0.0) > 0.0 || p.upload_mbps.unwrap_or(0.0) > 0.0)
-    });
+    let measured = result
+        .measurement
+        .as_ref()
+        .is_some_and(|m| m.download.sustained_mbps.is_some() || m.upload.sustained_mbps.is_some());
     if !measured {
         std::process::exit(2);
     }

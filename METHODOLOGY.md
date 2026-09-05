@@ -1,251 +1,92 @@
-# SpeedQX Methodology
+# SpeedQX measurement methodology v5.0
 
-**Methodology version: `4.0`** · Applies to: SpeedQX website (speedqx.com), SpeedQX iOS app, `speedqx` CLI (bundled with nd300)
+Status: implementation candidate; validation evidence and remaining acceptance gates are tracked in evidence/v5.
 
-> This document is the single source of truth for how SpeedQX measures internet performance.
-> It is committed **byte-identical** to all three product repositories. Every result payload
-> produced by any SpeedQX product carries the `methodologyVersion` string above, so any result
-> can be traced to the exact algorithm that produced it. Changes to this document bump the
-> methodology version — independently of any product's release version.
+Sustained application throughput on this device, across the paths tested. Your radio, browser, operating system and the test servers are all part of that result.
 
----
+## Download and upload
 
-## 1. Versioning & self-identification
+Each transfer records elapsed time and cumulative payload bytes. After a fixed two-second warm-up, sustained speed is measured bytes divided by measured time. A pause stays in the measurement. Upload uses completed HTTP requests or the receiving server’s byte count; bytes merely queued for sending cannot establish a measured result.
 
-- `methodologyVersion` (`"4.0"`) is embedded in every result payload: CLI `--json` output,
-  website/app share & clipboard text, and the UI drill-down.
-- `platform` identifies the producer: `"web"`, `"app"`, or `"cli"`.
-- `providerSet` identifies the test mode: `"fast"` or `"full"` (§3).
+At least four seconds of valid measurement are required for a qualifying source. Shorter traces remain provisional in details. An unavailable value means there was not enough evidence; a measured zero means the transfer stalled.
 
-## 2. Test lifecycle
+## One common comparison
 
-1. **Preflight** (platform-dependent): provider DNS/HTTP reachability, network-path
-   metadata. Observability only — never merged into results.
-2. **Idle latency** (§4): dense HTTP probe engine against the Cloudflare edge.
-3. **Per-provider throughput** (§5): providers run **sequentially**, each measuring
-   download then upload, with loaded-latency probes running during Cloudflare saturation.
-   Inter-provider transition gap: **1000 ms**.
-4. **Aggregation** (§6): cross-provider merge, confidence intervals, agreement, grades.
+Cloudflare and M-Lab MSAK are the primary sources, each using two logical streams. Their qualifying sustained estimates receive one vote each; the headline is their median. Deep combines repeated runs within each provider before comparing the two providers. A single successful source is explicitly labeled.
 
-## 3. Provider registry & platform availability
+M-Lab NDT7 is a separate single-stream measurement. NDT7 and MSAK share a network and never count as two independent networks. Deep also attempts LibreSpeed, CacheFly, Vultr and fast.com through existing public services. Supplementary measurements stay in details and cannot change the headline. Apple networkQuality is outside this common comparison.
 
-| Provider | Transport | Directions | Browser/WebView | CLI | Capability prior |
-|---|---|---|---|---|---|
-| Cloudflare (`speed.cloudflare.com`) | HTTPS GET/POST | DL + UL + loaded latency + packet loss | ✅ | ✅ | 1.00 |
-| M-Lab NDT7 | WebSocket (`net.measurementlab.ndt.v7`) | DL + UL, kernel `TCPInfo.MinRTT` | ✅ | ✅ | 0.70 |
-| M-Lab MSAK | WebSocket ×2 streams (`net.measurementlab.throughput.v1`) | DL + UL, kernel MinRTT | ✅ | ✅ | 0.85 |
-| LibreSpeed | HTTPS (pinned CORS-enabled backend) | DL + UL | ✅ | ✅ | 0.95 |
-| fast.com (Netflix) | HTTPS to OCA nodes (token via relay on web/app) | DL (+UL where offered) | ✅* | ✅ | 1.00 |
-| CacheFly | HTTPS range requests (`cachefly.cachefly.net/{1,10,100}mb.test`) | DL only | ✅ | ✅ | 0.95 |
-| Vultr | HTTPS range requests, multi-POP min-RTT selection (`*-ping.vultr.com/vultr.com.100MB.bin`) | DL only | ✅ | ✅ | 0.95 |
-| Apple networkQuality | HTTPS ×4 parallel (`mensura.cdn-apple.com`) | DL + UL | ❌ (CORS) | ✅ | 1.00 |
+## Estimated ceiling
 
-\* fast.com on web/app is labeled an *estimate* (token relay; OCA selection is relay-IP-based)
-and hides itself on failure rather than reporting a degraded number.
+A ceiling needs two non-overlapping windows of at least three seconds whose speeds are within 10%. The lower speed of the pair is the candidate. An isolated spike cannot establish it. The estimate describes repeatable throughput observed during this run; it is not the physical capacity of your ISP line.
 
-**The spec defines the full set; each platform contributes what it can run.** Providers a
-platform cannot run appear in the payload with `availability: "unavailable-platform"` —
-visible, never silently missing. Failed providers appear with `availability: "failed"`.
+If provider ceilings differ by more than 20%, the common ceiling is withheld and the disagreement is shown. No ceiling is a valid outcome, especially for short, interrupted or unstable transfers.
 
-**Test modes:**
-- **FAST** — Cloudflare + NDT7 + MSAK, with confidence-sequence early termination (§8).
-  Typically ≈ 1 minute end-to-end (each source early-stops when converged, hard-capped
-  at 25 s of sampling; the conservative EB sequence rarely stops sooner). CLI: `speedqx --fast`.
-- **FULL** — every provider available on the platform, fixed durations, no early stop.
-  Default for `speedqx` (CLI).
+## Ping, jitter and load
 
-## 4. Latency instrument
+Ping is the median of idle HTTP round trips to Cloudflare’s common reference endpoint. One initial probe warms the connection and is discarded; up to twelve idle probes follow. The minimum HTTP RTT remains a separate detail. Jitter is the difference between the 95th percentile and median of the idle samples.
 
-- Endpoint: `https://speed.cloudflare.com/__down?bytes=0`, cache-busted per probe.
-- Sample count: `clamp(50, round(durationSeconds × 3.3), 200)` — auto (30 s) → 99.
-- **3 warmup probes discarded** (DNS + TCP + TLS amortization); 50 ms inter-probe interval.
-- Timing: `PerformanceResourceTiming.responseStart − requestStart` where trustworthy
-  (`0 < rtt < 3 × wall-clock fallback`), else wall-clock. CLI: monotonic clock.
-- Paused while the page/tab is hidden (browser/WebView) to avoid throttling artifacts.
-- Kernel cross-check: NDT7/MSAK report `TCPInfo.MinRTT` (µs → ms) from the server TCP stack.
-- **Headline ping = min-RTT** across the probe engine and kernel MinRTT values — the
-  physical floor of the path. P50/P75/P95/P99/mean/max are first-tap drill-down.
-- Cross-provider latency blend (for the latency stats block): Cloudflare 0.4 / NDT7 0.6.
+Download-loaded and upload-loaded HTTP RTT use that same reference while the respective transfer is active. HTTP includes browser and server processing and can include connection setup. A server’s TCP minimum RTT, when provided, is labeled separately. HTTP probe failures are not packet loss. This common run does not measure UDP loss; unavailable UDP loss is never displayed as zero.
 
-## 5. Per-provider throughput pipeline
+## Quick, Deep and data use
 
-Applied independently per provider, per direction:
+Quick is the default and has a 90-second overall cap. Each primary direction gets a bounded ten-second transfer including warm-up. Deep has a five-minute overall cap and repeats the primary comparison with twenty-second directions. NDT7 remains limited to its ten-second protocol schedule. Server protocol limits and rate limits take priority.
 
-1. **Raw samples**: throughput readings on 250–500 ms ticks. HTTP providers use adaptive
-   request sizing (~2 s of transfer at the last measured rate). WebSocket upload frames grow
-   by the reference 16×-bytes-sent rule.
-2. **Warm-up removal — plateau detector** (replaces the fixed 30% discard of v2/v3):
-   steady state begins at the first index `t` where **3 consecutive** samples each sit
-   within **±10%** of `median(samples[t..end])`. The cut is clamped to **[10%, 40%]** of the
-   series. Samples before `t` are discarded.
-3. **Outlier filter**: IQR fences with **k = 1.5** (applied when n ≥ 4).
-4. **Upload only**: keep the **fastest 50%** of post-warm-up samples (industry-standard
-   compensation for sender-side buffering artifacts), before step 3.
-5. **Location estimate — modified trimean**: `(P10 + 8·P50 + P90) / 10`.
-   This is the same statistic used by Ookla's Speed Score — a deliberate, citable choice.
-6. **Cross-check**: Hodges–Lehmann estimator computed on the cleaned samples; if
-   `|HL − trimean| / trimean > 0.15`, an internal instability flag is raised on the provider.
-7. **Uncertainty**: **circular block bootstrap** — block length `ℓ = max(2, round(n^⅓))`
-   (throughput samples are autocorrelated; IID resampling understates variance),
-   **B = 2000** resamples, **BCa** (bias-corrected accelerated) intervals at 95%.
-   The bootstrap variance of the trimean is the provider's variance `v_j` in §6.
+The default payload budget is 5 GB for Quick and 20 GB for Deep, using decimal units. Settings let you choose a smaller ceiling. These are upper estimates, not promised consumption. Actual payload bytes are shown separately. Upload budget accounting includes bytes offered to the transport, so it is conservative; network headers, encryption and unrelated traffic are outside these totals. Already-arriving socket data may exceed the ceiling by a bounded in-flight amount.
 
-## 6. Cross-provider merge (the SpeedQX hybrid)
+Stop preserves qualifying partial results and records why the run ended. Time and byte limits do the same. Leaving the app, background throttling or a detected network transition ends the comparable run and excludes the ambiguous final interval. A transition that the operating system does not expose may still affect a run.
 
-Providers with **≥ 4** cleaned samples in a direction qualify for the merge
-(`MIN_MERGE_SAMPLES = 4`); the rest are recorded in `mergeExclusions` — never silently dropped.
+## Variation and repeatability
 
-Each qualifying provider contributes `(y_j = trimean, v_j = bootstrap variance)`.
+Details show each provider, its chronological trace and observed spread. The estimated repeatability range describes the observed windows or provider values. It assumes conditions remain similar. Windows can overlap and samples can be correlated; this is not a calibrated 95% confidence interval or a guarantee of future accuracy.
 
-**Between-provider heterogeneity (DerSimonian–Laird):**
+Continued ramp-up, stalls and provider disagreement are disclosed. Compare sequential runs using the same profile, endpoints and device. Different Wi-Fi conditions, radios and devices are measured variables, so matching formulas alone cannot guarantee matching results.
 
-```
-w_j  = 1/v_j                     mu_F = Σ w_j·y_j / Σ w_j
-Q    = Σ w_j·(y_j − mu_F)²       C    = Σ w_j − (Σ w_j²)/(Σ w_j)
-τ²   = max(0, (Q − (k−1)) / C)
-I²   = max(0, (Q − (k−1)) / Q)
-```
+## Privacy and consent
 
-**Headline = CAPACITY** — the speed the tests that can actually saturate the line agree on:
+SpeedQX transfers synthetic payloads, not your files. The remote test services necessarily see your public IP address and connection metadata. No new SpeedQX measurement servers are used.
 
-```
-tier = { j : y_j ≥ 0.85 · max(y) }        # if k ≥ 3 and |tier| < 2 → top-2 providers
-w'_j = capability_j / (v_j + τ²)           # capability priors from §3
-capacity = Σ_tier w'_j·y_j / Σ_tier w'_j
-```
+M-Lab publishes measurement results and IP addresses. Both M-Lab tests require your consent before discovery or transfer. Without consent, the primary result uses Cloudflare alone and is labeled single-source. The CLI requires --accept-mlab. Review each provider’s policy before testing on a connection with sensitive or metered usage.
 
-**Secondary = CONSENSUS** — the conservative, all-providers number:
+## Reading older results
 
-```
-w*_j = 1/(v_j + τ²)               consensus = Σ w*_j·y_j / Σ w*_j
-```
+Saved results retain their methodology version. Version 4 used a different sample-selection and aggregation pipeline, so its headline and uncertainty fields keep their original interpretation. Version 5 maps the existing headline download and upload fields to sustained throughput and adds explicit validity, ceiling and acquisition fields. The result details and exported record identify the version.
 
-**Confidence interval** — Hartung–Knapp–Sidik–Jonkman on the random-effects model:
+## Normative acquisition contract
 
-```
-q  = Σ w*_j·(y_j − consensus)² / (k−1)      q' = max(1, q)
-SE = sqrt(q' / Σ w*_j)
-CI = estimate ± t(k−1, 0.975) · SE
-# t-table (df: 1→12.706, 2→4.303, 3→3.182, 4→2.776, 5→2.571, 6→2.447, 7→2.365; clamp above 7)
-# HKSJ weights are the CAPPED random-effects weights (w* after the 0.70 cap, one renormalization).
-# The capacity CI uses the same HKSJ machinery restricted to the tier members.
-```
+The machine-readable contract is `src/services/measurement-contract-v5.json` in QubeTX/speedtest. TypeScript is canonical for the browser and generated Expo WebView engine. Rust remains an independent implementation. The generated mobile manifest pins the canonical commit and SHA-256 of every copied source, fixture, geometry and documentation file; CI rejects dirty-source pins or content drift.
 
-- **k = 2**: τ² is untrustworthy → report the honest union band
-  `[min(y_j − 1.96·se_j), max(y_j + 1.96·se_j)]` and agreement = "insufficient".
-- **k = 1**: no merge; the provider's own BCa interval is the CI.
-- Per-provider weight is additionally capped at **0.70** of the total (defense in depth).
-- Unknown-variance providers are assigned the **maximum known variance** (least trusted).
+All trace timestamps are monotonic milliseconds relative to transfer start. Payload counters are nonnegative safe integers (maximum 2^53 - 1 for interoperable JSON). Timestamps must strictly increase, and counters must never decrease within a trace. An invalid timestamp, counter reset or explicitly corrupt provider measurement invalidates the trace. A new connection session requires a new trace. Endpoint provenance removes signed query tokens. Direction, transport, logical stream count, accounting method, warm-up duration and stop reason accompany the counters.
 
-**Provider agreement (replaces the v3 ">30% spread" flag):**
+A scheduled 500 ms counter sample records real zero-byte intervals. A final sample records a partial final interval. The first eligible interval begins at a recorded point at or after the two-second boundary: unknown byte arrivals across the boundary are not interpolated. Warm-up samples remain in the exported trace. Invalid intervals and their adjoining boundary samples cannot contribute to sustained or ceiling windows. No retrospective plateau selection, fastest-half upload filter, outlier deletion, or confidence-triggered early stop is applied.
 
-| I² | Band | Presentation |
-|---|---|---|
-| < 0.25 | High | normal |
-| 0.25–0.50 | Moderate | normal |
-| 0.50–0.75 | Low | caution chip |
-| > 0.75 | Very low | show the **range**, not a single headline |
+Sustained Mbps = measured payload bytes × 0.008 / measured milliseconds. Qualification requires at least 4,000 valid measured milliseconds and receiver confirmation. Insufficient-duration or sender-only evidence is provisional. No usable evidence is unavailable. Only qualifying primary sources contribute to the headline, including legitimate measured zeros. Repeated primary directions are combined by bytes/time within their provider, then each primary network receives one median vote. Supplementary and single-stream NDT7 results remain separate.
 
-Agreement is **diagnostic, never failure** — AQM fair-queuing and cross-traffic legitimately
-produce single- vs multi-stream spread. When single-flow (NDT7) and multi-flow figures
-diverge materially, both are disclosed (flow-count transparency).
+Ceiling windows start at actual measurement boundaries and end at the first boundary at least 3,000 ms later. Windows cannot bridge excluded intervals. For two non-overlapping windows, (higher - lower) / higher must be at most 0.10. The largest lower value of any qualifying pair is the provider candidate. Repeated provider candidates use their median. Common provider ceilings use their median only when their observed difference is at most 20% of the higher value. A trace with increasing first-to-last non-overlapping windows above 20% is disclosed as continued ramp-up.
 
-## 7. Jitter, bufferbloat, responsiveness, packet loss
+HTTP uses two logical lanes (an HTTP/2 connection can multiplex them). Downloads adapt from 1 MB toward two-second requests, within 64 KB to 8 MB. Uploads adapt from 1 KB toward 250 ms acknowledged requests, within 1 KB to 8 MB. Request growth is limited to 2× per completion to avoid a fast initial response creating an oversized upload across warm-up. HTTP upload confirmation granularity and request overhead remain transport limitations, particularly at high RTT. Downloads consume streaming binary bodies; the bounded non-streaming WebView fallback requires a valid Content-Length no larger than its reserved allocation. Binary buffers are synthetic and bounded; text decoding is never used for payloads.
 
-- **Jitter (canonical) — PDV** (RFC 5481 flavor): `P95(RTT) − P50(RTT)`.
-  Secondary: `IPDV mean` (mean |consecutive ΔRTT|) and `MAD × 1.4826`.
-  RFC 3550 EWMA (`J += (|D|−J)/16`) is retained as a compatibility field only.
-- **Bufferbloat delta (canonical)**: `P95(loaded RTT) − P50(idle RTT)` in ms, graded
-  **A+ < 5 · A < 30 · B < 60 · C < 200 · D < 400 · F ≥ 400**.
-  Loaded RTT comes from probes fired during Cloudflare saturation (200 ms throttle,
-  max 50 points per direction). The loaded/idle **ratio** is a disclosed secondary.
-- **Responsiveness (RPM, approx)**: `60000 / P50(loaded RTT ms)` — the working-conditions
-  round-trips-per-minute figure aligned with the IETF responsiveness draft, labeled
-  *approx* because browser probes are same-origin multiplexed rather than the full
-  foreign+self probe design.
-- **Packet loss**: UDP via Cloudflare TURN relay (1000 packets), reported as a percentage.
-  On TURN failure, packet loss is `unavailable` — never fabricated. NDT7's TCP-derived
-  loss signals are disclosed in the provider drill-down where available.
+MSAK uses two WebSockets with the provider protocol and millisecond duration parameter, capped at 25 seconds. NDT7 uses one WebSocket and a ten-second client direction schedule. Upload frames start at 8 KiB and grow up to 1 MiB, with bounded send queues; upload results use server application-byte counters. Download results count locally received binary messages. Protocol messages over 16 MiB are refused. Server TCP MinRTT is converted from microseconds and exposed separately. No UDP loss or TCP retransmission percentage is inferred from HTTP failures or unacknowledged application bytes.
 
-## 8. FAST mode early termination
+Quick: idle probes, Cloudflare download/upload, consenting MSAK download/upload, consenting NDT7 download/upload. Deep: idle probes, two rounds of Cloudflare and consenting MSAK download/upload, consenting NDT7, then LibreSpeed download/upload and CacheFly, Vultr and fast.com download-only where transport qualification succeeds. Primary directions are 10 seconds Quick or 20 seconds Deep including warm-up; NDT7 and supplementary directions are 10 seconds. A 500 ms gap separates provider sessions. The overall 90/300 second cap also bounds discovery and idle probes. Provider refusal, rate limits, cancellation or a byte ceiling can shorten the schedule.
 
-Naive "check the CI after every sample and stop when it's tight" is statistically invalid
-(optional-stopping bias → real coverage well below nominal). FAST mode instead uses an
-**anytime-valid confidence sequence** (empirical-Bernstein type) per provider:
+One owner tracks all transfer requests, sockets, timers and reservations. Payload received plus upload payload offered consumes the byte budget, including warm-up and cancelled requests. Confirmed payload is reported separately as bytesTransferred. Reservations prevent concurrent HTTP lanes from spending the same remaining budget. HTTP bodies, protocol queues and already-arriving WebSocket data are bounded separately; the payload budget is not an on-wire byte counter. HTTP probe requests and provider discovery exchange small protocol metadata and are outside payload totals. Auxiliary DNS and network-information checks are separate diagnostics, start after completed measurement, and never delay publication of the bounded measurement result. They are skipped after an interrupted run.
 
-- Samples are rescaled to `[0, 1]` by a generous cap `U` (2× the fastest observed sample).
-- The running mean inside the variance accumulator is **strictly predictable** —
-  `muHat_i = (0.5 + Σ_{j<i} X_j) / i` uses only *prior* samples plus the 0.5 prior, never
-  the current sample. (The plug-in/inclusive form is anti-conservative and voids the
-  anytime-validity guarantee. Pinned 2026-07-06.)
-- The CS is valid at every sample size simultaneously; stopping when
-  `CS half-width ≤ max(5% of estimate, 2 Mbps)` incurs **no** peeking penalty.
-- Hard cap: **25 s** per provider; a provider that hasn't converged reports what it has.
-- Aggressiveness is gated on measured RTT (never on early throughput guesses):
-  paths with min-RTT > 50 ms use the full duration — early termination on
-  high-RTT/low-throughput paths is unsafe (TurboTest, 2026).
+The browser listens for visibility and observable network-type/offline transitions. The native adapter forwards AppState and network-type/connectivity changes with a run identifier on every asynchronous callback. Rust watches the selected local source address without transmitting UDP probes. These are best-effort transition signals: an unreported same-address handoff can remain undetected. A detected transition preserves earlier valid measurement and excludes the ambiguous final counter interval.
 
-FULL mode uses fixed durations and never early-terminates.
+## Validation and limitations
 
-## 9. Result payload schema
+Deterministic fixture replay compares complete estimates and primary aggregation across TypeScript and Rust. The paced loopback acquisition harness independently records server-delivered payload and aligns it to the client's measured interval. It reports configured rate limits separately from delivered application throughput. Its v4 estimator replay compares selection bias on the same traces; it is not a full comparison of all legacy transports.
 
-All platforms emit the same logical schema (camelCase in TS, snake_case in Rust):
+An application-level pacer does not establish physical-device accuracy, TCP packet-loss behavior, radio performance or confidence-band coverage. Physical iOS/Android, hosted platform builds, matched real-path runs and paired animation impact remain separate acceptance evidence. No nominal 95% accuracy or coverage guarantee is made. The intended clean controlled-path target is within 5%; failures and regressions must remain visible in the validation report.
 
-```
-methodologyVersion, platform, providerSet,
-ping (min-RTT), jitter (PDV),
-capacityMbps { download, upload } ± CI,
-consensusMbps { download, upload } ± CI,
-agreement { i2, band },
-packetLoss, rpm,
-bufferbloat { grade, deltaMs, ratio, unloadedLatencyMs, loadedLatencyMs { download, upload } },
-latencyStats { p50, p75, p95, p99, min, max, mean, stddev, pdv, jitterMad, jitterRfc3550 },
-stability { downloadCV, uploadCV, downloadStable, uploadStable },   # stable = CV < 0.15
-providers [ { name, server, availability: ran|unavailable-platform|failed,
-              pingMs, downloadMbps, uploadMbps, samples, bytes, error? } ],
-mergeExclusions [ { provider, direction, samples } ],
-confidenceIntervals { download, upload, confidenceLevel: 0.95 }
-```
+## Historical interpretation
 
-## 10. Progressive disclosure
+`docs/METHODOLOGY-v4.md` preserves the previous contract. Historical records are not recomputed or relabeled as v5. Numeric legacy headline aliases remain for existing consumers; consult the explicit v5 qualification and nullable sustained fields to distinguish unavailable from measured zero.
 
-| Layer | Content | Surface |
-|---|---|---|
-| **L0 — Headline** | capacity ± CI, ping, jitter, bufferbloat grade, RPM | hero numbers / CLI results table |
-| **L1 — Quality** | consensus, CI bounds, I² agreement band, stability CV, packet loss, methodology chip | one tap / summary rows |
-| **L2 — Providers** | per-provider breakdown, exclusions, greyed `unavailable-platform` entries | expander / per-provider sections |
-| **L3 — Raw** | sample arrays, full percentiles, preflight, network metadata, JSON export | deep drill-down / `--json` |
+## Primary references
 
-Everything computed is observable at some layer. Nothing on the headline lacks a
-confidence annotation.
-
-## 11. Portability contract (golden vectors)
-
-TypeScript (website + app WebView) and Rust (CLI) implementations must agree on shared
-golden-vector fixtures (`golden-vectors.json`, committed to all three repos):
-
-| Primitive | Pinned implementation | Comparison |
-|---|---|---|
-| `quantile(sorted, p)` | Type-7 linear interpolation: `h=(n−1)p`, interpolate | **bit-exact** |
-| `invNormal / Phi` | Acklam (or Wichura AS241) rational approximation | ≤ 1e-9 relative |
-| PRNG | **PCG32**, fixed seed + stream, **Lemire** bounded index (`floor(u32/2³²·n)`) | **bit-exact** index streams |
-| t-quantiles | hardcoded table (§6) | **bit-exact** |
-| FP discipline | fixed summation order; no FMA/fast-math; no JS 32-bit bitwise on 64-bit values | — |
-
-Arithmetic-only estimators (trimean, IQR, plateau, merge, PDV, bufferbloat) are compared
-**bit-exact**; transcendental paths (BCa, confidence sequences) at 1e-9 relative tolerance.
-The governing principle of v4: **prefer closed-form arithmetic over iterative or
-transcendental-heavy methods** — exact two-language reproducibility is a product feature.
-
-## 12. Change log of this spec
-
-- **4.0.1** (2026-07-06): Clarifications from first implementation — t-table extended to
-  df ≤ 7 (clamp above); EB-CS running mean pinned to the strictly-predictable form; HKSJ
-  weight choice documented (capped RE weights; capacity CI = same machinery over the tier).
-  No change to `methodologyVersion` ("4.0") — results are unaffected in their meaning.
-- **4.0** (2026-07): First unified spec. Capacity/consensus hybrid merge with DL τ² + HKSJ
-  CIs and I² agreement; plateau warm-up detection; block bootstrap + BCa; PDV jitter;
-  delta-ms bufferbloat + RPM; min-RTT headline ping; FAST/FULL modes with anytime-valid
-  early stopping; 8-provider registry; golden-vector portability contract.
-  Supersedes the v2/v3 era (fixed 60/40 or [0.3,0.7]-clamped 2-provider merges,
-  fixed 30% slow-start discard, RFC 3550 headline jitter, ratio-graded bufferbloat).
+- [M-Lab measurement and data policy](https://www.measurementlab.net/tests/ndt/)
+- [NDT7 protocol](https://github.com/m-lab/ndt-server/blob/main/spec/ndt7-protocol.md)
+- [M-Lab MSAK](https://github.com/m-lab/msak)
+- [Time-uniform confidence sequence research](https://arxiv.org/abs/1810.08240)

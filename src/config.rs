@@ -72,6 +72,9 @@ pub struct Config {
     pub format: OutputFormat,
     pub skip_speed: bool,
     pub speed_duration: u64,
+    pub speed_deep: bool,
+    pub speed_max_bytes: Option<u64>,
+    pub speed_mlab_consent: bool,
     pub verbose: bool,
     pub auto_confirm_medium_risk: bool,
 }
@@ -86,6 +89,9 @@ impl Default for Config {
             format: OutputFormat::Table,
             skip_speed: false,
             speed_duration: 10,
+            speed_deep: false,
+            speed_max_bytes: None,
+            speed_mlab_consent: false,
             verbose: false,
             auto_confirm_medium_risk: false,
         }

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-09-04
+
+Implementation candidate; release acceptance and publication are pending.
+
+### Changed
+
+- **Methodology v5 sustained throughput:** new runs calculate decimal Mbps from receiver-accounted byte counters and elapsed measurement time after an explicit two-second warm-up. Real stalls and partial final intervals remain; fastest-half upload selection, retrospective plateau selection, and confidence-driven early stopping are removed from the active engine. Historical records retain their methodology.
+- **Common provider evidence:** Quick is the default, capped at 90 seconds; Deep repeats the same primary comparison and is capped at five minutes. Cloudflare and consenting M-Lab MSAK contribute one sustained estimate per primary network to the median. NDT7 is separately labeled single-stream evidence; supplementary providers do not change the headline. Single-source, provisional, missing and interrupted results are explicit.
+- **Repeatable ceilings and honest uncertainty:** an estimated ceiling needs two non-overlapping three-second windows within 10%. Provider disagreement can withhold it. Chronological window ranges describe estimated repeatability without a nominal 95% accuracy guarantee.
+- **Latency and loss semantics:** ping is median idle HTTP RTT to the common Cloudflare endpoint, with separate download-loaded/upload-loaded probes. Minimum HTTP RTT, server TCP minimum RTT and HTTP probe failure rate remain distinct. UDP loss and TCP retransmission rates are unavailable unless directly measured.
+- **Resource ownership and provenance:** configurable synthetic-payload ceilings, bounded requests/sockets/memory, acquisition traces, actual confirmed bytes and conservative budget accounting survive cancellation and limits. Background/network transitions stop comparable collection. M-Lab consent discloses publication of measurements and IP addresses.
+
+### Validation
+
+- Added counter-reset, stall, irregular-time, buffering, cancellation and provider-failure regressions, complete TypeScript/Rust trace replay, and independent loopback payload comparisons. These validate specific behavior; physical network accuracy, device acceptance and animation overhead remain separate release gates, documented in the validation evidence.
+
+### CLI integration
+
+- Both `speedqx` and ND300's embedded speed test use the same Quick/Deep contract. `--deep`, `--max-bytes` and explicit M-Lab consent controls select the run; existing aliases remain accepted and ND300's `--fast` still skips speed testing. Structured results add sustained/ceiling values and acquisition metadata. Ctrl-C preserves the speed-test partial result.
+
 ## [3.7.3] - 2026-07-18
 
 ### Changed

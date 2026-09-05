@@ -246,8 +246,10 @@ pub fn run_all_cap(config: &Config) -> std::time::Duration {
     let base = if config.skip_speed {
         RUN_ALL_CAP_FLOOR
     } else {
-        std::time::Duration::from_secs(4 * config.speed_duration + RUN_ALL_CAP_HEADROOM)
-            .max(RUN_ALL_CAP_FLOOR)
+        std::time::Duration::from_secs(
+            if config.speed_deep { 300 } else { 90 } + RUN_ALL_CAP_HEADROOM,
+        )
+        .max(RUN_ALL_CAP_FLOOR)
     };
 
     if config.is_tech_mode() {

@@ -10,6 +10,11 @@
 ## To-Do
 
 ## Active
+- [ ] **Implement SpeedQX v5 measurement and instrument** - shared byte-accounted engine, sustained results, repeatable ceilings, cassette redesign; physical qualification remains a separate gate (owner codex) #sq5
+  - [ ] Versioned traces and deterministic regression coverage
+  - [ ] Bounded provider acquisition and cross-surface integration
+  - [ ] Cassette redesign and responsive visual checks
+  - [ ] Documentation and exact revision validation evidence
 
 ## Done
 - [x] **Commit portable cross-agent project tooling** - PR #31 merged portable Claude/Codex safeguards and ignored generated installer output (ms #p36) #agt

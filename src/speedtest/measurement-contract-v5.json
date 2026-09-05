@@ -1,0 +1,75 @@
+{
+  "methodology": "5.0",
+  "meaning": "sustained application throughput on the tested device and path",
+  "units": {
+    "time": "monotonic milliseconds",
+    "bytes": "integer payload bytes",
+    "throughput": "decimal megabits per second"
+  },
+  "profiles": {
+    "fast": {
+      "capMs": 90000,
+      "directionMs": 10000,
+      "defaultMaxBytes": 5000000000
+    },
+    "full": {
+      "capMs": 300000,
+      "directionMs": 20000,
+      "defaultMaxBytes": 20000000000
+    }
+  },
+  "warmupMs": 2000,
+  "minimumMeasurementMs": 4000,
+  "sampleIntervalMs": 500,
+  "primaryProviders": [
+    "cloudflare",
+    "msak"
+  ],
+  "independentNetworks": {
+    "cloudflare": "cloudflare",
+    "msak": "mlab",
+    "ndt7": "mlab"
+  },
+  "streams": {
+    "http": 2,
+    "msak": 2,
+    "ndt7": 1
+  },
+  "http": {
+    "maxRequestBytes": 8000000,
+    "downloadInitialBytes": 1000000,
+    "downloadTargetMs": 2000,
+    "uploadInitialBytes": 1024,
+    "uploadTargetMs": 250,
+    "maxGrowthFactor": 2
+  },
+  "ceiling": {
+    "minimumWindowMs": 3000,
+    "nonOverlappingWindows": 2,
+    "relativeTolerance": 0.1
+  },
+  "latency": {
+    "reference": "https://speed.cloudflare.com/__down?bytes=0",
+    "idleWarmupProbes": 1,
+    "idleProbes": 12,
+    "probeTimeoutMs": 1500,
+    "idleGapMs": 100,
+    "loadedGapMs": 500
+  },
+  "qualifications": [
+    "measured",
+    "provisional",
+    "unavailable"
+  ],
+  "stopReasons": [
+    "complete",
+    "time-limit",
+    "byte-limit",
+    "cancelled",
+    "background",
+    "network-change",
+    "failed"
+  ],
+  "uncertainty": "observed window range for one provider; provider spread for two networks; no nominal coverage guarantee",
+  "budget": "received payload plus offered upload payload; protocol overhead and in-flight WebSocket overshoot disclosed"
+}
