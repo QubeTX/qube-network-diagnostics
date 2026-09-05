@@ -7,7 +7,7 @@ Independent review found Medium unbounded discovery/control JSON and Low destina
 Add bounded discovery readers and control-message limits across canonical TypeScript and Rust; constrain approved M-Lab hosts, paths, ports and redirects after provider compatibility verification. Track inherited decoder and UUID advisories without unrelated framework downgrades.
 
 ## Impact
-Keeps the released product''s limitations explicit and improves qualification without rewriting historical evidence.
+Keeps the released product's limitations explicit and improves qualification without rewriting historical evidence.
 
 ## Verification
 - [ ] Oversized metadata and malformed endpoint regressions, byte-identical generated app source, cross-platform checks, and native malformed-link verification for any decoder fix.

@@ -7,7 +7,7 @@ Optimized random-loss paired medians missed the 5% target: 35.11% download and 1
 Investigate independent loss histories and within-surface variability, then predeclare a controlled comparison without selecting favorable repetitions.
 
 ## Impact
-Keeps the released product''s limitations explicit and improves qualification without rewriting historical evidence.
+Keeps the released product's limitations explicit and improves qualification without rewriting historical evidence.
 
 ## Verification
 - [ ] Explain and meet a justified repeatability criterion under loss; separately qualify consenting provider and physical paths without claiming configured capacity is delivered-payload truth.

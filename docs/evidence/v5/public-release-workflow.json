@@ -1,0 +1,1861 @@
+{
+  "conclusion": "success",
+  "headSha": "d76af2b2e282440e2e28c31c8b05d5d8833f458f",
+  "jobs": [
+    {
+      "completedAt": "2026-09-05T08:10:34Z",
+      "conclusion": "success",
+      "databaseId": 101275303681,
+      "name": "plan",
+      "startedAt": "2026-09-05T08:10:20Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:10:21Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:10:20Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:22Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:10:21Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:24Z",
+          "conclusion": "success",
+          "name": "Validate tag, source, CI, and crates.io release gate",
+          "number": 3,
+          "startedAt": "2026-09-05T08:10:22Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:25Z",
+          "conclusion": "success",
+          "name": "Install dist",
+          "number": 4,
+          "startedAt": "2026-09-05T08:10:24Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:27Z",
+          "conclusion": "success",
+          "name": "Cache dist",
+          "number": 5,
+          "startedAt": "2026-09-05T08:10:25Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:31Z",
+          "conclusion": "success",
+          "name": "Create publishing plan",
+          "number": 6,
+          "startedAt": "2026-09-05T08:10:27Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:31Z",
+          "conclusion": "skipped",
+          "name": "Create secret-free pull-request plan",
+          "number": 7,
+          "startedAt": "2026-09-05T08:10:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:31Z",
+          "conclusion": "success",
+          "name": "Record cargo-dist plan",
+          "number": 8,
+          "startedAt": "2026-09-05T08:10:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:32Z",
+          "conclusion": "success",
+          "name": "Upload dist-manifest.json",
+          "number": 9,
+          "startedAt": "2026-09-05T08:10:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:32Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 18,
+          "startedAt": "2026-09-05T08:10:32Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:32Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 19,
+          "startedAt": "2026-09-05T08:10:32Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101275303681"
+    },
+    {
+      "completedAt": "2026-09-05T08:12:52Z",
+      "conclusion": "success",
+      "databaseId": 101275336400,
+      "name": "build-local-artifacts (aarch64-unknown-linux-gnu)",
+      "startedAt": "2026-09-05T08:10:40Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:10:43Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:10:41Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:43Z",
+          "conclusion": "success",
+          "name": "enable windows longpaths",
+          "number": 2,
+          "startedAt": "2026-09-05T08:10:43Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:44Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 3,
+          "startedAt": "2026-09-05T08:10:43Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:44Z",
+          "conclusion": "skipped",
+          "name": "Install Rust non-interactively if not already installed",
+          "number": 4,
+          "startedAt": "2026-09-05T08:10:44Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:45Z",
+          "conclusion": "success",
+          "name": "Install dist",
+          "number": 5,
+          "startedAt": "2026-09-05T08:10:44Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:47Z",
+          "conclusion": "success",
+          "name": "Fetch local artifacts",
+          "number": 6,
+          "startedAt": "2026-09-05T08:10:45Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:47Z",
+          "conclusion": "success",
+          "name": "Install dependencies",
+          "number": 7,
+          "startedAt": "2026-09-05T08:10:47Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:12:47Z",
+          "conclusion": "success",
+          "name": "Build artifacts",
+          "number": 8,
+          "startedAt": "2026-09-05T08:10:47Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:12:47Z",
+          "conclusion": "skipped",
+          "name": "Sign and notarize macOS artifacts",
+          "number": 9,
+          "startedAt": "2026-09-05T08:12:47Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:12:47Z",
+          "conclusion": "success",
+          "name": "Post-build",
+          "number": 10,
+          "startedAt": "2026-09-05T08:12:47Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:12:50Z",
+          "conclusion": "success",
+          "name": "Upload artifacts",
+          "number": 11,
+          "startedAt": "2026-09-05T08:12:47Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:12:50Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 22,
+          "startedAt": "2026-09-05T08:12:50Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:12:50Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 23,
+          "startedAt": "2026-09-05T08:12:50Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101275336400"
+    },
+    {
+      "completedAt": "2026-09-05T08:13:22Z",
+      "conclusion": "success",
+      "databaseId": 101275336413,
+      "name": "build-local-artifacts (x86_64-unknown-linux-gnu)",
+      "startedAt": "2026-09-05T08:10:35Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:10:37Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:10:36Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:37Z",
+          "conclusion": "success",
+          "name": "enable windows longpaths",
+          "number": 2,
+          "startedAt": "2026-09-05T08:10:37Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:38Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 3,
+          "startedAt": "2026-09-05T08:10:37Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:38Z",
+          "conclusion": "skipped",
+          "name": "Install Rust non-interactively if not already installed",
+          "number": 4,
+          "startedAt": "2026-09-05T08:10:38Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:39Z",
+          "conclusion": "success",
+          "name": "Install dist",
+          "number": 5,
+          "startedAt": "2026-09-05T08:10:38Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:40Z",
+          "conclusion": "success",
+          "name": "Fetch local artifacts",
+          "number": 6,
+          "startedAt": "2026-09-05T08:10:39Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:40Z",
+          "conclusion": "success",
+          "name": "Install dependencies",
+          "number": 7,
+          "startedAt": "2026-09-05T08:10:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:20Z",
+          "conclusion": "success",
+          "name": "Build artifacts",
+          "number": 8,
+          "startedAt": "2026-09-05T08:10:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:20Z",
+          "conclusion": "skipped",
+          "name": "Sign and notarize macOS artifacts",
+          "number": 9,
+          "startedAt": "2026-09-05T08:13:20Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:20Z",
+          "conclusion": "success",
+          "name": "Post-build",
+          "number": 10,
+          "startedAt": "2026-09-05T08:13:20Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:21Z",
+          "conclusion": "success",
+          "name": "Upload artifacts",
+          "number": 11,
+          "startedAt": "2026-09-05T08:13:20Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:21Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 22,
+          "startedAt": "2026-09-05T08:13:21Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:21Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 23,
+          "startedAt": "2026-09-05T08:13:21Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101275336413"
+    },
+    {
+      "completedAt": "2026-09-05T08:17:34Z",
+      "conclusion": "success",
+      "databaseId": 101275336417,
+      "name": "build-local-artifacts (x86_64-pc-windows-msvc)",
+      "startedAt": "2026-09-05T08:10:36Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:10:39Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:10:37Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:40Z",
+          "conclusion": "success",
+          "name": "enable windows longpaths",
+          "number": 2,
+          "startedAt": "2026-09-05T08:10:39Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:48Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 3,
+          "startedAt": "2026-09-05T08:10:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:48Z",
+          "conclusion": "skipped",
+          "name": "Install Rust non-interactively if not already installed",
+          "number": 4,
+          "startedAt": "2026-09-05T08:10:48Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:50Z",
+          "conclusion": "success",
+          "name": "Install dist",
+          "number": 5,
+          "startedAt": "2026-09-05T08:10:48Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:51Z",
+          "conclusion": "success",
+          "name": "Fetch local artifacts",
+          "number": 6,
+          "startedAt": "2026-09-05T08:10:50Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:51Z",
+          "conclusion": "success",
+          "name": "Install dependencies",
+          "number": 7,
+          "startedAt": "2026-09-05T08:10:51Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:25Z",
+          "conclusion": "success",
+          "name": "Build artifacts",
+          "number": 8,
+          "startedAt": "2026-09-05T08:10:51Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:25Z",
+          "conclusion": "skipped",
+          "name": "Sign and notarize macOS artifacts",
+          "number": 9,
+          "startedAt": "2026-09-05T08:17:25Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:26Z",
+          "conclusion": "success",
+          "name": "Post-build",
+          "number": 10,
+          "startedAt": "2026-09-05T08:17:25Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:29Z",
+          "conclusion": "success",
+          "name": "Upload artifacts",
+          "number": 11,
+          "startedAt": "2026-09-05T08:17:26Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:32Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 22,
+          "startedAt": "2026-09-05T08:17:29Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:32Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 23,
+          "startedAt": "2026-09-05T08:17:32Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101275336417"
+    },
+    {
+      "completedAt": "2026-09-05T08:14:47Z",
+      "conclusion": "success",
+      "databaseId": 101275336418,
+      "name": "build-local-artifacts (aarch64-apple-darwin)",
+      "startedAt": "2026-09-05T08:10:41Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:10:42Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:10:41Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:43Z",
+          "conclusion": "success",
+          "name": "enable windows longpaths",
+          "number": 2,
+          "startedAt": "2026-09-05T08:10:42Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:45Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 3,
+          "startedAt": "2026-09-05T08:10:43Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:45Z",
+          "conclusion": "skipped",
+          "name": "Install Rust non-interactively if not already installed",
+          "number": 4,
+          "startedAt": "2026-09-05T08:10:45Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:47Z",
+          "conclusion": "success",
+          "name": "Install dist",
+          "number": 5,
+          "startedAt": "2026-09-05T08:10:45Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:47Z",
+          "conclusion": "success",
+          "name": "Fetch local artifacts",
+          "number": 6,
+          "startedAt": "2026-09-05T08:10:47Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:47Z",
+          "conclusion": "success",
+          "name": "Install dependencies",
+          "number": 7,
+          "startedAt": "2026-09-05T08:10:47Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:14:09Z",
+          "conclusion": "success",
+          "name": "Build artifacts",
+          "number": 8,
+          "startedAt": "2026-09-05T08:10:47Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:14:42Z",
+          "conclusion": "success",
+          "name": "Sign and notarize macOS artifacts",
+          "number": 9,
+          "startedAt": "2026-09-05T08:14:09Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:14:42Z",
+          "conclusion": "success",
+          "name": "Post-build",
+          "number": 10,
+          "startedAt": "2026-09-05T08:14:42Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:14:44Z",
+          "conclusion": "success",
+          "name": "Upload artifacts",
+          "number": 11,
+          "startedAt": "2026-09-05T08:14:42Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:14:44Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 22,
+          "startedAt": "2026-09-05T08:14:44Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:14:45Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 23,
+          "startedAt": "2026-09-05T08:14:44Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101275336418"
+    },
+    {
+      "completedAt": "2026-09-05T08:13:42Z",
+      "conclusion": "success",
+      "databaseId": 101275336423,
+      "name": "build-local-artifacts (x86_64-unknown-linux-musl)",
+      "startedAt": "2026-09-05T08:10:35Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:10:37Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:10:36Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:37Z",
+          "conclusion": "success",
+          "name": "enable windows longpaths",
+          "number": 2,
+          "startedAt": "2026-09-05T08:10:37Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:38Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 3,
+          "startedAt": "2026-09-05T08:10:37Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:38Z",
+          "conclusion": "skipped",
+          "name": "Install Rust non-interactively if not already installed",
+          "number": 4,
+          "startedAt": "2026-09-05T08:10:38Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:40Z",
+          "conclusion": "success",
+          "name": "Install dist",
+          "number": 5,
+          "startedAt": "2026-09-05T08:10:38Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:40Z",
+          "conclusion": "success",
+          "name": "Fetch local artifacts",
+          "number": 6,
+          "startedAt": "2026-09-05T08:10:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:58Z",
+          "conclusion": "success",
+          "name": "Install dependencies",
+          "number": 7,
+          "startedAt": "2026-09-05T08:10:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:40Z",
+          "conclusion": "success",
+          "name": "Build artifacts",
+          "number": 8,
+          "startedAt": "2026-09-05T08:10:58Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:40Z",
+          "conclusion": "skipped",
+          "name": "Sign and notarize macOS artifacts",
+          "number": 9,
+          "startedAt": "2026-09-05T08:13:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:40Z",
+          "conclusion": "success",
+          "name": "Post-build",
+          "number": 10,
+          "startedAt": "2026-09-05T08:13:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:41Z",
+          "conclusion": "success",
+          "name": "Upload artifacts",
+          "number": 11,
+          "startedAt": "2026-09-05T08:13:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:41Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 22,
+          "startedAt": "2026-09-05T08:13:41Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:13:41Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 23,
+          "startedAt": "2026-09-05T08:13:41Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101275336423"
+    },
+    {
+      "completedAt": "2026-09-05T08:15:53Z",
+      "conclusion": "success",
+      "databaseId": 101275336436,
+      "name": "build-local-artifacts (x86_64-apple-darwin)",
+      "startedAt": "2026-09-05T08:10:36Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:10:39Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:10:37Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:40Z",
+          "conclusion": "success",
+          "name": "enable windows longpaths",
+          "number": 2,
+          "startedAt": "2026-09-05T08:10:39Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:43Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 3,
+          "startedAt": "2026-09-05T08:10:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:43Z",
+          "conclusion": "skipped",
+          "name": "Install Rust non-interactively if not already installed",
+          "number": 4,
+          "startedAt": "2026-09-05T08:10:43Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:45Z",
+          "conclusion": "success",
+          "name": "Install dist",
+          "number": 5,
+          "startedAt": "2026-09-05T08:10:43Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:46Z",
+          "conclusion": "success",
+          "name": "Fetch local artifacts",
+          "number": 6,
+          "startedAt": "2026-09-05T08:10:45Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:10:46Z",
+          "conclusion": "success",
+          "name": "Install dependencies",
+          "number": 7,
+          "startedAt": "2026-09-05T08:10:46Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:15:09Z",
+          "conclusion": "success",
+          "name": "Build artifacts",
+          "number": 8,
+          "startedAt": "2026-09-05T08:10:46Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:15:40Z",
+          "conclusion": "success",
+          "name": "Sign and notarize macOS artifacts",
+          "number": 9,
+          "startedAt": "2026-09-05T08:15:09Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:15:41Z",
+          "conclusion": "success",
+          "name": "Post-build",
+          "number": 10,
+          "startedAt": "2026-09-05T08:15:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:15:49Z",
+          "conclusion": "success",
+          "name": "Upload artifacts",
+          "number": 11,
+          "startedAt": "2026-09-05T08:15:41Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:15:50Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 22,
+          "startedAt": "2026-09-05T08:15:49Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:15:51Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 23,
+          "startedAt": "2026-09-05T08:15:50Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101275336436"
+    },
+    {
+      "completedAt": "2026-09-05T08:17:51Z",
+      "conclusion": "success",
+      "databaseId": 101276213279,
+      "name": "build-global-artifacts",
+      "startedAt": "2026-09-05T08:17:36Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:17:38Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:17:37Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:39Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:17:38Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:40Z",
+          "conclusion": "success",
+          "name": "Install cached dist",
+          "number": 3,
+          "startedAt": "2026-09-05T08:17:39Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:40Z",
+          "conclusion": "success",
+          "name": "Run chmod +x ~/.cargo/bin/dist",
+          "number": 4,
+          "startedAt": "2026-09-05T08:17:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:41Z",
+          "conclusion": "success",
+          "name": "Fetch local artifacts",
+          "number": 5,
+          "startedAt": "2026-09-05T08:17:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:48Z",
+          "conclusion": "success",
+          "name": "Run dist build --tag=v4.0.1 --output-format=json \"--artifacts=global\" > dist-manifest.json",
+          "number": 6,
+          "startedAt": "2026-09-05T08:17:41Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:49Z",
+          "conclusion": "success",
+          "name": "Upload artifacts",
+          "number": 7,
+          "startedAt": "2026-09-05T08:17:48Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:49Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 14,
+          "startedAt": "2026-09-05T08:17:49Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:49Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 15,
+          "startedAt": "2026-09-05T08:17:49Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101276213279"
+    },
+    {
+      "completedAt": "2026-09-05T08:18:20Z",
+      "conclusion": "success",
+      "databaseId": 101276246885,
+      "name": "host",
+      "startedAt": "2026-09-05T08:17:53Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:17:55Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:17:54Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:57Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:17:55Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:58Z",
+          "conclusion": "success",
+          "name": "Install cached dist",
+          "number": 3,
+          "startedAt": "2026-09-05T08:17:57Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:17:58Z",
+          "conclusion": "success",
+          "name": "Run chmod +x ~/.cargo/bin/dist",
+          "number": 4,
+          "startedAt": "2026-09-05T08:17:58Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:01Z",
+          "conclusion": "success",
+          "name": "Fetch artifacts",
+          "number": 5,
+          "startedAt": "2026-09-05T08:17:58Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:06Z",
+          "conclusion": "success",
+          "name": "Run dist host --tag=v4.0.1 --steps=upload --steps=release --output-format=json > dist-manifest.json",
+          "number": 6,
+          "startedAt": "2026-09-05T08:18:01Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:07Z",
+          "conclusion": "success",
+          "name": "Upload dist-manifest.json",
+          "number": 7,
+          "startedAt": "2026-09-05T08:18:06Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:09Z",
+          "conclusion": "success",
+          "name": "Download GitHub Artifacts",
+          "number": 8,
+          "startedAt": "2026-09-05T08:18:07Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:09Z",
+          "conclusion": "success",
+          "name": "Cleanup",
+          "number": 9,
+          "startedAt": "2026-09-05T08:18:09Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:11Z",
+          "conclusion": "success",
+          "name": "Harden Windows PowerShell installer for in-place updates",
+          "number": 10,
+          "startedAt": "2026-09-05T08:18:09Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:11Z",
+          "conclusion": "success",
+          "name": "Add legacy installer aliases",
+          "number": 11,
+          "startedAt": "2026-09-05T08:18:11Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:12Z",
+          "conclusion": "success",
+          "name": "Verify local base artifact set before publication",
+          "number": 12,
+          "startedAt": "2026-09-05T08:18:11Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:13Z",
+          "conclusion": "success",
+          "name": "Attest final cargo-dist artifacts",
+          "number": 13,
+          "startedAt": "2026-09-05T08:18:12Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:18Z",
+          "conclusion": "success",
+          "name": "Create GitHub Release",
+          "number": 14,
+          "startedAt": "2026-09-05T08:18:13Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:18Z",
+          "conclusion": "success",
+          "name": "Verify base release asset set",
+          "number": 15,
+          "startedAt": "2026-09-05T08:18:18Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:18Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 30,
+          "startedAt": "2026-09-05T08:18:18Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:18Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 31,
+          "startedAt": "2026-09-05T08:18:18Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101276246885"
+    },
+    {
+      "completedAt": "2026-09-05T08:18:37Z",
+      "conclusion": "success",
+      "databaseId": 101276304412,
+      "name": "verify-published-macos (x86_64-apple-darwin)",
+      "startedAt": "2026-09-05T08:18:23Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:18:19Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:18:18Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:23Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:18:19Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:29Z",
+          "conclusion": "success",
+          "name": "Download and validate public signed archive",
+          "number": 3,
+          "startedAt": "2026-09-05T08:18:23Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:30Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 6,
+          "startedAt": "2026-09-05T08:18:29Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:30Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 7,
+          "startedAt": "2026-09-05T08:18:30Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101276304412"
+    },
+    {
+      "completedAt": "2026-09-05T08:18:45Z",
+      "conclusion": "success",
+      "databaseId": 101276304425,
+      "name": "verify-published-macos (aarch64-apple-darwin)",
+      "startedAt": "2026-09-05T08:18:32Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:18:34Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:18:33Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:37Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:18:34Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:41Z",
+          "conclusion": "success",
+          "name": "Download and validate public signed archive",
+          "number": 3,
+          "startedAt": "2026-09-05T08:18:37Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:42Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 6,
+          "startedAt": "2026-09-05T08:18:41Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:43Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 7,
+          "startedAt": "2026-09-05T08:18:42Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101276304425"
+    },
+    {
+      "completedAt": "2026-09-05T08:25:12Z",
+      "conclusion": "success",
+      "databaseId": 101276304451,
+      "name": "Windows installer add-ons / Build Corporate MSI + Global EXE + Corporate EXE",
+      "startedAt": "2026-09-05T08:18:22Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:18:23Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:18:23Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:25Z",
+          "conclusion": "success",
+          "name": "Enable Windows long paths",
+          "number": 2,
+          "startedAt": "2026-09-05T08:18:23Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:26Z",
+          "conclusion": "success",
+          "name": "Resolve and verify immutable release tag",
+          "number": 3,
+          "startedAt": "2026-09-05T08:18:25Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:31Z",
+          "conclusion": "success",
+          "name": "Checkout source at trigger commit",
+          "number": 4,
+          "startedAt": "2026-09-05T08:18:26Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:31Z",
+          "conclusion": "success",
+          "name": "Resolve target tag",
+          "number": 5,
+          "startedAt": "2026-09-05T08:18:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:36Z",
+          "conclusion": "success",
+          "name": "Verify upstream release + idempotency check",
+          "number": 6,
+          "startedAt": "2026-09-05T08:18:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:48Z",
+          "conclusion": "success",
+          "name": "Set up Rust toolchain",
+          "number": 7,
+          "startedAt": "2026-09-05T08:18:36Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:18:49Z",
+          "conclusion": "success",
+          "name": "Verify checked-out Cargo version",
+          "number": 8,
+          "startedAt": "2026-09-05T08:18:48Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:23:03Z",
+          "conclusion": "success",
+          "name": "Build nd300.exe + speedqx.exe (release)",
+          "number": 9,
+          "startedAt": "2026-09-05T08:18:49Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:23:15Z",
+          "conclusion": "success",
+          "name": "Build Corporate MSI via bare candle + light",
+          "number": 10,
+          "startedAt": "2026-09-05T08:23:03Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:23:21Z",
+          "conclusion": "success",
+          "name": "Install Inno Setup 6",
+          "number": 11,
+          "startedAt": "2026-09-05T08:23:15Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:23:27Z",
+          "conclusion": "success",
+          "name": "Build Global EXE installer",
+          "number": 12,
+          "startedAt": "2026-09-05T08:23:21Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:23:31Z",
+          "conclusion": "success",
+          "name": "Build Corporate EXE installer",
+          "number": 13,
+          "startedAt": "2026-09-05T08:23:27Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:23:31Z",
+          "conclusion": "success",
+          "name": "Compute SHA256 sidecars",
+          "number": 14,
+          "startedAt": "2026-09-05T08:23:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:23:33Z",
+          "conclusion": "success",
+          "name": "Attest Windows installer add-ons",
+          "number": 15,
+          "startedAt": "2026-09-05T08:23:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:23:35Z",
+          "conclusion": "success",
+          "name": "Upload artifacts to GitHub Release",
+          "number": 16,
+          "startedAt": "2026-09-05T08:23:33Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:10Z",
+          "conclusion": "success",
+          "name": "Verify complete 28-asset release",
+          "number": 17,
+          "startedAt": "2026-09-05T08:23:35Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:11Z",
+          "conclusion": "success",
+          "name": "Post Checkout source at trigger commit",
+          "number": 34,
+          "startedAt": "2026-09-05T08:25:10Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:11Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 35,
+          "startedAt": "2026-09-05T08:25:11Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101276304451"
+    },
+    {
+      "completedAt": "2026-09-05T08:25:25Z",
+      "conclusion": "success",
+      "databaseId": 101277176148,
+      "name": "macOS universal direct PKG and compatibility DMG / Installer identity preflight (Apple Silicon)",
+      "startedAt": "2026-09-05T08:25:18Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:25:19Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:25:18Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:21Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:25:19Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:22Z",
+          "conclusion": "success",
+          "name": "Import Installer identity and sign disposable PKG",
+          "number": 3,
+          "startedAt": "2026-09-05T08:25:21Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:23Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 6,
+          "startedAt": "2026-09-05T08:25:22Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:23Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 7,
+          "startedAt": "2026-09-05T08:25:23Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277176148"
+    },
+    {
+      "completedAt": "2026-09-05T08:25:27Z",
+      "conclusion": "success",
+      "databaseId": 101277176161,
+      "name": "macOS universal direct PKG and compatibility DMG / Installer identity preflight (Intel)",
+      "startedAt": "2026-09-05T08:25:17Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:25:18Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:25:17Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:21Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:25:18Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:23Z",
+          "conclusion": "success",
+          "name": "Import Installer identity and sign disposable PKG",
+          "number": 3,
+          "startedAt": "2026-09-05T08:25:21Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:23Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 6,
+          "startedAt": "2026-09-05T08:25:23Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:24Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 7,
+          "startedAt": "2026-09-05T08:25:23Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277176161"
+    },
+    {
+      "completedAt": "2026-09-05T08:25:13Z",
+      "conclusion": "skipped",
+      "databaseId": 101277177299,
+      "name": "macOS universal direct PKG and compatibility DMG / Candidate native binaries (${{ matrix.name }})",
+      "startedAt": "2026-09-05T08:25:13Z",
+      "status": "completed",
+      "steps": [],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277177299"
+    },
+    {
+      "completedAt": "2026-09-05T08:27:06Z",
+      "conclusion": "success",
+      "databaseId": 101277208817,
+      "name": "macOS universal direct PKG and compatibility DMG / Build, sign, and notarize universal PKG and compatibility DMG",
+      "startedAt": "2026-09-05T08:25:30Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:25:33Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:25:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:34Z",
+          "conclusion": "success",
+          "name": "Resolve and verify immutable release identity",
+          "number": 2,
+          "startedAt": "2026-09-05T08:25:33Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:37Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 3,
+          "startedAt": "2026-09-05T08:25:34Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:25:53Z",
+          "conclusion": "success",
+          "name": "Download and verify exact signed architecture archives",
+          "number": 4,
+          "startedAt": "2026-09-05T08:25:37Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:26:57Z",
+          "conclusion": "success",
+          "name": "Build signed and notarized universal installers",
+          "number": 5,
+          "startedAt": "2026-09-05T08:25:53Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:02Z",
+          "conclusion": "success",
+          "name": "Run actions/upload-artifact@v6",
+          "number": 6,
+          "startedAt": "2026-09-05T08:26:57Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:03Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 12,
+          "startedAt": "2026-09-05T08:27:02Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:03Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 13,
+          "startedAt": "2026-09-05T08:27:03Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277208817"
+    },
+    {
+      "completedAt": "2026-09-05T08:25:27Z",
+      "conclusion": "skipped",
+      "databaseId": 101277209357,
+      "name": "macOS universal direct PKG and compatibility DMG / Candidate signed and notarized PKG and compatibility DMG",
+      "startedAt": "2026-09-05T08:25:27Z",
+      "status": "completed",
+      "steps": [],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277209357"
+    },
+    {
+      "completedAt": "2026-09-05T08:25:27Z",
+      "conclusion": "skipped",
+      "databaseId": 101277209513,
+      "name": "macOS universal direct PKG and compatibility DMG / Candidate lifecycle (${{ matrix.name }})",
+      "startedAt": "2026-09-05T08:25:27Z",
+      "status": "completed",
+      "steps": [],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277209513"
+    },
+    {
+      "completedAt": "2026-09-05T08:28:01Z",
+      "conclusion": "success",
+      "databaseId": 101277427786,
+      "name": "macOS universal direct PKG and compatibility DMG / Validate package lifecycle (Apple Silicon)",
+      "startedAt": "2026-09-05T08:27:12Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:27:13Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:27:12Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:15Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:27:13Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:20Z",
+          "conclusion": "success",
+          "name": "Run actions/download-artifact@v7",
+          "number": 3,
+          "startedAt": "2026-09-05T08:27:15Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:21Z",
+          "conclusion": "success",
+          "name": "Download managed-archive takeover fixture",
+          "number": 4,
+          "startedAt": "2026-09-05T08:27:20Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:57Z",
+          "conclusion": "success",
+          "name": "Verify containers, install, update-check, uninstall, and reinstall",
+          "number": 5,
+          "startedAt": "2026-09-05T08:27:21Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:57Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 10,
+          "startedAt": "2026-09-05T08:27:57Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:58Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 11,
+          "startedAt": "2026-09-05T08:27:57Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277427786"
+    },
+    {
+      "completedAt": "2026-09-05T08:28:29Z",
+      "conclusion": "success",
+      "databaseId": 101277427804,
+      "name": "macOS universal direct PKG and compatibility DMG / Validate package lifecycle (Intel)",
+      "startedAt": "2026-09-05T08:27:11Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:27:17Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:27:12Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:20Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:27:17Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:26Z",
+          "conclusion": "success",
+          "name": "Run actions/download-artifact@v7",
+          "number": 3,
+          "startedAt": "2026-09-05T08:27:20Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:27:27Z",
+          "conclusion": "success",
+          "name": "Download managed-archive takeover fixture",
+          "number": 4,
+          "startedAt": "2026-09-05T08:27:26Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:28:25Z",
+          "conclusion": "success",
+          "name": "Verify containers, install, update-check, uninstall, and reinstall",
+          "number": 5,
+          "startedAt": "2026-09-05T08:27:27Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:28:26Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 10,
+          "startedAt": "2026-09-05T08:28:25Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:28:26Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 11,
+          "startedAt": "2026-09-05T08:28:26Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277427804"
+    },
+    {
+      "completedAt": "2026-09-05T08:30:52Z",
+      "conclusion": "success",
+      "databaseId": 101277596793,
+      "name": "macOS universal direct PKG and compatibility DMG / Attest, publish, and verify the exact 32-asset release",
+      "startedAt": "2026-09-05T08:28:32Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:28:35Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:28:33Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:28:36Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:28:35Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:28:39Z",
+          "conclusion": "success",
+          "name": "Run actions/download-artifact@v7",
+          "number": 3,
+          "startedAt": "2026-09-05T08:28:36Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:28:39Z",
+          "conclusion": "success",
+          "name": "Refuse overwrite of immutable release assets",
+          "number": 4,
+          "startedAt": "2026-09-05T08:28:39Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:28:41Z",
+          "conclusion": "success",
+          "name": "Run actions/attest-build-provenance@v3",
+          "number": 5,
+          "startedAt": "2026-09-05T08:28:39Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:28:43Z",
+          "conclusion": "success",
+          "name": "Upload versionless Mac installer assets",
+          "number": 6,
+          "startedAt": "2026-09-05T08:28:41Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:30:50Z",
+          "conclusion": "success",
+          "name": "Verify exact inventory, checksums, and source attestations",
+          "number": 7,
+          "startedAt": "2026-09-05T08:28:43Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:30:51Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 14,
+          "startedAt": "2026-09-05T08:30:50Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:30:51Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 15,
+          "startedAt": "2026-09-05T08:30:51Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277596793"
+    },
+    {
+      "completedAt": "2026-09-05T08:31:20Z",
+      "conclusion": "success",
+      "databaseId": 101277898755,
+      "name": "macOS universal direct PKG and compatibility DMG / Validate v3.7.x compatibility DMG (Intel)",
+      "startedAt": "2026-09-05T08:30:55Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:30:56Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:30:56Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:10Z",
+          "conclusion": "success",
+          "name": "Install the immutable v3.7.2 package baseline",
+          "number": 2,
+          "startedAt": "2026-09-05T08:30:56Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:18Z",
+          "conclusion": "success",
+          "name": "Prove the new public DMG bridges to the direct PKG",
+          "number": 3,
+          "startedAt": "2026-09-05T08:31:10Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:18Z",
+          "conclusion": "success",
+          "name": "Remove the compatibility validation package",
+          "number": 4,
+          "startedAt": "2026-09-05T08:31:18Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:18Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 5,
+          "startedAt": "2026-09-05T08:31:18Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277898755"
+    },
+    {
+      "completedAt": "2026-09-05T08:31:16Z",
+      "conclusion": "success",
+      "databaseId": 101277898768,
+      "name": "macOS universal direct PKG and compatibility DMG / Validate v3.7.x compatibility DMG (Apple Silicon)",
+      "startedAt": "2026-09-05T08:30:58Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:30:59Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:30:59Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:07Z",
+          "conclusion": "success",
+          "name": "Install the immutable v3.7.2 package baseline",
+          "number": 2,
+          "startedAt": "2026-09-05T08:30:59Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:13Z",
+          "conclusion": "success",
+          "name": "Prove the new public DMG bridges to the direct PKG",
+          "number": 3,
+          "startedAt": "2026-09-05T08:31:07Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:13Z",
+          "conclusion": "success",
+          "name": "Remove the compatibility validation package",
+          "number": 4,
+          "startedAt": "2026-09-05T08:31:13Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:14Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 5,
+          "startedAt": "2026-09-05T08:31:13Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277898768"
+    },
+    {
+      "completedAt": "2026-09-05T08:31:25Z",
+      "conclusion": "success",
+      "databaseId": 101277959417,
+      "name": "announce",
+      "startedAt": "2026-09-05T08:31:21Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-05T08:31:23Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-05T08:31:22Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:24Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v6",
+          "number": 2,
+          "startedAt": "2026-09-05T08:31:23Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:24Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v6",
+          "number": 4,
+          "startedAt": "2026-09-05T08:31:24Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-05T08:31:24Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 5,
+          "startedAt": "2026-09-05T08:31:24Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791/job/101277959417"
+    }
+  ],
+  "status": "completed",
+  "url": "https://github.com/QubeTX/qube-network-diagnostics/actions/runs/33954529791"
+}

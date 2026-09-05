@@ -7,7 +7,7 @@ Native simulator and emulator fixtures cannot prove physical-radio accuracy, acc
 Use the existing app physical acceptance sheet on the uploaded 3.0.0 (16) build; retain device/runtime/build identity and observed outcomes.
 
 ## Impact
-Keeps the released product''s limitations explicit and improves qualification without rewriting historical evidence.
+Keeps the released product's limitations explicit and improves qualification without rewriting historical evidence.
 
 ## Verification
 - [ ] Physical iOS and Android large text, reduced motion, cancellation, network/background transitions and animation overhead, with exact build and device evidence.
