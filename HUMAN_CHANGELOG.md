@@ -6,10 +6,10 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
-## September 4, 2026 — Sustained measurement and a clearer instrument
+## September 5, 2026 — Sustained measurement and a clearer instrument
 
 - A slower repeated stretch can no longer appear as a ceiling below your sustained result. The app shows no ceiling when the run does not support one.
-This is a release candidate. Validation and publication are still in progress.
+This release includes the testing limits described below.
 
 **Changed**
 
@@ -21,7 +21,7 @@ This is a release candidate. Validation and publication are still in progress.
 
 **Validation**
 
-- New automated cases reproduce stalls, changing speed, incomplete transfers, provider failures and cancellation. Controlled local comparisons check the bytes actually delivered. Physical devices and real network conditions need their own acceptance checks before an accuracy claim or release.
+- New automated cases reproduce stalls, changing speed, incomplete transfers, provider failures and cancellation. Controlled local comparisons check the bytes actually delivered. Physical-device checks are still pending, and comparisons on paths with random packet loss missed the repeatability target. Publication was authorized with these limits disclosed; the results do not guarantee the capacity of an internet plan.
 
 **Command-line tools**
 

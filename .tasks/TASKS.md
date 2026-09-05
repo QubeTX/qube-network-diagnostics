@@ -1,6 +1,9 @@
 # Tasks
 
 ## Backlog
+- [ ] **Qualify SpeedQX v5 on physical iOS and Android** - exact uploaded build, accessibility, lifecycle and animation performance #sqphys
+- [ ] **Qualify SpeedQX v5 repeatability on lossy and provider paths** - preserve missed targets and predeclare controlled comparisons #sqacc
+- [ ] **Bound SpeedQX provider metadata and constrain discovered endpoints** - independent Medium/Low review follow-ups and inherited dependency advisories #sqsec
 - [ ] **Share one immutable topology snapshot across diagnostics** - preserve serialized shapes while eliminating cross-module timing disagreement (ms #p36) #top
 - [ ] **Expand hosted Unix updater fault injection** - add crash, filesystem, and rollback transition coverage (ms #p36) #ufi
 - [ ] **Qualify the macOS service cycle on disposable hardware** - keep the production gate off until the destructive matrix passes (ms #p36) #msc
@@ -10,12 +13,13 @@
 ## To-Do
 
 ## Active
-- [ ] **Implement SpeedQX v5 measurement and instrument** - shared byte-accounted engine, sustained results, repeatable ceilings, cassette redesign; physical qualification remains a separate gate (owner codex) #sq5
+- [ ] **Implement SpeedQX v5 measurement and instrument** - shared byte-accounted engine, sustained results, repeatable ceilings, cassette redesign; physical qualification and lossy-path targets are disclosed follow-ups (owner codex) #sq5
   - [x] Versioned traces and deterministic regression coverage
   - [x] Bounded provider acquisition and cross-surface integration
   - [x] Cassette redesign and responsive visual checks
   - [x] Documentation and exact revision validation evidence
-  - [ ] Physical qualification, security review and production release
+  - [x] Owner release authorization with dated physical/accuracy deferrals
+  - [ ] Independent security review and production release
 
 ## Done
 - [x] **Commit portable cross-agent project tooling** - PR #31 merged portable Claude/Codex safeguards and ignored generated installer output (ms #p36) #agt

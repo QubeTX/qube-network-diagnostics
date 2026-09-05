@@ -1,6 +1,6 @@
 # SpeedQX measurement methodology v5.0
 
-Status: implementation candidate; validation evidence and remaining acceptance gates are tracked in evidence/v5.
+Status: release authorized September 5, 2026 with disclosed validation limits. Physical-device acceptance and lossy-path repeatability remain follow-ups, not passed checks; evidence is tracked in evidence/v5.
 
 Sustained application throughput on this device, across the paths tested. Your radio, browser, operating system and the test servers are all part of that result.
 

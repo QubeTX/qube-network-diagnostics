@@ -1,7 +1,7 @@
 {
   "methodology": "5.0",
   "source": "QubeTX/speedtest",
-  "sourceRevision": "08d1c337b977d07e2296fe3a2e57f2983afa298f",
+  "sourceRevision": "19c83fa484cb65ba4d529d48cc5966cdd106f416",
   "sourceDirty": false,
   "files": {
     "src/services/measurement-contract-v5.json": {
@@ -14,7 +14,7 @@
     },
     "METHODOLOGY.md": {
       "target": "METHODOLOGY.md",
-      "sha256": "c9641fde813cde7a2ec6b4ed4bccd3fb34d8bbc3f41cef1400a2543ea3e80d1c"
+      "sha256": "3844b18dfc167f7bad86e341eb7b425963410459d58fce1f4f18a19cd930c761"
     }
   }
 }

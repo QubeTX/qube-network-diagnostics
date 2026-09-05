@@ -7,10 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [4.0.0] - 2026-09-04
+## [4.0.0] - 2026-09-05
 
 - Withhold repeatable ceiling candidates below sustained throughput at trace, repeated-provider and headline levels. Full TypeScript/Rust replay now includes 88 synthetic, production and packet-shaped traces.
-Implementation candidate; release acceptance and publication are pending.
+Release authorized on September 5 with the validation limits below.
 
 ### Changed
 
@@ -22,7 +22,7 @@ Implementation candidate; release acceptance and publication are pending.
 
 ### Validation
 
-- Added counter-reset, stall, irregular-time, buffering, cancellation and provider-failure regressions, complete TypeScript/Rust trace replay, and independent loopback payload comparisons. These validate specific behavior; physical network accuracy, device acceptance and animation overhead remain separate release gates, documented in the validation evidence.
+- Added counter-reset, stall, irregular-time, buffering, cancellation and provider-failure regressions, complete TypeScript/Rust trace replay, and independent loopback payload comparisons. These validate specific behavior; physical network accuracy, device acceptance and native animation overhead remain unverified. The owner authorized publication on September 5 after disclosure of the missed random-loss repeatability targets and pending physical acceptance; these are deferred follow-ups, not passed checks.
 
 ### CLI integration
 
