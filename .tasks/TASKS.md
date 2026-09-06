@@ -20,6 +20,7 @@
   - [x] Record evidence and justified conclusions without claiming unproven comparative accuracy
 
 ## Done
+- [x] **Remove automatic Claude Code PR review** - automatic workflow removed; all 9 remaining workflows pass actionlint (owner codex) (done 2026-09-05) #crh
 - [x] **Implement SpeedQX v5 measurement and instrument** - ND300 4.0.1 and all 32 assets verified, website/homepage live, iOS 3.0.0 (16) uploaded; physical qualification and lossy-path targets remain disclosed follow-ups #sq5
   - [x] Versioned traces and deterministic regression coverage
   - [x] Bounded provider acquisition and cross-surface integration
