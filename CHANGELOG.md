@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.0.2] - 2026-09-16
 
+### Security
+- Update rustls to 0.23.45 and rustls-webpki to 0.103.15 to address RUSTSEC-2026-0285, disclosed after the previous release.
+
 ### Improved
 - Explain busy-connection delay, tail latency, sample counts, observed speed ranges and data use. Retain Methodology 5 calculations and serialized fields.
 

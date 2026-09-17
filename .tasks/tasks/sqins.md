@@ -23,3 +23,6 @@ Implementation and local checks pass. Website PR #11 is running CI. Native versi
 - 2026-09-16 — codex: Read supplied analysis and current Methodology 5 implementations; started scoped cross-surface work.
 
 - 2026-09-16 — codex: 333 Rust tests, strict Clippy, 94 website tests and three-browser controlled UI validation passed. Native tests and pinned source checks passed; full copy includes all result fields and method definitions.
+
+- 2026-09-16 — codex: CI found newly disclosed RUSTSEC-2026-0285. Updated rustls to 0.23.45 and webpki to 0.103.15; cargo audit, all 333 tests and strict Clippy pass locally. Website 4.0.7 is live with exact SHA-256 match. App PR #8 merged; 3.2.0 (20) is building with automatic submission scheduled.
+
