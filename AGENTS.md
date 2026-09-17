@@ -503,3 +503,6 @@ and an **effort floor**. It is not tied to version numbers. When Anthropic ships
 
 **Rule of thumb:** _Opus + Sonnet classes only (never Haiku, never auto-adopt Fable/mythos), top-ish
 effort, never below the second-highest effort._
+
+### Speed result presentation
+Display ceiling_mbps as highest repeatable throughput while preserving Methodology 5 calculations and serialized keys. Loaded delay is median loaded HTTP time minus median idle HTTP time. Show successful samples, request failures and limited-tail sampling below 20 successful probes without claiming statistical coverage.

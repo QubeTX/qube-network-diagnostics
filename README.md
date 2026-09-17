@@ -654,3 +654,6 @@ Read [METHODOLOGY.md](METHODOLOGY.md) for counter, validity, acquisition and agg
 ## License
 
 [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+
+### Reading speed results
+Speed reports include response-time changes during downloads and uploads, successful and failed HTTP probe counts, tail sampling limits and observed speed ranges. Highest repeatable throughput describes repeated measured windows, not maximum line capacity. Use `speedqx --json` for raw records. Packet loss is not inferred from HTTP failures.

@@ -258,91 +258,100 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
 
     // Speed test details
     if let Some(ref speed) = results.speed_details {
-        let mut b = ReportBuilder::new(label_width, data_width, chars);
-        b = b.full_top_border().span_row("  SPEED TEST").divider();
+        if speed.measurement.is_some() {
+            output.push_str(&crate::speedtest::display::render_results(
+                speed,
+                !config.use_unicode,
+                config.use_colors,
+            ));
+            output.push('\n');
+        } else {
+            let mut b = ReportBuilder::new(label_width, data_width, chars);
+            b = b.full_top_border().span_row("  SPEED TEST").divider();
 
-        if let Some(ping) = speed.ping_ms {
-            b = b.row("Ping", &format!("{:.1} ms", ping));
-        }
-        if let Some(jitter) = speed.jitter_ms {
-            b = b.row("Jitter", &format!("{:.1} ms", jitter));
-        }
-        let dl_margin = speed
-            .confidence_intervals
-            .as_ref()
-            .and_then(|ci| ci.download.as_ref())
-            .map(|ci| format!(" ±{}", crate::speedtest::format_mbps(ci.margin)))
-            .unwrap_or_default();
-        let ul_margin = speed
-            .confidence_intervals
-            .as_ref()
-            .and_then(|ci| ci.upload.as_ref())
-            .map(|ci| format!(" ±{}", crate::speedtest::format_mbps(ci.margin)))
-            .unwrap_or_default();
-        b = b.row(
-            "Download",
-            &format!(
-                "{}{} (avg)",
-                crate::speedtest::format_mbps(speed.download_mbps),
-                dl_margin
-            ),
-        );
-        b = b.row(
-            "Upload",
-            &format!(
-                "{}{} (avg)",
-                crate::speedtest::format_mbps(speed.upload_mbps),
-                ul_margin
-            ),
-        );
-        if let Some(loss) = speed.packet_loss_pct {
-            b = b.row("Packet Loss", &format!("{:.0}%", loss));
-        }
-        b = b.row("Duration", &format!("{:.1}s", speed.duration_s));
-        if !speed.merge_exclusions.is_empty() {
-            let list = speed
-                .merge_exclusions
-                .iter()
-                .map(|e| {
-                    format!(
-                        "{} {} ({} sample{})",
-                        e.provider,
-                        if e.direction == "download" {
-                            "DL"
-                        } else {
-                            "UL"
-                        },
-                        e.samples,
-                        if e.samples == 1 { "" } else { "s" },
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            b = b.row("Excluded", &list);
-        }
+            if let Some(ping) = speed.ping_ms {
+                b = b.row("Ping", &format!("{:.1} ms", ping));
+            }
+            if let Some(jitter) = speed.jitter_ms {
+                b = b.row("Jitter", &format!("{:.1} ms", jitter));
+            }
+            let dl_margin = speed
+                .confidence_intervals
+                .as_ref()
+                .and_then(|ci| ci.download.as_ref())
+                .map(|ci| format!(" ±{}", crate::speedtest::format_mbps(ci.margin)))
+                .unwrap_or_default();
+            let ul_margin = speed
+                .confidence_intervals
+                .as_ref()
+                .and_then(|ci| ci.upload.as_ref())
+                .map(|ci| format!(" ±{}", crate::speedtest::format_mbps(ci.margin)))
+                .unwrap_or_default();
+            b = b.row(
+                "Download",
+                &format!(
+                    "{}{} (avg)",
+                    crate::speedtest::format_mbps(speed.download_mbps),
+                    dl_margin
+                ),
+            );
+            b = b.row(
+                "Upload",
+                &format!(
+                    "{}{} (avg)",
+                    crate::speedtest::format_mbps(speed.upload_mbps),
+                    ul_margin
+                ),
+            );
+            if let Some(loss) = speed.packet_loss_pct {
+                b = b.row("Packet Loss", &format!("{:.0}%", loss));
+            }
+            b = b.row("Duration", &format!("{:.1}s", speed.duration_s));
+            if !speed.merge_exclusions.is_empty() {
+                let list = speed
+                    .merge_exclusions
+                    .iter()
+                    .map(|e| {
+                        format!(
+                            "{} {} ({} sample{})",
+                            e.provider,
+                            if e.direction == "download" {
+                                "DL"
+                            } else {
+                                "UL"
+                            },
+                            e.samples,
+                            if e.samples == 1 { "" } else { "s" },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                b = b.row("Excluded", &list);
+            }
 
-        // Per-provider breakdown
-        for provider in &speed.providers {
-            if provider.error.is_some() {
-                continue;
+            // Per-provider breakdown
+            for provider in &speed.providers {
+                if provider.error.is_some() {
+                    continue;
+                }
+                b = b.section_header(&provider.provider);
+                b = b.row("Server", &provider.server);
+                if let Some(ref location) = provider.location {
+                    b = b.row("Location", location);
+                }
+                if let Some(dl) = provider.download_mbps {
+                    b = b.row("Download", &crate::speedtest::format_mbps(dl));
+                }
+                if let Some(ul) = provider.upload_mbps {
+                    b = b.row("Upload", &crate::speedtest::format_mbps(ul));
+                }
+                b = b.row("DL Data", &format_bytes(provider.download_bytes));
+                b = b.row("UL Data", &format_bytes(provider.upload_bytes));
             }
-            b = b.section_header(&provider.provider);
-            b = b.row("Server", &provider.server);
-            if let Some(ref location) = provider.location {
-                b = b.row("Location", location);
-            }
-            if let Some(dl) = provider.download_mbps {
-                b = b.row("Download", &crate::speedtest::format_mbps(dl));
-            }
-            if let Some(ul) = provider.upload_mbps {
-                b = b.row("Upload", &crate::speedtest::format_mbps(ul));
-            }
-            b = b.row("DL Data", &format_bytes(provider.download_bytes));
-            b = b.row("UL Data", &format_bytes(provider.upload_bytes));
-        }
 
-        output.push_str(&b.finish());
-        output.push('\n');
+            output.push_str(&b.finish());
+            output.push('\n');
+        }
     }
 
     // Port details
