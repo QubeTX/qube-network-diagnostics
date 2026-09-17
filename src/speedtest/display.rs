@@ -106,12 +106,19 @@ pub fn render_results(result: &SpeedTestResult, use_ascii: bool, use_colors: boo
                     .unwrap_or_else(|| "Unavailable".into())
             ));
             output.push_str(&format!(
-                "    Estimated ceiling: {}\n",
+                "    Highest repeatable throughput: {}\n",
                 estimate
                     .ceiling_mbps
                     .map(format_mbps)
                     .unwrap_or_else(|| "Not established".into())
             ));
+            if let Some(range) = &estimate.repeatability {
+                output.push_str(&format!(
+                    "    Observed range (windows or primary sources): {} - {}\n",
+                    format_mbps(range.lower),
+                    format_mbps(range.upper)
+                ));
+            }
             for warning in &estimate.warnings {
                 output.push_str(&format!("    {warning}\n"));
             }
@@ -123,14 +130,63 @@ pub fn render_results(result: &SpeedTestResult, use_ascii: bool, use_colors: boo
             output.push_str(&format!("  Jitter: {jitter:.1} ms (P95 - P50)\n"));
         }
         if let Some(latency) = &result.http_latency {
-            for (name, values) in [("Download", &latency.download), ("Upload", &latency.upload)] {
+            let idle = super::LatencyStats::from_rtts(&latency.idle);
+            let mut increases = Vec::new();
+            for (name, kind, values) in [
+                ("Idle", "idle", &latency.idle),
+                ("Download", "download", &latency.download),
+                ("Upload", "upload", &latency.upload),
+            ] {
                 if let Some(stats) = super::LatencyStats::from_rtts(values) {
                     output.push_str(&format!(
-                        "  {name}-loaded HTTP RTT: {:.1} ms (median)\n",
-                        stats.p50
+                        "  {name} HTTP latency: {:.1} ms median; P95 {:.1} ms; jitter {:.1} ms\n",
+                        stats.p50,
+                        stats.p95,
+                        stats.p95 - stats.p50
+                    ));
+                    if kind != "idle" {
+                        if let Some(baseline) = &idle {
+                            let delta = stats.p50 - baseline.p50;
+                            output.push_str(&format!("    Change from idle: {delta:+.1} ms\n"));
+                            increases.push((name, delta));
+                        }
+                    }
+                } else {
+                    output.push_str(&format!(
+                        "  {name} HTTP latency: {}\n",
+                        if latency.attempts.get(kind).copied().unwrap_or(0) > 0 {
+                            "Attempted, no successful probes"
+                        } else {
+                            "Not measured"
+                        }
                     ));
                 }
+                output.push_str(&format!(
+                    "    {} successful samples{}; failed requests: {} / {}\n",
+                    values.len(),
+                    if values.len() < 20 {
+                        " (limited tail sampling)"
+                    } else {
+                        ""
+                    },
+                    latency.failures.get(kind).copied().unwrap_or(0),
+                    latency.attempts.get(kind).copied().unwrap_or(0)
+                ));
             }
+            if let Some((name, delta)) = increases.iter().max_by(|a, b| a.1.total_cmp(&b.1)) {
+                if *delta > 0.0 {
+                    output.push_str(&format!("  {name} activity added {delta:.1} ms of median HTTP delay.\n  Calls or games may feel less responsive during heavy traffic.\n"));
+                } else {
+                    output.push_str(
+                        "  No median latency increase observed in measured load conditions.\n",
+                    );
+                }
+                if increases.len() < 2 {
+                    output.push_str("  Only one load direction was measured.\n");
+                }
+            }
+            output.push_str(&format!("  Reference: {}\n", latency.endpoint));
+            output.push_str("  HTTP timing runs from request start through response-body consumption,\n  including client/server processing and any connection setup. Protocol and\n  connection reuse were not recorded. Jitter is empirical P95 minus median;\n  fewer than 20 successful probes means limited tail sampling.\n");
         }
         output.push_str(&format!("\n  Payload confirmed: {} · budget used: {} / {}\n  Ended: {} · {:.1}s · Methodology 5.0\n", format_bytes(measurement.bytes_transferred), format_bytes(measurement.budget_bytes), format_bytes(measurement.byte_limit), measurement.stop_reason, result.duration_s));
         for provider in &result.providers {
@@ -152,6 +208,26 @@ pub fn render_results(result: &SpeedTestResult, use_ascii: bool, use_colors: boo
                     .unwrap_or_else(|| "Unavailable".into())
             ));
         }
+        for trace in &measurement.traces {
+            let estimate = super::measurement_v5::estimate_trace(trace);
+            output.push_str(&format!(
+                "  {} {}: {} streams; {} intervals after {:.1}s warm-up; {}\n",
+                trace.provider,
+                trace.direction,
+                trace.streams,
+                estimate.samples,
+                trace.warmup_ms / 1000.0,
+                trace.stop_reason
+            ));
+            if let Some(range) = estimate.repeatability {
+                output.push_str(&format!(
+                    "    Observed 3-second-or-longer window range: {} - {}\n",
+                    format_mbps(range.lower),
+                    format_mbps(range.upper)
+                ));
+            }
+        }
+        output.push_str("\n  Sustained = confirmed payload / measurement time after warm-up.\n  Primary sources run sequentially; their median is the headline, not a sum.\n  Repeatable throughput is an observed rate, not proven maximum capacity.\n  Budget counts downloads received and uploads offered to the transport;\n  confirmed payload counts downloads received and uploads acknowledged.\n  The difference is not measured overhead. Protocol overhead is additional.\n  Packet loss and TCP retransmissions were not measured. Failed HTTP probes\n  are separate. This test cannot locate a bottleneck or infer Wi-Fi quality.\n  Compare repeated runs near the access point and over Ethernet on the same\n  device/profile with similar background traffic. Use --json for raw records.\n");
         for warning in &result.warnings {
             output.push_str(&format!("  {warning}\n"));
         }

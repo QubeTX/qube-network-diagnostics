@@ -6,6 +6,12 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## September 16, 2026 - Clearer speed results
+
+### Improved
+- See how much responses slowed during heavy traffic, how speeds varied, and when the test had too few measurements. Clearer wording explains repeatable speed, data use and what to compare next.
+
+
 ## September 5, 2026 — Reliable publication of the new measurement tools
 
 **Fixed**

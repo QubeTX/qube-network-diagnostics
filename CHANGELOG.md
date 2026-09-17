@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-09-16
+
+### Improved
+- Explain busy-connection delay, tail latency, sample counts, observed speed ranges and data use. Retain Methodology 5 calculations and serialized fields.
+
 ## [4.0.1] - 2026-09-05
 
 ### Fixed

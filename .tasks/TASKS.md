@@ -14,6 +14,11 @@
 
 ## Active
 
+- [ ] **Improve SpeedQX result insights across all surfaces** - explicit loaded delay, sampling and repeatability evidence; versioned app candidate (owner codex) #sqins
+  - [ ] Implement consistent CLI, website and app reporting
+  - [ ] Validate reporting and canonical source parity
+  - [ ] Bump versions and verify delivery
+
 - [ ] **Compare live SpeedQX with Ookla and assess measurement accuracy** - alternating browser trials, inspect both measurement contracts, retain limits and correct demonstrated flaws (owner codex) #sqcmp
   - [ ] Record predeclared alternating live comparisons on the same connection
   - [x] Evaluate primary-source methods and SpeedQX implementation against an explicit measurement target

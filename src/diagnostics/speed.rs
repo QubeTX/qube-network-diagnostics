@@ -116,12 +116,26 @@ fn format_speed_summary(result: &SpeedTestResult) -> String {
             v.map(speedtest::format_mbps)
                 .unwrap_or_else(|| "unavailable".into())
         };
-        return format!(
+        let mut summary = format!(
             "{} down / {} up (sustained; {})",
             format(m.download.sustained_mbps),
             format(m.upload.sustained_mbps),
             m.stop_reason
         );
+        if let Some(latency) = &result.http_latency {
+            if let Some(idle) = speedtest::LatencyStats::from_rtts(&latency.idle) {
+                for (name, values) in [("Download", &latency.download), ("Upload", &latency.upload)]
+                {
+                    if let Some(loaded) = speedtest::LatencyStats::from_rtts(values) {
+                        summary.push_str(&format!(
+                            "\n{name} HTTP delay: {:+.1} ms vs idle",
+                            loaded.p50 - idle.p50
+                        ));
+                    }
+                }
+            }
+        }
+        return summary;
     }
     let dl = speedtest::format_mbps(result.download_mbps);
     let ul = speedtest::format_mbps(result.upload_mbps);
@@ -270,6 +284,43 @@ mod tests {
             confidence_intervals: None,
             merge_exclusions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn v5_reporting_preserves_load_deltas_and_missing_baseline() {
+        let mut res = result(vec![], 330.8, 203.6);
+        res.measurement = Some(speedtest::engine_v5::MeasurementSummary {
+            download: speedtest::measurement_v5::DirectionEstimate {
+                sustained_mbps: Some(330.8),
+                ..Default::default()
+            },
+            upload: speedtest::measurement_v5::DirectionEstimate {
+                sustained_mbps: Some(203.6),
+                ..Default::default()
+            },
+            primary_providers: Default::default(),
+            traces: vec![],
+            bytes_transferred: 0,
+            budget_bytes: 0,
+            byte_limit: 5000000000,
+            elapsed_ms: 64000.0,
+            stop_reason: "complete".into(),
+        });
+        res.http_latency = Some(speedtest::engine_v5::HttpLatency {
+            endpoint: "https://speed.cloudflare.com/__down?bytes=0".into(),
+            idle: vec![57.5],
+            download: vec![102.5],
+            upload: vec![152.5],
+            ..Default::default()
+        });
+        let report = speedtest::display::render_results(&res, true, false);
+        assert!(report.contains("Change from idle: +45.0 ms"));
+        assert!(report.contains("Upload activity added 95.0 ms"));
+        assert!(report.contains("limited tail sampling"));
+        assert!(report.contains("Packet loss and TCP retransmissions were not measured"));
+        assert!(format_speed_summary(&res).contains("Upload HTTP delay: +95.0 ms"));
+        res.http_latency.as_mut().unwrap().idle.clear();
+        assert!(!speedtest::display::render_results(&res, true, false).contains("Change from idle"));
     }
 
     #[test]
