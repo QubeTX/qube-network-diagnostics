@@ -1,0 +1,22 @@
+name: Apple environment denial probe (temporary)
+
+# Dispatch on the implementation branch to independently verify GitHub rejects
+# the environment before starting a runner. This job references no real secret.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  forbidden-branch:
+    if: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v') }}
+    environment: apple-signing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dummy credential probe must never start
+        env:
+          DUMMY_SIGNING_CREDENTIAL: dummy-not-a-production-secret
+        run: |
+          echo '::error::Environment ref policy unexpectedly admitted an unauthorized branch.'
+          exit 1

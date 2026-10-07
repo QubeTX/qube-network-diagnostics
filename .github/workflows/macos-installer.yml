@@ -2,16 +2,8 @@ name: macOS Universal Installer
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/macos-installer.yml"
-      - ".github/workflows/release.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "scripts/build-sign-notarize-macos-dmg.sh"
-      - "scripts/validate-macos-pkg-lifecycle.sh"
-      - "scripts/verify-apple-installer-identity.sh"
-      - "src/actions/**"
-      - "src/cli.rs"
+  push:
+    branches: [main]
   workflow_call:
     inputs:
       tag:
@@ -34,7 +26,7 @@ on:
         default: ""
         type: string
       preflight_only:
-        description: "Only prove the Installer identity on both native runners"
+        description: "On main only: prove the Installer identity on both native runners"
         required: false
         default: true
         type: boolean
@@ -43,9 +35,45 @@ permissions:
   contents: read
 
 jobs:
+  signing-context:
+    name: Validate Apple signing source
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      mode: ${{ steps.context.outputs.mode }}
+      source_sha: ${{ steps.context.outputs.source_sha }}
+      tag: ${{ steps.context.outputs.tag }}
+      version: ${{ steps.context.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind the event, protected ref, and exact source before accessing secrets
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER_TAG: ${{ inputs.tag }}
+          CALLER_SHA: ${{ inputs.source_sha }}
+          CALLER_VERSION: ${{ inputs.version }}
+          PREFLIGHT_ONLY: ${{ inputs.preflight_only }}
+        run: python3 scripts/apple-signing-policy.py
+      - name: Require exact-source qualification for release and repair
+        if: ${{ steps.context.outputs.mode == 'release' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+        run: python3 scripts/wait-apple-qualification.py "$SOURCE_SHA"
+
   credential-preflight:
     name: Installer identity preflight (${{ matrix.name }})
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: signing-context
+    if: ${{ contains(fromJSON('["candidate", "release", "preflight"]'), needs.signing-context.outputs.mode) }}
+    environment: apple-signing
     strategy:
       fail-fast: false
       matrix:
@@ -58,7 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ needs.signing-context.outputs.source_sha }}
           persist-credentials: false
       - name: Import Installer identity and sign disposable PKG
         env:
@@ -71,76 +99,30 @@ jobs:
 
   build:
     name: Build, sign, and notarize universal PKG and compatibility DMG
-    needs: credential-preflight
-    # A reusable workflow retains the tag-push caller's event context, so the
-    # required source SHA—not `github.event_name`—identifies workflow_call.
-    if: ${{ inputs.source_sha != '' || (github.event_name == 'workflow_dispatch' && inputs.preflight_only == false) }}
+    needs: [signing-context, credential-preflight]
+    if: ${{ needs.signing-context.outputs.mode == 'release' }}
+    environment: apple-signing
     runs-on: macos-15-intel
     permissions:
       contents: read
       attestations: read
     outputs:
-      tag: ${{ steps.release.outputs.tag }}
-      version: ${{ steps.release.outputs.version }}
-      source_sha: ${{ steps.release.outputs.source_sha }}
+      tag: ${{ needs.signing-context.outputs.tag }}
+      version: ${{ needs.signing-context.outputs.version }}
+      source_sha: ${{ needs.signing-context.outputs.source_sha }}
     steps:
-      - name: Resolve and verify immutable release identity
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CALLER_TAG: ${{ inputs.tag }}
-          CALLER_SHA: ${{ inputs.source_sha }}
-          CALLER_VERSION: ${{ inputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            tag='${{ inputs.tag }}'
-            source_sha=$GITHUB_SHA
-            if [[ $GITHUB_REF != "refs/tags/$tag" ]]; then
-              echo "manual package builds must be dispatched with --ref matching the requested tag" >&2
-              exit 1
-            fi
-            version=${tag#v}
-          else
-            tag=$CALLER_TAG
-            source_sha=$CALLER_SHA
-            version=$CALLER_VERSION
-            [[ $GITHUB_REF == "refs/tags/$tag" && $GITHUB_SHA == "$source_sha" ]] || {
-              echo "reusable package build lost the caller's exact tag/SHA context" >&2
-              exit 1
-            }
-          fi
-          [[ $tag =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 64
-          [[ $version == "${tag#v}" && $source_sha =~ ^[0-9a-f]{40}$ ]] || exit 64
-          resolved=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/$tag" | awk 'NR == 1 {print $1}')
-          [[ $resolved == "$source_sha" ]] || {
-            echo "tag $tag resolves to $resolved, not trusted source $source_sha" >&2
-            exit 1
-          }
-          release_target=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish')
-          [[ $release_target == "$source_sha" ]] || {
-            echo "GitHub Release target does not match the exact tag source" >&2
-            exit 1
-          }
-          {
-            echo "tag=$tag"
-            echo "version=$version"
-            echo "source_sha=$source_sha"
-          } >> "$GITHUB_OUTPUT"
-
       # Checkout cleans a pre-existing non-Git workspace. Do it before placing
       # the exact release archives under upstream/ so they cannot be deleted.
       - uses: actions/checkout@v6
         with:
-          ref: ${{ steps.release.outputs.source_sha }}
+          ref: ${{ needs.signing-context.outputs.source_sha }}
           persist-credentials: false
 
       - name: Download and verify exact signed architecture archives
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          TAG: ${{ needs.signing-context.outputs.tag }}
+          SOURCE_SHA: ${{ needs.signing-context.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -162,6 +144,7 @@ jobs:
       - name: Build signed and notarized universal installers
         timeout-minutes: 45
         env:
+          VERSION: ${{ needs.signing-context.outputs.version }}
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_INSTALLER_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_P12_BASE64 }}
@@ -175,7 +158,7 @@ jobs:
         shell: bash
         run: |
           scripts/build-sign-notarize-macos-dmg.sh \
-            '${{ steps.release.outputs.version }}' \
+            "$VERSION" \
             upstream/nd300-aarch64-apple-darwin.tar.xz \
             upstream/nd300-x86_64-apple-darwin.tar.xz \
             output
@@ -245,7 +228,8 @@ jobs:
 
   candidate-thin:
     name: Candidate native binaries (${{ matrix.name }})
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: signing-context
+    if: ${{ contains(fromJSON('["pr", "candidate"]'), needs.signing-context.outputs.mode) }}
     strategy:
       fail-fast: false
       matrix:
@@ -260,6 +244,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.signing-context.outputs.source_sha }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
@@ -275,6 +260,8 @@ jobs:
           root="$RUNNER_TEMP/nd300-${TARGET}"
           mkdir "$root"
           cp "target/${TARGET}/release/nd300" "target/${TARGET}/release/speedqx" "$root/"
+          cp README.md CHANGELOG.md LICENSE "$root/"
+          cp -R man "$root/"
           chmod 755 "$root/nd300" "$root/speedqx"
           tar -cJf "$RUNNER_TEMP/nd300-${TARGET}.tar.xz" -C "$RUNNER_TEMP" "nd300-${TARGET}"
       - uses: actions/upload-artifact@v6
@@ -283,29 +270,80 @@ jobs:
           if-no-files-found: error
           path: ${{ runner.temp }}/nd300-${{ matrix.target }}.tar.xz
 
-  candidate-package:
-    name: Candidate signed and notarized PKG and compatibility DMG
-    needs: [credential-preflight, candidate-thin]
-    if: ${{ github.event_name == 'pull_request' && needs.credential-preflight.result == 'success' && needs.candidate-thin.result == 'success' }}
-    runs-on: macos-15-intel
-    outputs:
-      version: ${{ steps.version.outputs.version }}
+  candidate-archive:
+    name: Candidate signed archive (${{ matrix.name }})
+    needs: [signing-context, candidate-thin]
+    if: ${{ needs.signing-context.outputs.mode == 'candidate' }}
+    environment: apple-signing
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - name: Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.signing-context.outputs.source_sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v7
         with:
-          pattern: candidate-thin-*
+          name: candidate-thin-${{ matrix.target }}
+          path: upstream
+      - name: Sign and validate the same archive path used by release.yml
+        timeout-minutes: 30
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.signing-context.outputs.version }}
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="nd300-${TARGET}.tar.xz"
+          jq -n --arg archive "$archive" '{artifacts: {($archive): {checksums: {}}}}' > candidate-manifest.json
+          scripts/sign-notarize-macos.sh "$TARGET" candidate-manifest.json upstream
+          scripts/validate-macos-release.sh "upstream/$archive" "$TARGET" "$VERSION" --require-trust
+      - uses: actions/upload-artifact@v6
+        with:
+          name: candidate-signed-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            upstream/*.tar.xz
+            upstream/*.sha256
+
+  candidate-package:
+    name: Candidate signed and notarized PKG and compatibility DMG
+    needs: [signing-context, credential-preflight, candidate-archive]
+    if: ${{ needs.signing-context.outputs.mode == 'candidate' }}
+    environment: apple-signing
+    runs-on: macos-15-intel
+    outputs:
+      version: ${{ needs.signing-context.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.signing-context.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: candidate-signed-*
           path: upstream
           merge-multiple: true
-      - name: Resolve candidate version
-        id: version
-        shell: bash
-        run: echo "version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "nd300") | .version')" >> "$GITHUB_OUTPUT"
       - name: Build candidate package
         timeout-minutes: 45
         env:
+          VERSION: ${{ needs.signing-context.outputs.version }}
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_INSTALLER_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_P12_BASE64 }}
@@ -319,7 +357,7 @@ jobs:
         shell: bash
         run: |
           scripts/build-sign-notarize-macos-dmg.sh \
-            '${{ steps.version.outputs.version }}' \
+            "$VERSION" \
             upstream/nd300-aarch64-apple-darwin.tar.xz \
             upstream/nd300-x86_64-apple-darwin.tar.xz \
             output
@@ -336,8 +374,8 @@ jobs:
 
   candidate-validate:
     name: Candidate lifecycle (${{ matrix.name }})
-    needs: [candidate-thin, candidate-package]
-    if: ${{ github.event_name == 'pull_request' && needs.candidate-package.result == 'success' }}
+    needs: [signing-context, candidate-archive, candidate-package]
+    if: ${{ needs.signing-context.outputs.mode == 'candidate' }}
     strategy:
       fail-fast: false
       matrix:
@@ -352,6 +390,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.signing-context.outputs.source_sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v7
         with:
@@ -359,7 +398,7 @@ jobs:
           path: artifact
       - uses: actions/download-artifact@v7
         with:
-          name: candidate-thin-${{ matrix.target }}
+          name: candidate-signed-${{ matrix.target }}
           path: upstream
       - name: Validate candidate lifecycle
         env:

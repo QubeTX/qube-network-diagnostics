@@ -40,6 +40,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  apple-policy:
+    name: Apple signing policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+      - name: Test authorized signing sources and release compatibility
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s scripts -p test_apple_signing.py -v
+
+  required:
+    name: CI required
+    needs: [fmt, clippy, test, build, linux-targets, audit, dist-plan, shellcheck, apple-policy]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI gate to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          failures = {name: job['result'] for name, job in json.loads(os.environ['RESULTS']).items() if job['result'] != 'success'}
+          if failures:
+              print(f"Required CI failed or skipped: {failures}", file=sys.stderr)
+              sys.exit(1)
+          print("Every required CI gate passed.")
+          PY
+
   fmt:
     name: Format
     runs-on: ubuntu-latest

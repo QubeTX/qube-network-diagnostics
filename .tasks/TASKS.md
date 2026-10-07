@@ -1,6 +1,7 @@
 # Tasks
 
 ## Backlog
+- [ ] **Verify the first environment-backed Apple release** - next normal tag must pass all 32 assets, attestations and both compatibility bridges (needs #asign) (owner codex) #asrel
 - [ ] **Qualify SpeedQX v5 on physical iOS and Android** - exact uploaded build, accessibility, lifecycle and animation performance #sqphys
 - [ ] **Qualify SpeedQX v5 repeatability on lossy and provider paths** - preserve missed targets and predeclare controlled comparisons #sqacc
 - [ ] **Bound SpeedQX provider metadata and constrain discovered endpoints** - independent Medium/Low review follow-ups and inherited dependency advisories #sqsec
@@ -13,6 +14,12 @@
 ## To-Do
 
 ## Active
+
+- [ ] **Secure automatic Apple signing** - isolate credentials, preserve deployment and prove native qualification (owner codex) #asign
+  - [ ] Merge source-bound signing and release regression coverage
+  - [ ] Migrate credentials and verify GitHub enforcement
+  - [ ] Pass native signed qualification without repository secrets
+  - [ ] Remove migration tooling and close the validated security finding
 
 - [ ] **Compare live SpeedQX with Ookla and assess measurement accuracy** - alternating browser trials, inspect both measurement contracts, retain limits and correct demonstrated flaws (owner codex) #sqcmp
   - [ ] Record predeclared alternating live comparisons on the same connection

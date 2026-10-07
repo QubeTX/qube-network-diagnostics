@@ -30,6 +30,15 @@ assets: **32 assets total**.
 Confirm the exact trigger wiring against `.github/workflows/*.yml` at release
 time — the workflows are authoritative; `AGENTS.md` describes intent.
 
+Apple credentials are environment secrets in `apple-signing`, available only
+to protected main and release-tag runs without a manual approval prompt. Every
+main push automatically qualifies both signed architecture archives and the
+universal PKG/DMG on native Intel and Apple Silicon. The release plan waits up
+to 60 minutes for that exact SHA to pass; inspect its run before tagging. PRs
+build without Apple credentials. Never restore repository-level Apple secrets
+or run signing from unreviewed refs. Manual preflight runs on main; repairs
+require a matching tag that contains the hardened workflow.
+
 ## Steps
 
 1. **Bump version** in `Cargo.toml` `[package] version`. Patch = fixes, minor =
