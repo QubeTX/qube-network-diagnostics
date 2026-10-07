@@ -160,23 +160,23 @@ class QualificationTests(unittest.TestCase):
         calls = []
         def sleep(seconds):
             ticks[0] += seconds
-        def pending(path, *args):
-            calls.append(path)
+        def pending(path, *args, **kwargs):
+            calls.append((path, kwargs["timeout"]))
             return {"workflow_runs": []}
         with self.assertRaisesRegex(RuntimeError, "Timed out"):
             qualification["wait_for_qualification"](SHA, timeout=60, interval=30,
                                                      request=pending, clock=lambda: ticks[0], sleep=sleep)
         self.assertEqual(ticks[0], 60)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual([timeout for _, timeout in calls], [60, 30])
         for conclusion in ["failure", "cancelled", "timed_out", "skipped", "action_required"]:
             with self.subTest(conclusion=conclusion), self.assertRaisesRegex(RuntimeError, "ended"):
                 qualification["wait_for_qualification"](
-                    SHA, request=lambda *args: {"workflow_runs": [self.run_data(conclusion=conclusion)]},
+                    SHA, request=lambda *args, **kwargs: {"workflow_runs": [self.run_data(conclusion=conclusion)]},
                     sleep=lambda _: self.fail("terminal failure must not sleep"))
 
     def test_success_checks_jobs_from_the_same_attempt(self):
         calls = []
-        def request(path, *args):
+        def request(path, *args, **kwargs):
             calls.append(path)
             if "/attempts/2/jobs" in path:
                 return {"jobs": [{"name": name, "conclusion": "success"}
