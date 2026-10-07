@@ -1,4 +1,4 @@
-TT;DR: Keep Apple releases automatic while preventing unreviewed PR code from receiving signing credentials or production signatures. Implementation and GitHub protection setup are in progress; native evidence and credential cutover remain open.
+TT;DR: Keep Apple releases automatic while preventing unreviewed PR code from receiving signing credentials or production signatures. PR #39 is merged and the seven environment credentials are populated. Native signed qualification and removal of repository copies remain open.
 
 ## Why
 Operator authorized the implementation plan on 2026-10-06 for Codex Security finding `commit:4555afb7100881918b4c65a5fd9862ff`, PR workflow exposes Apple signing credentials. The original generated patch predates the direct PKG and 32-asset pipeline. Current main `b480a4e7b41d2f490622b56a9362e4f44f320b1d` still signs same-repository PR code.
@@ -18,20 +18,24 @@ Functional bar: production credentials cannot reach PR/branch runs; main qualifi
 ## Evidence
 | Criterion | Oracle | Result | Limitation | Status |
 |---|---|---|---|---|
-| Local policy and syntax | Python unittest, actionlint, ShellCheck, diff check | 14 tests pass; workflow and shell lint pass | Hosted qualification pending | PASS |
-| Environment ref policy | GitHub environment API | apple-signing permits main branch and v* tags, no reviewers or wait | Empty until credential migration | PARTIAL |
-| Protected refs | GitHub ruleset API | 24618672/24618673 protect main; 24618674/24618675 protect release tags | Live PR merge still to verify | PARTIAL |
+| Local policy and syntax | Python unittest, actionlint, ShellCheck, diff check | 15 tests pass; workflow and shell lint pass | Signed qualification pending | PASS |
+| Exact-head PR validation | CI 37554619098, unsigned Mac 37554619143, Windows origin 37554619072 attempt 2, parity 37554619083, release plan 37554619343 | All successful at 37da38d5afdcc59e2ec485ed5990d11ed246992e | Windows retry recovered an unauthenticated API rate limit; no bypass | PASS |
+| Environment ref policy | GitHub environment API and dummy-only run 37555792637 | Branch rejected by protection rules; job 112581596924 had runner_id 0 and no steps | No real credential was referenced | PASS |
+| Source gate denial | Branch dispatch 37554295264 | Source rejected and all signing jobs skipped | Other adversarial contexts have local regression coverage | PASS |
+| Protected refs | Rulesets 24618672/24618673/24618674/24618675 and PR #39 | Administrator PR merge succeeded after exact-head CI; main force/delete and release tag rewrite/delete forbidden | No additional reviewer or deployment wait configured | PASS |
+| Credential migration | Run 37556321121 at 4e07898ffddd923a071c927c4c32ad4c1568baab | Seven environment names verified after pinned-public-key ciphertext import | Repository copies retained until first signed qualification passes | PARTIAL |
 
 ## Verification
-- [ ] Exact-head CI, actionlint, ShellCheck and security policy regressions pass
+- [x] Exact-head CI, actionlint, ShellCheck and security policy regressions pass
 - [ ] Live GitHub environment/ref denial checks pass and all seven Apple secrets exist only in apple-signing
 - [ ] Exact-main qualification signs both archives and passes universal PKG/DMG lifecycles on Intel and Apple Silicon after repository-secret removal
 - [ ] Migration workflow/ciphertext removed and Codex Security finding closed with exact evidence
 
 ## Status
-Active. Isolated branch codex/secure-apple-signing starts at current main. Four GitHub rulesets and the empty restricted environment exist. Implementation and a separate bypass/regression review pass are complete; PR, migration and native runs are next. Review traced PR/reusable/dispatch entry points, exact checkout and same-run artifacts, both archive and package secret consumers, output injection, immutable assets, and old-tag behavior. Manual repairs now also require exact-SHA qualification. Original checkout and PR #38 are untouched. Applicable repository policy allows only Opus/Sonnet subagents, unavailable through this harness; the fix-finding skill's separate review-pass fallback was used instead of substituting a model.
+Active. PR #39 merged at 4e07898ffddd923a071c927c4c32ad4c1568baab. Seven environment secrets were imported; main qualification run 37556320620 was cancelled during initial setup and restarted in full after the environment was populated. Delete repository copies only after this qualification succeeds, then repeat all jobs to prove no fallback. Cleanup is prepared separately and must not merge before that proof. Review traced PR/reusable/dispatch entry points, exact checkout and same-run artifacts, both archive and package secret consumers, output injection, immutable assets, and old-tag behavior. Original checkout and PR #38 remain untouched. Applicable repository policy allows only Opus/Sonnet subagents, unavailable through this harness; the fix-finding skill's separate review-pass fallback was used instead of substituting a model.
 
 ## Activity
+- 2026-10-06 — merged PR #39 after every relevant exact-head run passed; proved GitHub environment denial with a dummy-only branch job, imported seven existing values using ciphertext-only migration, and restarted main qualification after import. Prepared temporary-workflow cleanup and stable-name candidate-artifact replacement for full retries; public release assets remain immutable (agent: codex)
 - 2026-10-06 — PR #39 at f64e11a passed policy/lint/dist/parity but required audit found newly published RUSTSEC-2026-0285 in inherited rustls 0.23.36. Narrowly updated rustls to patched 0.23.45 and required webpki 0.103.15; local cargo audit and locked metadata pass. Live branch dispatch 37554295264 was rejected before every signer, as expected (agent: codex)
 - 2026-10-06 — created from the operator-approved implementation plan; confirmed current main and 32-asset contract (agent: codex)
 - 2026-10-06 — added source-bound signing jobs, exact-SHA qualification wait, signed archive qualification, policy regressions, environment and ref restrictions; first 14 policy tests and lint checks pass (agent: codex)

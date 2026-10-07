@@ -190,10 +190,6 @@ class WorkflowContractTests(unittest.TestCase):
     def test_all_apple_secret_consumers_require_environment(self):
         consumers = set()
         for path in (ROOT / ".github/workflows").glob("*.yml"):
-            # The one-time migration handles repository credentials only on
-            # protected main. It is deleted after environment cutover.
-            if path.name == "migrate-apple-secrets.yml":
-                continue
             for name, job in workflow(path.name)["jobs"].items():
                 if "secrets.APPLE_" in json.dumps(job):
                     consumers.add((path.name, name))
@@ -257,6 +253,18 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(set(publish["needs"]), {"build", "validate"})
         self.assertEqual(set(mac["jobs"]["legacy-bridge"]["needs"]), {"build", "publish"})
         self.assertIn("macos-installer", release["jobs"]["announce"]["needs"])
+
+    def test_full_candidate_retry_can_replace_only_run_artifacts(self):
+        jobs = workflow("macos-installer.yml")["jobs"]
+        for name in ["candidate-thin", "candidate-archive", "candidate-package"]:
+            upload = [step for step in jobs[name]["steps"]
+                      if step.get("uses", "").startswith("actions/upload-artifact@")]
+            self.assertEqual(len(upload), 1)
+            self.assertEqual(upload[0]["with"]["overwrite"], "true")
+        for step in jobs["build"]["steps"]:
+            self.assertNotIn("overwrite", step.get("with", {}))
+        self.assertFalse((ROOT / ".github/workflows/migrate-apple-secrets.yml").exists())
+        self.assertFalse((ROOT / ".github/workflows/probe-apple-environment.yml").exists())
 
 
 if __name__ == "__main__":

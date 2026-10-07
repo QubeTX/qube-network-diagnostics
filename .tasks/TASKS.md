@@ -16,7 +16,7 @@
 ## Active
 
 - [ ] **Secure automatic Apple signing** - isolate credentials, preserve deployment and prove native qualification (owner codex) #asign
-  - [ ] Merge source-bound signing and release regression coverage
+  - [x] Merge source-bound signing and release regression coverage
   - [ ] Migrate credentials and verify GitHub enforcement
   - [ ] Pass native signed qualification without repository secrets
   - [ ] Remove migration tooling and close the validated security finding
