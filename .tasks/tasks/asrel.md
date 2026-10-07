@@ -15,7 +15,8 @@ Exact tag SHA passes post-merge qualification, all release targets, public archi
 - [ ] Native Intel and Apple Silicon compatibility bridges and public Apple trust checks pass
 
 ## Status
-Backlog pending completion of #asign and the next user-authorized release.
+Backlog awaiting the next user-authorized release. #asign is complete: environment-only signing and native lifecycles passed at 0db6d767b42ef10fd4300e21ee57cdf6e489eaae (qualification 37558357108; CI 37558357057). This candidate evidence does not replace the publication checks above.
 
 ## Activity
+- 2026-10-06 — #asign completed and the critical finding was closed after credential isolation, native qualification and cleanup. Preserve this task for the next normal tag; no new release was created for remediation (agent: codex)
 - 2026-10-06 — recorded the explicitly deferred production-publication proof from the accepted plan (agent: codex)
