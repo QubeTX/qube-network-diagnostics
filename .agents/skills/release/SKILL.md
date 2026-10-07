@@ -39,6 +39,11 @@ build without Apple credentials. Never restore repository-level Apple secrets
 or run signing from unreviewed refs. Manual preflight runs on main; repairs
 require a matching tag that contains the hardened workflow.
 
+Retry a main qualification with `gh run rerun RUN_ID` (all jobs), because the
+gate requires all native signing and lifecycle jobs in the same attempt. Stable
+candidate artifact names can be replaced within that run; public release assets
+remain immutable and must never be overwritten.
+
 ## Steps
 
 1. **Bump version** in `Cargo.toml` `[package] version`. Patch = fixes, minor =

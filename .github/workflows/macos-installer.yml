@@ -267,6 +267,9 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: candidate-thin-${{ matrix.target }}
+          # Full qualification retries keep names stable and replace only
+          # ephemeral run artifacts. Published release assets stay immutable.
+          overwrite: true
           if-no-files-found: error
           path: ${{ runner.temp }}/nd300-${{ matrix.target }}.tar.xz
 
@@ -317,6 +320,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: candidate-signed-${{ matrix.target }}
+          overwrite: true
           if-no-files-found: error
           path: |
             upstream/*.tar.xz
@@ -364,6 +368,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: candidate-macos-installer
+          overwrite: true
           if-no-files-found: error
           path: |
             output/nd300-universal-apple-darwin.pkg

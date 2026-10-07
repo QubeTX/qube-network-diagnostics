@@ -41,10 +41,10 @@ def jobs_passed(jobs):
                    for job in jobs) for name in REQUIRED_JOBS)
 
 
-def api(path, *args):
+def api(path, *args, timeout=90):
     result = subprocess.run(
         ["gh", "api", f"repos/{REPOSITORY}/{path}", *args],
-        capture_output=True, text=True, check=True, timeout=90,
+        capture_output=True, text=True, check=True, timeout=timeout,
     )
     return json.loads(result.stdout)
 
@@ -53,15 +53,22 @@ def wait_for_qualification(sha, timeout=3600, interval=30, request=api,
                            clock=time.monotonic, sleep=time.sleep):
     deadline = clock() + timeout
     previous = None
+
+    def bounded_request(path, *args):
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise RuntimeError("Timed out waiting for exact-source Apple qualification")
+        return request(path, *args, timeout=min(90, remaining))
+
     while True:
-        data = request(f"actions/workflows/{WORKFLOW}/runs", "--method", "GET",
+        data = bounded_request(f"actions/workflows/{WORKFLOW}/runs", "--method", "GET",
                        "-f", "event=push", "-f", "branch=main", "-f", f"head_sha={sha}",
                        "-f", "per_page=100")
         run = select_run(data["workflow_runs"], sha)
         if run and run["status"] == "completed":
             if run.get("conclusion") != "success":
                 raise RuntimeError(f"Apple qualification run {run['id']} ended: {run.get('conclusion')}")
-            jobs = request(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100")
+            jobs = bounded_request(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100")
             if not jobs_passed(jobs["jobs"]):
                 raise RuntimeError("Apple qualification lacks successful signing/lifecycle jobs")
             print(f"Apple qualification passed for {sha}: {run['html_url']}", flush=True)
