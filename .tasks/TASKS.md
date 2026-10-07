@@ -15,18 +15,17 @@
 
 ## Active
 
-- [ ] **Secure automatic Apple signing** - isolate credentials, preserve deployment and prove native qualification (owner codex) #asign
-  - [x] Merge source-bound signing and release regression coverage
-  - [x] Migrate credentials and verify GitHub enforcement
-  - [ ] Pass native signed qualification without repository secrets
-  - [ ] Remove migration tooling and close the validated security finding
-
 - [ ] **Compare live SpeedQX with Ookla and assess measurement accuracy** - alternating browser trials, inspect both measurement contracts, retain limits and correct demonstrated flaws (owner codex) #sqcmp
   - [ ] Record predeclared alternating live comparisons on the same connection
   - [x] Evaluate primary-source methods and SpeedQX implementation against an explicit measurement target
   - [x] Record evidence and justified conclusions without claiming unproven comparative accuracy
 
 ## Done
+- [x] **Secure automatic Apple signing** - environment-only credentials, protected refs, both native signing/lifecycles verified, critical finding fixed (owner codex) (done 2026-10-06) #asign
+  - [x] Merge source-bound signing and release regression coverage
+  - [x] Migrate credentials and verify GitHub enforcement
+  - [x] Pass native signed qualification without repository secrets
+  - [x] Remove migration tooling and close the validated security finding
 - [x] **Remove automatic Claude Code PR review** - automatic workflow removed; all 9 remaining workflows pass actionlint (owner codex) (done 2026-09-05) #crh
 - [x] **Implement SpeedQX v5 measurement and instrument** - ND300 4.0.1 and all 32 assets verified, website/homepage live, iOS 3.0.0 (16) uploaded; physical qualification and lossy-path targets remain disclosed follow-ups #sq5
   - [x] Versioned traces and deterministic regression coverage
