@@ -6,6 +6,12 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## October 6, 2026 — Safer automatic Mac releases
+
+**Security**
+
+- Unreviewed changes can no longer use the Apple signing keys. After changes merge, Mac downloads and installers are signed and tested automatically on both types of Mac. Releases keep the same publishing steps and installer compatibility, with no extra approval prompt.
+
 ## September 5, 2026 — Reliable publication of the new measurement tools
 
 **Fixed**

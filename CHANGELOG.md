@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Restrict Apple signing credentials to the GitHub `apple-signing` environment and protected source refs. Pull requests build without signing secrets; every main push automatically qualifies signed native archives and the universal PKG/compatibility DMG on Intel and Apple Silicon. Exact-SHA qualification gates release signing without a recurring approval step. Preserve all 32 release assets, checksums, attestations, native lifecycle and legacy updater checks.
+
 ## [4.0.1] - 2026-09-05
 
 ### Fixed

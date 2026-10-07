@@ -43,6 +43,7 @@ jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
     runs-on: "ubuntu-22.04"
+    timeout-minutes: 75
     permissions:
       actions: read
       contents: read
@@ -140,6 +141,12 @@ jobs:
           echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Validated ${tag}: Cargo/crates.io ${version}, origin/main ancestry, and exact-SHA CI."
+      - name: Require exact-source post-merge Apple qualification
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.release_source.outputs.sha }}
+        run: python3 scripts/wait-apple-qualification.py "$RELEASE_SHA"
       - name: Install dist
         # Fetch the prebuilt dist binary tarball directly rather than piping the
         # cargo-dist-installer.sh script asset — GitHub's release CDN has
@@ -189,6 +196,9 @@ jobs:
   # Build and packages all the platform-specific things
   build-local-artifacts:
     name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
+    # This matrix includes Apple archive signing. Environment policy permits
+    # release tags only after repository rules and the secret-free plan gate.
+    environment: apple-signing
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
@@ -574,11 +584,11 @@ jobs:
       - windows-installers
     if: ${{ always() && needs.plan.outputs.publishing == 'true' && needs.windows-installers.result == 'success' }}
     permissions:
+      actions: read
       contents: write
       id-token: write
       attestations: write
     uses: ./.github/workflows/macos-installer.yml
-    secrets: inherit
     with:
       tag: ${{ needs.plan.outputs.tag }}
       source_sha: ${{ needs.plan.outputs.release-sha }}

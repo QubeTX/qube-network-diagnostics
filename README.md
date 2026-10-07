@@ -20,6 +20,11 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **Color-coded** status indicators (OK/Warn/Fail/Skip)
 - **Cross-platform** — native support for Windows, macOS, and Linux
 
+Mac releases are signed and notarized automatically from protected merged code
+and release tags. Pull requests build without Apple signing credentials. Both
+native architectures must pass signed archive and installer lifecycle checks
+before release; the direct PKG and compatibility DMG remain available.
+
 ## Installation
 
 ### Shell (macOS/Linux preferred)
