@@ -232,6 +232,87 @@ class WorkflowContractTests(unittest.TestCase):
         for name, job in mac["jobs"].items():
             self.assertNotEqual(job.get("secrets"), "inherit", name)
 
+    def test_manual_preflight_caller_is_main_only_and_cannot_select_release(self):
+        smoke = workflow("apple-signing-preflight.yml")
+        self.assertEqual(set(smoke["on"]), {"workflow_dispatch"})
+        self.assertEqual(smoke["permissions"], {"contents": "read"})
+        self.assertEqual(set(smoke["jobs"]), {"preflight"})
+        caller = smoke["jobs"]["preflight"]
+        self.assertEqual(caller["if"], "${{ github.ref == 'refs/heads/main' }}")
+        self.assertEqual(caller["uses"], "./.github/workflows/macos-installer.yml")
+        self.assertEqual(caller["with"], {
+            "tag": "", "source_sha": "", "version": "", "preflight_only": "true",
+        })
+        self.assertEqual(caller["secrets"], workflow("release.yml")["jobs"]["macos-installer"]["secrets"])
+        self.assertEqual(set(caller["secrets"]), APPLE_CREDENTIAL_NAMES)
+        self.assertEqual(caller["permissions"], {
+            "actions": "read", "contents": "write", "id-token": "write", "attestations": "write",
+        })
+        self.assertNotIn("steps", caller)
+        self.assertNotIn("environment", caller)
+        env = context(GITHUB_EVENT_NAME="workflow_dispatch", PREFLIGHT_ONLY="true",
+                      CALLER_TAG="", CALLER_SHA="", CALLER_VERSION="")
+        self.assertEqual(policy["classify_context"](env)["mode"], "preflight")
+        for ref in ["refs/heads/feature", "refs/tags/v4.0.2"]:
+            with self.subTest(ref=ref), self.assertRaises(policy["PolicyError"]):
+                policy["classify_context"]({**env, "GITHUB_REF": ref})
+
+    def test_reusable_preflight_checks_all_secrets_without_logging_values(self):
+        mac = workflow("macos-installer.yml")
+        option = mac["on"]["workflow_call"]["inputs"].get("preflight_only")
+        self.assertIsInstance(option, dict)
+        self.assertEqual({key: option.get(key) for key in ["required", "default", "type"]}, {
+            "required": "false", "default": "false", "type": "boolean",
+        })
+        job = mac["jobs"]["credential-preflight"]
+        self.assertEqual(job["environment"], "apple-signing")
+        self.assertEqual({row["runner"] for row in job["strategy"]["matrix"]["include"]},
+                         {"macos-15", "macos-15-intel"})
+        steps = job["steps"]
+        checks = [step for step in steps if step.get("name") == "Verify reusable Apple credential handoff"]
+        self.assertEqual(len(checks), 1)
+        check = checks[0]
+        self.assertEqual(check["if"], "${{ needs.signing-context.outputs.mode == 'preflight' }}")
+        self.assertEqual(check["shell"], "python")
+        self.assertEqual(check["env"], {
+            name: "${{ secrets." + name + " }}" for name in APPLE_CREDENTIAL_NAMES
+        })
+        signing = [step for step in steps if step.get("run") == "scripts/verify-apple-installer-identity.sh"]
+        self.assertEqual(len(signing), 1)
+        self.assertLess(steps.index(check), steps.index(signing[0]))
+        sentinels = {name: "never-log-credential-" + name for name in APPLE_CREDENTIAL_NAMES}
+        base_env = {key: value for key, value in os.environ.items() if key not in APPLE_CREDENTIAL_NAMES}
+        cases = [(None, {**base_env, **sentinels})]
+        for name in APPLE_CREDENTIAL_NAMES:
+            cases.append((name, {**base_env, **{key: value for key, value in sentinels.items() if key != name}}))
+            cases.append((name, {**base_env, **sentinels, name: ""}))
+        for missing, env in cases:
+            result = subprocess.run([os.sys.executable, "-c", check["run"]], env=env,
+                                    capture_output=True, text=True, check=False, timeout=15)
+            output = result.stdout + result.stderr
+            with self.subTest(missing=missing):
+                self.assertEqual(result.returncode == 0, missing is None, output)
+                if missing:
+                    self.assertIn(missing, output)
+                for value in sentinels.values():
+                    self.assertNotIn(value, output)
+
+    def test_preflight_mode_cannot_build_publish_or_run_lifecycles(self):
+        jobs = workflow("macos-installer.yml")["jobs"]
+        self.assertEqual(set(jobs), {"signing-context", "credential-preflight", "build", "validate",
+                                    "candidate-thin", "candidate-archive", "candidate-package",
+                                    "candidate-validate", "publish", "legacy-bridge"})
+        self.assertEqual(jobs["build"]["if"], "${{ needs.signing-context.outputs.mode == 'release' }}")
+        self.assertEqual(jobs["candidate-thin"]["if"],
+                         '${{ contains(fromJSON(\'["pr", "candidate"]\'), needs.signing-context.outputs.mode) }}')
+        for name in ["candidate-archive", "candidate-package", "candidate-validate"]:
+            self.assertEqual(jobs[name]["if"], "${{ needs.signing-context.outputs.mode == 'candidate' }}")
+        for name, expected_needs in [("validate", {"build"}), ("publish", {"build", "validate"}),
+                                     ("legacy-bridge", {"build", "publish"})]:
+            needs = jobs[name]["needs"]
+            self.assertEqual({needs} if isinstance(needs, str) else set(needs), expected_needs)
+            self.assertNotIn("if", jobs[name], name)
+
     def test_pr_native_builds_never_enter_signing_environment(self):
         mac = workflow("macos-installer.yml")
         self.assertEqual(mac["on"]["push"]["branches"], ["main"])
@@ -265,7 +346,8 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_release_interface_inventory_and_legacy_bridge_are_preserved(self):
         mac = workflow("macos-installer.yml")
-        self.assertEqual(set(mac["on"]["workflow_call"]["inputs"]), {"tag", "source_sha", "version"})
+        self.assertEqual(set(mac["on"]["workflow_call"]["inputs"]),
+                         {"tag", "source_sha", "version", "preflight_only"})
         release = workflow("release.yml")
         caller = release["jobs"]["macos-installer"]
         self.assertNotEqual(caller.get("secrets"), "inherit")

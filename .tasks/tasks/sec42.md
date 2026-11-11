@@ -26,14 +26,14 @@ Functional bar: current vulnerabilities are either demonstrably obsolete or fixe
 ## Verification
 - [x] Every PR has a documented current-source relevance disposition
 - [x] Regression tests, security review and cross-platform review pass
-- [ ] Required local and exact-head CI/release preparation checks pass for the forward 4.0.3 correction
-- [ ] Exact merged 4.0.3 SHA passes main CI, crate publication and signed Mac qualification
-- [ ] New immutable release passes all platforms, exactly 32 assets, checksums, attestations and native trust/bridges
+- [x] Required local and exact-head CI/release preparation checks pass for the recovery correction
+- [ ] Exact published 4.0.2 SHA passes main CI, crate publication and signed Mac qualification
+- [ ] Existing immutable release passes all platforms, exactly 32 assets, checksums, attestations and native trust/bridges
 - [ ] Homepage fallback is deployed and verified
 - [x] Original PRs are merged or explicitly superseded with evidence
 
 ## Status
-The security fixes merged in PR #42 at `ceb10bf6e5818a36200c8292c78c3202160de864`. Original #43–45 are closed as superseded; #46 is closed with the unsupported-bypass/wrong-pin evidence. Exact-candidate/main CI, public crate and signed main qualification passed. Release 42972625036 published 28 assets but stopped because the reusable Mac caller omitted the explicit environment-secret interface. Intel public archive trust passed on a read-only retry against unchanged bytes. Preparing 4.0.3 on `codex/apple-release-secret-forwarding`, retaining all protected signing and public verification gates. Homepage PR #23 will move to 4.0.3. Final evidence: `docs/release-evidence-v4.0.3.md`. No tag/assets are rewritten and no release gate is waived.
+The operator resumed testing and deployment after the release-path audit. Recover existing v4.0.2 without another product version: withdraw the unpublished 4.0.3 preparation, retain the seven-name credential interface correction, and first run a manual protected-main caller through the real reusable preflight with no publication. Then dispatch v4.0.2's existing standalone repair against exact qualified source `ceb10bf6e5818a36200c8292c78c3202160de864`, add only its four absent Mac assets, verify all 32, promote latest and complete both native compatibility bridges. Current latest is the complete 4.0.1; automatic crate publishing remains temporarily disabled until safe resumption. Homepage PR #23 is being realigned to 4.0.2. Record exact recovery receipts in `docs/release-evidence-v4.0.2.md`; the original failed release run must remain honestly identified.
 
 ## Activity
 - 2026-11-10 — started current-source investigation and authorized deployment scope; confirmed #42 remains vulnerable on main and rejected original incompatible escaping strategy (agent: codex)
@@ -45,3 +45,6 @@ The security fixes merged in PR #42 at `ceb10bf6e5818a36200c8292c78c3202160de864
 - 2026-11-11 — full Apple qualification attempt 2 passed all nine required jobs including both native lifecycles; helper confirmed exact-source qualification. Pushed unused immutable v4.0.2 once at ceb10bf; public release verification remains open (agent: codex)
 - 2026-11-11 — release builds passed all six targets; fresh Intel public trust check returned Unnotarized Developer ID despite valid checksum/signature and prior exact-byte notarization/Gatekeeper acceptance. Retain the gate and retry the read-only public check after the active Windows job completes; no asset/tag mutation (agent: codex)
 - 2026-11-11 — confirmed required explicit reusable-workflow secret interface from current GitHub documentation; both Mac preflights failed empty, while Intel public trust retry passed unchanged bytes. Preparing forward 4.0.3 correction and revised homepage fallback; retained protected environment and exact-source gates (agent: codex)
+- 2026-11-11 — 4.0.3 local gates and all five exact-candidate workflows passed; merged PR #47 at 1364ccc and started exact-main qualification. Preserved complete 4.0.1 latest downloads during the correction (agent: codex)
+- 2026-11-11 — operator explicitly paused publication and requested investigation before further version churn. Stopped main CI/automatic crate publication and non-publishing qualification; confirmed no 4.0.3 tag or crate. Auditing existing immutable-tag repair route and prepublication coverage gaps; latest remains 4.0.1 (agent: codex)
+- 2026-11-11 — operator resumed testing and deployment in execution mode. Withdrawing unused 4.0.3 version bump and implementing publishing-free reusable preflight before same-version 4.0.2 repair; no retagging or existing-asset overwrite (agent: codex)

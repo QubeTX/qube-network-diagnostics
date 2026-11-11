@@ -7,11 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [4.0.3] - 2026-11-11
-
 ### Fixed
 
-- Declare and forward only the seven named Apple credentials when the tag workflow calls the reusable macOS installer workflow. Environment-only secrets require that explicit interface; without it, the 4.0.2 tag built its archives and Windows installers but stopped before producing the Mac PKG/DMG. Keep credentials in the protected `apple-signing` environment, with exact-source qualification and no broad secret inheritance. Existing 4.0.2 tags/assets remain immutable; 4.0.3 is the forward release correction.
+- Declare and forward only the seven named Apple credentials when the tag workflow calls the reusable macOS installer workflow. Add a manual, protected-main preflight that exercises the actual reusable handoff and disposable-package signing on both native platforms without publishing. Keep credentials in the protected `apple-signing` environment, with exact-source qualification and no broad inheritance.
+- Withdraw the unpublished 4.0.3 preparation. Complete the four missing 4.0.2 Mac assets through its existing exact-tag repair workflow; preserve every previously published tag and file. Workflow-only delivery recovery does not require rebuilding the product or publishing another crate version.
 
 ## [4.0.2] - 2026-11-10
 
