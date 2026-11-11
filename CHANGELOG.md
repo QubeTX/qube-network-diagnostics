@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Direct macOS PKG updates now pin privileged installer trust and scripts.** The
+  updater requires the exact Developer ID Installer leaf SHA-1 fingerprint from
+  the package signature chain, rather than accepting an identity substring. It
+  also expands the package and accepts only the release's exact
+  `preinstall`/`postinstall` pair and contents before opening Apple Installer,
+  preventing an unexpected privileged installer script from being run.
+
 ## [3.7.3] - 2026-07-18
 
 ### Changed

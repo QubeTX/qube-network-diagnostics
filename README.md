@@ -553,8 +553,9 @@ The updater follows a **prove, pin, verify, replace** contract:
    `com.qubetx.nd300` and `com.qubetx.speedqx`, hardened runtime, and timestamp.
 6. Managed archives atomically replace both binaries with backups. A proven
    macOS package instead downloads and verifies the exact-tag versionless PKG,
-   validates its Developer ID Installer signature, trusted timestamp, stapled
-   notarization ticket, Gatekeeper policy, payload, metadata, and version, then
+   pins its Developer ID Installer leaf certificate, trusted timestamp, stapled
+   notarization ticket, Gatekeeper policy, payload, metadata, and the exact approved
+   preinstall/postinstall scripts before opening it, then
    opens Apple Installer and verifies the new package receipt and pair after it closes.
    Cancellation or failure retains the prior installation as the recovery point.
 7. On Windows, a Cargo-bin path wins over any stale installer marker. Otherwise

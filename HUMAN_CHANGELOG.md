@@ -6,6 +6,14 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## July 18, 2026 — Mac updates check the installer more closely
+
+**Improved — only the approved Apple installer package can continue**
+- Before an update opens Apple Installer, it now checks the precise Apple
+  developer certificate and the two small setup scripts inside the package. An
+  update stops safely if either differs from the approved release, protecting
+  the administrator-authorized install step from an altered download.
+
 ## July 18, 2026 — Mac downloads open Apple Installer directly
 
 **Improved — the native Mac installer is now the package itself**

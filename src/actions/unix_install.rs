@@ -40,9 +40,9 @@ const CARGO_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const INSTALLER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 #[cfg(target_os = "macos")]
 const MACOS_TEAM_ID: &str = "M9D5379H93";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const MACOS_LEAF_SHA1: &str = "739B04530883FF9B665C66BD464F98C622971B32";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const MACOS_INSTALLER_IDENTITY: &str = "Developer ID Installer: ES Development LLC (M9D5379H93)";
 #[cfg(any(target_os = "macos", test))]
 const MACOS_PKG_ID: &str = "com.qubetx.nd300.pkg";
@@ -1761,6 +1761,10 @@ async fn verify_macos_pkg(
             "PKG signature is not the expected timestamped Developer ID Installer identity: {signature_text}"
         ));
     }
+    let fingerprint = macos_pkg_leaf_fingerprint(&signature_text).ok_or_else(|| {
+        "PKG signature has no unambiguous Developer ID Installer leaf fingerprint".to_string()
+    })?;
+    fingerprint_verdict(&fingerprint, MACOS_LEAF_SHA1)?;
 
     let staple = run_bounded_command(
         "/usr/bin/xcrun",
@@ -1829,7 +1833,79 @@ async fn verify_macos_pkg(
             "PKG identifier, version, or install location does not match {MACOS_PKG_ID} v{expected_version}"
         ));
     }
+    verify_macos_pkg_scripts(&expanded, expected_version).await?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn verify_macos_pkg_scripts(expanded: &Path, expected_version: &str) -> Result<(), String> {
+    let scripts = expanded.join("Scripts");
+    let listed =
+        run_bounded_command("/usr/bin/bsdtar", &[OsStr::new("-tf"), scripts.as_os_str()]).await?;
+    if !listed.status.success() || !macos_pkg_script_names_are_exact(&listed.stdout) {
+        return Err(
+            "PKG scripts are not exactly the expected preinstall/postinstall pair".to_string(),
+        );
+    }
+
+    for name in ["preinstall", "postinstall"] {
+        let extracted = run_bounded_command(
+            "/usr/bin/bsdtar",
+            &[OsStr::new("-xOf"), scripts.as_os_str(), OsStr::new(name)],
+        )
+        .await?;
+        if !extracted.status.success()
+            || !macos_pkg_script_matches(name, &extracted.stdout, expected_version)
+        {
+            return Err(format!(
+                "PKG {name} script does not match the approved release script"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_pkg_leaf_fingerprint(signature: &str) -> Option<String> {
+    let mut lines = signature.lines().map(str::trim);
+    let leaf = format!("1. {MACOS_INSTALLER_IDENTITY}");
+    while lines.next()? != leaf {}
+    let fingerprint = lines
+        .take_while(|line| !line.starts_with("2. "))
+        .find_map(|line| {
+            line.strip_prefix("SHA1 Fingerprint:")
+                .or_else(|| line.strip_prefix("SHA-1 Fingerprint:"))
+        })?
+        .trim()
+        .chars()
+        .filter(|character| *character != ':')
+        .collect::<String>();
+    (fingerprint.len() == 40
+        && fingerprint
+            .chars()
+            .all(|character| character.is_ascii_hexdigit()))
+    .then(|| fingerprint.to_ascii_uppercase())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_pkg_script_names_are_exact(output: &[u8]) -> bool {
+    let decoded = String::from_utf8_lossy(output);
+    let names = decoded
+        .lines()
+        .map(str::trim)
+        .map(|name| name.strip_prefix("./").unwrap_or(name))
+        .collect::<std::collections::BTreeSet<_>>();
+    names == ["preinstall", "postinstall"].into_iter().collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_pkg_script_matches(name: &str, bytes: &[u8], expected_version: &str) -> bool {
+    let expected = match name {
+        "preinstall" => "#!/bin/sh\nset -eu\nfor path in /usr/local/bin/nd300 /usr/local/bin/speedqx \\\n    '/Library/Application Support/ND300/install-receipt.json'; do\n    if [ -L \"$path\" ] || { [ -e \"$path\" ] && [ ! -f \"$path\" ]; }; then\n        echo \"Refusing to replace non-regular ND-300 path: $path\" >&2\n        exit 1\n    fi\ndone\nexit 0\n".to_string(),
+        "postinstall" => format!("#!/bin/sh\nset -eu\nexpected='{expected_version}'\ntest \"$(/usr/local/bin/nd300 --version)\" = \"nd300 $expected\"\ntest \"$(/usr/local/bin/speedqx --version)\" = \"speedqx $expected\"\n\n# The explicit PKG install is the user's newest channel choice. Consolidate a\n# receipt/registry-proven Cargo-home pair as the console user; ambiguous files\n# are retained, and cleanup is advisory so a failed migration never rolls back\n# the newly verified package payload.\nconsole_user=$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)\ncase \"$console_user\" in\n    ''|root|loginwindow|_mbsetupuser) ;;\n    *)\n        /usr/bin/sudo -H -u \"$console_user\" \\\n            /usr/bin/env -u CARGO_HOME -u SUDO_UID -u SUDO_GID \\\n            /usr/local/bin/nd300 migrate-cleanup --quiet \\\n            --install-origin macos-pkg --cargo-copy || true\n        ;;\nesac\nexit 0\n"),
+        _ => return false,
+    };
+    bytes == expected.as_bytes()
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -1897,7 +1973,7 @@ fn sha1_fingerprint(der: &[u8]) -> String {
     format!("{:X}", digest.finalize())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn fingerprint_verdict(actual: &str, expected: &str) -> Result<(), String> {
     if actual.eq_ignore_ascii_case(expected) {
         Ok(())
@@ -2754,6 +2830,46 @@ mod tests {
         assert!(!package_info_matches(
             br#"<pkg-info identifier="com.qubetx.nd300.pkg" version="3.7.0" install-location="/tmp"/>"#,
             "3.7.0"
+        ));
+    }
+
+    #[test]
+    fn macos_package_signature_requires_the_pinned_leaf_fingerprint() {
+        let signature = format!(
+            "Certificate Chain:\n  1. {MACOS_INSTALLER_IDENTITY}\n     SHA-1 Fingerprint: 739B04530883FF9B665C66BD464F98C622971B32\n  2. Developer ID Certification Authority\n"
+        );
+        assert_eq!(
+            macos_pkg_leaf_fingerprint(&signature).as_deref(),
+            Some(MACOS_LEAF_SHA1)
+        );
+        assert!(macos_pkg_leaf_fingerprint(&signature.replace("739B", "DEAD")).is_some());
+        assert!(fingerprint_verdict(
+            macos_pkg_leaf_fingerprint(&signature.replace("739B", "DEAD"))
+                .as_deref()
+                .unwrap(),
+            MACOS_LEAF_SHA1
+        )
+        .is_err());
+        assert!(macos_pkg_leaf_fingerprint(
+            "1. other\nSHA1 Fingerprint: 739B04530883FF9B665C66BD464F98C622971B32"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn macos_package_scripts_must_match_the_approved_contents() {
+        assert!(macos_pkg_script_names_are_exact(
+            b"./preinstall\n./postinstall\n"
+        ));
+        assert!(!macos_pkg_script_names_are_exact(
+            b"preinstall\npostinstall\npostflight\n"
+        ));
+        let preinstall = b"#!/bin/sh\nset -eu\nfor path in /usr/local/bin/nd300 /usr/local/bin/speedqx \\\n    '/Library/Application Support/ND300/install-receipt.json'; do\n    if [ -L \"$path\" ] || { [ -e \"$path\" ] && [ ! -f \"$path\" ]; }; then\n        echo \"Refusing to replace non-regular ND-300 path: $path\" >&2\n        exit 1\n    fi\ndone\nexit 0\n";
+        assert!(macos_pkg_script_matches("preinstall", preinstall, "3.7.3"));
+        assert!(!macos_pkg_script_matches(
+            "preinstall",
+            b"#!/bin/sh\necho compromised\n",
+            "3.7.3"
         ));
     }
 
