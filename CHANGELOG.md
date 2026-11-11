@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Hardened `.github/workflows/release.yml` by reducing default workflow token scope to `contents: read` and granting `contents: write` only in the `host` publish job that creates GitHub releases.
+- Replaced remote `curl | sh` cargo-dist installer usage in release jobs with pinned `cargo install --locked cargo-dist --version 0.31.0` installs.
+- Removed `dist` binary cache handoff between jobs and installed pinned cargo-dist independently in each job to reduce cross-job trust on previously downloaded executables.
+- Replaced container rustup bootstrap `curl | sh` usage with `dtolnay/rust-toolchain@stable` in the workflow.
+
 ## [3.0.7] - 2026-05-11
 
 ### Documentation
