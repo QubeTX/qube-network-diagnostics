@@ -1585,9 +1585,11 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
             spinner.finish_and_clear();
 
             // Create wpa_supplicant entry
+            let escaped_ssid = escape_wpa_quoted_value(&ssid_to_connect);
+            let escaped_passphrase = escape_wpa_quoted_value(&passphrase);
             let wpa_conf = format!(
                 "network={{\n  ssid=\"{}\"\n  psk=\"{}\"\n}}\n",
-                ssid_to_connect, passphrase,
+                escaped_ssid, escaped_passphrase,
             );
             // Append to wpa_supplicant.conf
             if let Ok(mut file) = tokio::fs::OpenOptions::new()
@@ -1613,6 +1615,23 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
     } else {
         Ok(completed)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn escape_wpa_quoted_value(raw: &str) -> String {
+    let mut escaped = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if c.is_control() => escaped.push_str(&format!("\\x{:02x}", c as u32)),
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 #[cfg(target_os = "linux")]

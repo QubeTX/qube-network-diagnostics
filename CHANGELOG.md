@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Hardened Linux Stage 3 `wpa_supplicant` fallback by escaping SSID/passphrase values before writing them into quoted `wpa_supplicant.conf` fields, preventing configuration-injection via attacker-controlled SSID bytes while preserving Wi-Fi reconnection behavior.
+
 ## [3.0.7] - 2026-05-11
 
 ### Documentation

@@ -308,6 +308,8 @@ Continue? Type 'y' to proceed, anything else to skip:
 
 `--yes` does **not** bypass high-risk prompts — they always require an explicit `y`. Anything else (including a blank Enter) is treated as N. In `--json` / non-interactive contexts, high-risk actions are skipped, not auto-applied, with a clear marker in the report.
 
+On Linux systems that use the Stage 3 `wpa_supplicant` fallback, nd300 now escapes SSID/passphrase values before writing quoted fields in `wpa_supplicant.conf`, preventing malicious SSID bytes from injecting extra configuration entries.
+
 ### Hard-block detection
 
 Some failure shapes can't be auto-fixed. The loop short-circuits cleanly with guidance instead of thrashing:
