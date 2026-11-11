@@ -26,17 +26,22 @@ Functional bar: current vulnerabilities are either demonstrably obsolete or fixe
 ## Verification
 - [x] Every PR has a documented current-source relevance disposition
 - [x] Regression tests, security review and cross-platform review pass
-- [ ] Required local and exact-head CI/release preparation checks pass
-- [ ] Exact merged SHA passes main CI, crate publication and signed Mac qualification
+- [ ] Required local and exact-head CI/release preparation checks pass for the forward 4.0.3 correction
+- [ ] Exact merged 4.0.3 SHA passes main CI, crate publication and signed Mac qualification
 - [ ] New immutable release passes all platforms, exactly 32 assets, checksums, attestations and native trust/bridges
 - [ ] Homepage fallback is deployed and verified
-- [ ] Original PRs are merged or explicitly superseded with evidence
+- [x] Original PRs are merged or explicitly superseded with evidence
 
 ## Status
-Active in isolated #42 worktree; current main is merged into the old PR without rewriting published history. Relevant #42–45 fixes and the model guidance are implemented; the evidence review rejects #46's wrong certificate pin and unsupported signature-bypass claim. Independent security/platform review cleared the demonstrated injection, executable lookup, Bash startup, PowerShell module and missing-VPN fallback paths. Four installers build. Final review identified the optional PowerShell 7 updater fallback as incompatible with fixed system lookup; it is deliberately retired, documented and covered by 48 updater tests. Final broad checks again pass (338 library + 5 CLI tests, strict Clippy, optimized build); automation review approved all pinned digests and negative integrity controls. Actual Windows cargo-dist download/verify/execution passed in an isolated tool directory. Next: exact-head CI, merge, exact-main Apple qualification/crate, immutable 4.0.2 tag and 32-asset verification. Homepage PR #23 passed preview checks and awaits release delivery. No release gate is waived.
+The security fixes merged in PR #42 at `ceb10bf6e5818a36200c8292c78c3202160de864`. Original #43–45 are closed as superseded; #46 is closed with the unsupported-bypass/wrong-pin evidence. Exact-candidate/main CI, public crate and signed main qualification passed. Release 42972625036 published 28 assets but stopped because the reusable Mac caller omitted the explicit environment-secret interface. Intel public archive trust passed on a read-only retry against unchanged bytes. Preparing 4.0.3 on `codex/apple-release-secret-forwarding`, retaining all protected signing and public verification gates. Homepage PR #23 will move to 4.0.3. Final evidence: `docs/release-evidence-v4.0.3.md`. No tag/assets are rewritten and no release gate is waived.
 
 ## Activity
 - 2026-11-10 — started current-source investigation and authorized deployment scope; confirmed #42 remains vulnerable on main and rejected original incompatible escaping strategy (agent: codex)
 - 2026-11-10 — operator expanded scope to #43–46 and authorized GPT-6.1 Sol/xhigh reviewers; assigned isolated file ownership for implementation (agent: codex)
 - 2026-11-10 — completed evidence-based dispositions, fixed reproduced interpreter environment channels, cleared 11 current dependency advisories, passed Windows Rust checks and all four installer builds; final hosted qualification/publication still open (agent: codex)
 - 2026-11-10 — deliberately retired the optional PowerShell 7 fallback, completed independent platform/automation review and repeated final Rust checks successfully; preparing exact-source PR validation (agent: codex)
+- 2026-11-11 — all exact-head workflows passed; merged #42 through the documented administrator publisher PR route without weakening the separate mandatory CI rule. Closed #43–46 with current-source dispositions; started exact-main qualification and retained publication gates (agent: codex)
+- 2026-11-11 — exact-main CI and crates publication passed; public crate checksum/source and isolated install verified. Apple qualification attempt 1 failed only on a lost CloudKit ticket-validation connection after both notarizations were Accepted. Started a complete attempt 2 as required; no code/version change or gate waiver (agent: codex)
+- 2026-11-11 — full Apple qualification attempt 2 passed all nine required jobs including both native lifecycles; helper confirmed exact-source qualification. Pushed unused immutable v4.0.2 once at ceb10bf; public release verification remains open (agent: codex)
+- 2026-11-11 — release builds passed all six targets; fresh Intel public trust check returned Unnotarized Developer ID despite valid checksum/signature and prior exact-byte notarization/Gatekeeper acceptance. Retain the gate and retry the read-only public check after the active Windows job completes; no asset/tag mutation (agent: codex)
+- 2026-11-11 — confirmed required explicit reusable-workflow secret interface from current GitHub documentation; both Mac preflights failed empty, while Intel public trust retry passed unchanged bytes. Preparing forward 4.0.3 correction and revised homepage fallback; retained protected environment and exact-source gates (agent: codex)

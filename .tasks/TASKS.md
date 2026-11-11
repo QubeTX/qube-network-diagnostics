@@ -1,7 +1,6 @@
 # Tasks
 
 ## Backlog
-- [ ] **Verify the first environment-backed Apple release** - next normal tag must pass all 32 assets, attestations and both compatibility bridges (needs #asign) (owner codex) #asrel
 - [ ] **Qualify SpeedQX v5 on physical iOS and Android** - exact uploaded build, accessibility, lifecycle and animation performance #sqphys
 - [ ] **Qualify SpeedQX v5 repeatability on lossy and provider paths** - preserve missed targets and predeclare controlled comparisons #sqacc
 - [ ] **Bound SpeedQX provider metadata and constrain discovered endpoints** - independent Medium/Low review follow-ups and inherited dependency advisories #sqsec
@@ -15,9 +14,11 @@
 
 ## Active
 
+- [ ] **Verify the first environment-backed Apple release** - next normal tag must pass all 32 assets, attestations and both compatibility bridges (needs #asign) (owner codex) #asrel
+
 - [ ] **Reconcile security PRs 42–46 and release the needed fixes** - current-source relevance, regression coverage, protected release and public verification (owner codex) #sec42
   - [x] Investigate each PR against current main and reconcile relevant fixes
-  - [ ] Pass security and cross-platform reviews plus required validation
+  - [x] Pass security and cross-platform reviews plus required validation
   - [ ] Merge and publish the forward patch release and homepage update
   - [ ] Verify public artifacts and record exact release evidence
 

@@ -18,6 +18,21 @@ on:
         description: "Stable release version without v prefix"
         required: true
         type: string
+    secrets:
+      APPLE_CERTIFICATE_P12_BASE64:
+        required: true
+      APPLE_CERTIFICATE_PASSWORD:
+        required: true
+      APPLE_INSTALLER_CERTIFICATE_P12_BASE64:
+        required: true
+      APPLE_INSTALLER_CERTIFICATE_PASSWORD:
+        required: true
+      APPLE_API_KEY_P8_BASE64:
+        required: true
+      APPLE_API_KEY_ID:
+        required: true
+      APPLE_API_ISSUER_ID:
+        required: true
   workflow_dispatch:
     inputs:
       tag:

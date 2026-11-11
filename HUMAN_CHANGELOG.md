@@ -6,6 +6,12 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## November 11, 2026 — Restore complete Mac release delivery
+
+**Fixed**
+
+- Correct how the release process accesses protected Apple credentials so it can finish publishing the signed Mac installer. The earlier attempt published the command archives and Windows installers but stopped before the Mac package was ready. Signing keys retain their existing protections.
+
 ## November 10, 2026 — Safer repairs and verified build tools
 
 **Security**
