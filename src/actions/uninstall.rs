@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use crate::actions::trusted_executable;
 use crate::config::{Config, OutputFormat};
 use crate::render::color;
 use std::path::{Path, PathBuf};
@@ -268,7 +270,7 @@ pub(crate) fn uninstall_path(exe_path: &Path) -> CleanupReport {
         let exe_str = exe_path.to_string_lossy();
         let script = format!("ping localhost -n 3 > nul & del \"{}\"", exe_str);
 
-        match std::process::Command::new("cmd")
+        match std::process::Command::new(trusted_executable("cmd"))
             .args(["/C", &script])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -355,7 +357,7 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
     use std::process::Command;
 
     // Read current user PATH from registry
-    let output = Command::new("reg")
+    let output = Command::new(trusted_executable("reg"))
         .args(["query", "HKCU\\Environment", "/v", "PATH"])
         .output()
         .map_err(|e| format!("Failed to query registry: {}", e))?;
@@ -404,7 +406,7 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
     let new_path = new_parts.join(";");
 
     // Write updated PATH back to registry
-    let status = Command::new("reg")
+    let status = Command::new(trusted_executable("reg"))
         .args([
             "add",
             "HKCU\\Environment",
@@ -421,7 +423,7 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
 
     if status.status.success() {
         // Broadcast WM_SETTINGCHANGE so Explorer picks up the change
-        let _ = Command::new("powershell")
+        let _ = Command::new(trusted_executable("powershell"))
             .args([
                 "-NoProfile",
                 "-Command",

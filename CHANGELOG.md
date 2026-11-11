@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Hardened privileged action subprocess launches (`clear-dns`, `fix`, `uninstall`) to resolve helpers from trusted system directories instead of inheriting `PATH` lookup order, mitigating local PATH-hijack privilege escalation risks.
+
 ## [3.0.7] - 2026-05-11
 
 ### Documentation

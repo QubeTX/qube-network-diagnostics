@@ -9,12 +9,34 @@ use std::io::IsTerminal;
 
 use fix::cmd::{run_cmd, TIMEOUT_QUICK};
 
+/// Resolve a command from trusted system directories to avoid PATH hijacking
+/// when running privileged action workflows.
+pub fn trusted_executable(program: &str) -> String {
+    #[cfg(windows)]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        return format!(r"{}\System32\{}.exe", root, program);
+    }
+
+    #[cfg(not(windows))]
+    {
+        const TRUSTED_DIRS: [&str; 4] = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
+        for dir in TRUSTED_DIRS {
+            let candidate = std::path::Path::new(dir).join(program);
+            if candidate.exists() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+        program.to_string()
+    }
+}
+
 /// Run the platform-specific DNS flush command.
 /// Returns Ok(stdout message) on success, Err(stderr/error message) on failure.
 pub async fn flush_dns_platform() -> Result<String, String> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("ipconfig");
+        let mut cmd = tokio::process::Command::new(trusted_executable("ipconfig"));
         cmd.arg("/flushdns");
         match run_cmd(cmd, TIMEOUT_QUICK).await {
             Ok(output) if output.status.success() => {
@@ -28,11 +50,11 @@ pub async fn flush_dns_platform() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         // dscacheutil -flushcache
-        let mut flush_cmd = tokio::process::Command::new("dscacheutil");
+        let mut flush_cmd = tokio::process::Command::new(trusted_executable("dscacheutil"));
         flush_cmd.arg("-flushcache");
         let flush = run_cmd(flush_cmd, TIMEOUT_QUICK).await;
         // killall -HUP mDNSResponder
-        let mut kill_cmd = tokio::process::Command::new("killall");
+        let mut kill_cmd = tokio::process::Command::new(trusted_executable("killall"));
         kill_cmd.args(["-HUP", "mDNSResponder"]);
         let kill = run_cmd(kill_cmd, TIMEOUT_QUICK).await;
 
@@ -64,11 +86,12 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         let mut flushed = Vec::new();
 
         // Layer 1: systemd-resolved (resolvectl, fallback systemd-resolve)
-        let mut check_cmd = tokio::process::Command::new("systemctl");
+        let mut check_cmd = tokio::process::Command::new(trusted_executable("systemctl"));
         check_cmd.args(["is-active", "systemd-resolved"]);
         if let Ok(output) = run_cmd(check_cmd, TIMEOUT_QUICK).await {
             if String::from_utf8_lossy(&output.stdout).trim() == "active" {
-                let mut resolvectl_cmd = tokio::process::Command::new("resolvectl");
+                let mut resolvectl_cmd =
+                    tokio::process::Command::new(trusted_executable("resolvectl"));
                 resolvectl_cmd.arg("flush-caches");
                 let ok = if let Ok(r) = run_cmd(resolvectl_cmd, TIMEOUT_QUICK).await {
                     r.status.success()
@@ -77,7 +100,8 @@ pub async fn flush_dns_platform() -> Result<String, String> {
                 };
 
                 if !ok {
-                    let mut fallback_cmd = tokio::process::Command::new("systemd-resolve");
+                    let mut fallback_cmd =
+                        tokio::process::Command::new(trusted_executable("systemd-resolve"));
                     fallback_cmd.arg("--flush-caches");
                     if let Ok(r) = run_cmd(fallback_cmd, TIMEOUT_QUICK).await {
                         if r.status.success() {
@@ -91,11 +115,11 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         }
 
         // Layer 2: dnsmasq (often a NetworkManager plugin)
-        let mut pgrep_dnsmasq = tokio::process::Command::new("pgrep");
+        let mut pgrep_dnsmasq = tokio::process::Command::new(trusted_executable("pgrep"));
         pgrep_dnsmasq.arg("dnsmasq");
         if let Ok(output) = run_cmd(pgrep_dnsmasq, TIMEOUT_QUICK).await {
             if output.status.success() {
-                let mut killall_cmd = tokio::process::Command::new("killall");
+                let mut killall_cmd = tokio::process::Command::new(trusted_executable("killall"));
                 killall_cmd.args(["-HUP", "dnsmasq"]);
                 if let Ok(r) = run_cmd(killall_cmd, TIMEOUT_QUICK).await {
                     if r.status.success() {
@@ -106,11 +130,11 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         }
 
         // Layer 3: nscd
-        let mut pgrep_nscd = tokio::process::Command::new("pgrep");
+        let mut pgrep_nscd = tokio::process::Command::new(trusted_executable("pgrep"));
         pgrep_nscd.arg("nscd");
         if let Ok(output) = run_cmd(pgrep_nscd, TIMEOUT_QUICK).await {
             if output.status.success() {
-                let mut nscd_cmd = tokio::process::Command::new("nscd");
+                let mut nscd_cmd = tokio::process::Command::new(trusted_executable("nscd"));
                 nscd_cmd.args(["-i", "hosts"]);
                 if let Ok(r) = run_cmd(nscd_cmd, TIMEOUT_QUICK).await {
                     if r.status.success() {

@@ -19,6 +19,7 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **Unicode box-drawing** table rendering with ASCII fallback
 - **Color-coded** status indicators (OK/Warn/Fail/Skip)
 - **Cross-platform** — native support for Windows, macOS, and Linux
+- **Hardened privileged actions** — repair/uninstall helper tools are resolved from trusted system directories to reduce PATH-hijack risk when running elevated.
 
 ## Installation
 

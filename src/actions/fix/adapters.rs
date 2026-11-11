@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
+use crate::actions::trusted_executable;
 
 /// List active network adapters — all platforms.
 #[cfg(windows)]
@@ -24,7 +25,7 @@ pub async fn list_active_adapters() -> Vec<String> {
 #[cfg(target_os = "macos")]
 pub async fn list_active_adapters() -> Vec<String> {
     let mut adapters = Vec::new();
-    let mut cmd = tokio::process::Command::new("networksetup");
+    let mut cmd = tokio::process::Command::new(trusted_executable("networksetup"));
     cmd.args(["-listallhardwareports"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -36,7 +37,7 @@ pub async fn list_active_adapters() -> Vec<String> {
             } else if let Some(dev) = line.strip_prefix("Device: ") {
                 let device = dev.trim();
                 // Check if this interface is active
-                let mut ifcfg_cmd = tokio::process::Command::new("ifconfig");
+                let mut ifcfg_cmd = tokio::process::Command::new(trusted_executable("ifconfig"));
                 ifcfg_cmd.arg(device);
                 if let Ok(status_output) = run_cmd(ifcfg_cmd, TIMEOUT_QUICK).await {
                     let status_text = String::from_utf8_lossy(&status_output.stdout);
@@ -54,7 +55,7 @@ pub async fn list_active_adapters() -> Vec<String> {
 pub async fn list_active_adapters() -> Vec<String> {
     // Detect active non-loopback interfaces via `ip link show`
     let mut adapters = Vec::new();
-    let mut cmd = tokio::process::Command::new("ip");
+    let mut cmd = tokio::process::Command::new(trusted_executable("ip"));
     cmd.args(["link", "show", "up"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -82,7 +83,7 @@ pub async fn list_active_adapters() -> Vec<String> {
 #[cfg(windows)]
 pub async fn restart_adapter(name: &str) -> Result<String, String> {
     // Disable
-    let mut disable_cmd = tokio::process::Command::new("netsh");
+    let mut disable_cmd = tokio::process::Command::new(trusted_executable("netsh"));
     disable_cmd.args(["interface", "set", "interface", name, "disabled"]);
     let disable = run_cmd(disable_cmd, TIMEOUT_SLOW).await;
 
@@ -102,7 +103,7 @@ pub async fn restart_adapter(name: &str) -> Result<String, String> {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Re-enable
-    let mut enable_cmd = tokio::process::Command::new("netsh");
+    let mut enable_cmd = tokio::process::Command::new(trusted_executable("netsh"));
     enable_cmd.args(["interface", "set", "interface", name, "enabled"]);
     match run_cmd(enable_cmd, TIMEOUT_SLOW).await {
         Ok(output) if output.status.success() => Ok(format!("{} restarted", name)),
@@ -129,7 +130,7 @@ pub async fn restart_adapter(name_and_device: &str) -> Result<String, String> {
 
     if is_wifi {
         // Soft toggle via networksetup
-        let mut off_cmd = tokio::process::Command::new("networksetup");
+        let mut off_cmd = tokio::process::Command::new(trusted_executable("networksetup"));
         off_cmd.args(["-setairportpower", device, "off"]);
         let off = run_cmd(off_cmd, TIMEOUT_MEDIUM).await;
 
@@ -144,7 +145,7 @@ pub async fn restart_adapter(name_and_device: &str) -> Result<String, String> {
 
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        let mut on_cmd = tokio::process::Command::new("networksetup");
+        let mut on_cmd = tokio::process::Command::new(trusted_executable("networksetup"));
         on_cmd.args(["-setairportpower", device, "on"]);
         match run_cmd(on_cmd, TIMEOUT_MEDIUM).await {
             Ok(output) if output.status.success() => Ok(format!("{} restarted", name)),
@@ -156,7 +157,7 @@ pub async fn restart_adapter(name_and_device: &str) -> Result<String, String> {
         }
     } else {
         // Hard toggle via ifconfig
-        let mut down_cmd = tokio::process::Command::new("ifconfig");
+        let mut down_cmd = tokio::process::Command::new(trusted_executable("ifconfig"));
         down_cmd.args([device, "down"]);
         let down = run_cmd(down_cmd, TIMEOUT_MEDIUM).await;
 
@@ -172,7 +173,7 @@ pub async fn restart_adapter(name_and_device: &str) -> Result<String, String> {
 
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        let mut up_cmd = tokio::process::Command::new("ifconfig");
+        let mut up_cmd = tokio::process::Command::new(trusted_executable("ifconfig"));
         up_cmd.args([device, "up"]);
         match run_cmd(up_cmd, TIMEOUT_MEDIUM).await {
             Ok(output) if output.status.success() => Ok(format!("{} restarted", name)),
@@ -189,7 +190,7 @@ pub async fn restart_adapter(name_and_device: &str) -> Result<String, String> {
 #[cfg(target_os = "linux")]
 pub async fn restart_adapter(name: &str) -> Result<String, String> {
     // Bring interface down
-    let mut down_cmd = tokio::process::Command::new("ip");
+    let mut down_cmd = tokio::process::Command::new(trusted_executable("ip"));
     down_cmd.args(["link", "set", name, "down"]);
     let down = run_cmd(down_cmd, TIMEOUT_MEDIUM).await;
 
@@ -208,7 +209,7 @@ pub async fn restart_adapter(name: &str) -> Result<String, String> {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Bring interface up
-    let mut up_cmd = tokio::process::Command::new("ip");
+    let mut up_cmd = tokio::process::Command::new(trusted_executable("ip"));
     up_cmd.args(["link", "set", name, "up"]);
     match run_cmd(up_cmd, TIMEOUT_MEDIUM).await {
         Ok(output) if output.status.success() => Ok(format!("{} restarted", name)),
@@ -245,7 +246,7 @@ pub async fn detect_default_interface() -> Option<String> {
 
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = tokio::process::Command::new("route");
+        let mut cmd = tokio::process::Command::new(trusted_executable("route"));
         cmd.args(["-n", "get", "default"]);
         if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -261,7 +262,7 @@ pub async fn detect_default_interface() -> Option<String> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cmd = tokio::process::Command::new("ip");
+        let mut cmd = tokio::process::Command::new(trusted_executable("ip"));
         cmd.args(["route", "show", "default"]);
         if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -283,7 +284,7 @@ pub async fn detect_default_interface() -> Option<String> {
 pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
     #[cfg(windows)]
     {
-        let mut release_cmd = tokio::process::Command::new("ipconfig");
+        let mut release_cmd = tokio::process::Command::new(trusted_executable("ipconfig"));
         release_cmd.args(["/release", iface]);
         let release = run_cmd(release_cmd, TIMEOUT_SLOW).await;
         if let Ok(output) = &release {
@@ -291,7 +292,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
                 // Non-fatal: release may fail if already released
             }
         }
-        let mut renew_cmd = tokio::process::Command::new("ipconfig");
+        let mut renew_cmd = tokio::process::Command::new(trusted_executable("ipconfig"));
         renew_cmd.args(["/renew", iface]);
         match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {}", iface)),
@@ -305,7 +306,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
 
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = tokio::process::Command::new("ipconfig");
+        let mut cmd = tokio::process::Command::new(trusted_executable("ipconfig"));
         cmd.args(["set", iface, "DHCP"]);
         match run_cmd(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {}", iface)),
@@ -320,7 +321,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         // Try NetworkManager first
-        let mut nmcli_cmd = tokio::process::Command::new("nmcli");
+        let mut nmcli_cmd = tokio::process::Command::new(trusted_executable("nmcli"));
         nmcli_cmd.args(["device", "connect", iface]);
         if let Ok(output) = run_cmd(nmcli_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
@@ -329,7 +330,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         }
 
         // Fallback to dhcpcd
-        let mut dhcpcd_cmd = tokio::process::Command::new("dhcpcd");
+        let mut dhcpcd_cmd = tokio::process::Command::new(trusted_executable("dhcpcd"));
         dhcpcd_cmd.args(["-n", iface]);
         if let Ok(output) = run_cmd(dhcpcd_cmd, TIMEOUT_SLOW).await {
             if output.status.success() {
@@ -338,10 +339,10 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         }
 
         // Fallback to dhclient
-        let mut release_cmd = tokio::process::Command::new("dhclient");
+        let mut release_cmd = tokio::process::Command::new(trusted_executable("dhclient"));
         release_cmd.args(["-r", iface]);
         let _ = run_cmd(release_cmd, TIMEOUT_SLOW).await;
-        let mut renew_cmd = tokio::process::Command::new("dhclient");
+        let mut renew_cmd = tokio::process::Command::new(trusted_executable("dhclient"));
         renew_cmd.arg(iface);
         match run_cmd(renew_cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => {
