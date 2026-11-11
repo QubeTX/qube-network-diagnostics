@@ -14,18 +14,16 @@
 
 ## Active
 
-- [ ] **Remove redundant release compilation** - reuse verified Windows archives and cache pinned audit tooling while retaining release checks (owner codex) #cieff
-  - [ ] Verify the same-source Windows archive acquisition and all installer outputs without publishing
-  - [ ] Prove cached audit tooling still runs a fresh advisory check
-  - [ ] Pass review and hosted CI, merge, and record measured limits
-
-
 - [ ] **Compare live SpeedQX with Ookla and assess measurement accuracy** - alternating browser trials, inspect both measurement contracts, retain limits and correct demonstrated flaws (owner codex) #sqcmp
   - [ ] Record predeclared alternating live comparisons on the same connection
   - [x] Evaluate primary-source methods and SpeedQX implementation against an explicit measurement target
   - [x] Record evidence and justified conclusions without claiming unproven comparative accuracy
 
 ## Done
+- [x] **Remove redundant release compilation** - verified Windows archive reuse and pinned audit caching merged; hosted packaging and fresh-advisory cache proof passed (owner codex) (done 2026-11-11) #cieff
+  - [x] Verify the same-source Windows archive acquisition and all installer outputs without publishing
+  - [x] Prove cached audit tooling still runs a fresh advisory check
+  - [x] Pass review and hosted CI, merge, and record measured limits
 - [x] **Reconcile security PRs 42–46 and release the needed fixes** - current-source relevance, regression coverage, protected release and public verification (owner codex) (done 2026-11-11) #sec42
   - [x] Investigate each PR against current main and reconcile relevant fixes
   - [x] Pass security and cross-platform reviews plus required validation

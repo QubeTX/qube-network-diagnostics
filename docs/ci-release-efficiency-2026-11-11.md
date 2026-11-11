@@ -16,9 +16,9 @@ The operator requested simpler, faster CI/CD while retaining its protections. Th
 
 ## Selected changes
 
-Windows installer add-ons will acquire the exact release ZIP and sidecar, bind tag to source, verify checksum and source/ref/signer provenance, safely extract and version-check both binaries, then build the existing installers. A read-only validation dispatch exercises that acquisition and packaging path without publishing. There is no rebuild fallback if verification fails.
+Windows installer add-ons acquire the exact release ZIP and sidecar, bind tag to source, verify checksum and source/ref/signer provenance, safely extract and version-check both binaries, then build the existing installers. A read-only validation dispatch exercises that acquisition and packaging path without publishing. There is no rebuild fallback if verification fails.
 
-CI will cache the pinned cargo-audit 0.23.0 executable by exact host, architecture, version and Rust 1.97.0 toolchain. It checks the executable version before use and continues the full advisory refresh and audit. Advisory results are not cached or skipped.
+CI caches the pinned cargo-audit 0.23.0 executable by exact host, architecture, version and Rust 1.97.0 toolchain. It checks the executable version before use and continues the full advisory refresh and audit. Advisory results are not cached or skipped.
 
 Expected savings are approximately four minutes on the release packaging critical path and roughly three runner-minutes on a warm audit job. Audit wall-clock savings depend on whether that job is the critical path. Future tag runtime is not yet measured and must not be presented as demonstrated speedup.
 
@@ -28,4 +28,46 @@ Native PR compilation is repeated across workflows with different flags, target 
 
 ## Verification
 
-Implementation, independent review, hosted validation and final merge receipts remain pending. These claims are not complete until exact-source hosted checks are recorded.
+Implementation PR [#49](https://github.com/QubeTX/qube-network-diagnostics/pull/49),
+head `ecab180fb76065c83044fdcabc45e272d844466d`, merged as
+`4fe83c1cde62b3f3042a7b371e9b1cdb18be546d` on November 11. Independent
+workflow/security review approved the implementation. Focused acquisition and
+audit-cache fixtures, existing installer helper suites, all-workflow Actionlint,
+all-script ShellCheck, 19 Apple signing-policy tests and the secret scan passed.
+No Rust product source or package version changed.
+
+The [read-only Windows proof, run 42984456696](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/42984456696),
+used the exact candidate tooling with v4.0.2 installer source
+`ceb10bf6e5818a36200c8292c78c3202160de864`. Archive acquisition and verification
+took **12 seconds**; Corporate MSI and both Inno EXEs took **20 seconds** to
+build; the complete validation job took **52 seconds**. Its production job was
+skipped. Downloaded workflow evidence contains the exact product/tooling source
+receipt and all three expected installers with matching SHA-256 sidecars.
+The verified archive digest is
+`cf76450b8ae87e067e59509e265f7c45f6ec14faa4123a2b629ca628db3d0bf8`.
+
+[CI run 42984459656](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/42984459656)
+passed on the exact PR head. Attempt 1's audit job 130402220226 installed the
+pinned tool in **187 seconds** and completed in **204 seconds**. A targeted
+rerun of only that job (plus its dependent required-check aggregation) restored
+the exact cache key `cargo-audit-v1-Linux-X64-0.23.0-rust-1.97.0`, verified
+version 0.23.0, fetched current RustSec advisories and scanned Cargo.lock without
+compiling the tool. Job 130404510308 completed in **18 seconds**, saving
+**186 seconds** for that observed job. The advisory scan retained the existing
+two allowed warning results; neither warning policy nor advisory data was cached.
+
+The same head passed native Mac PR builds in run 42984459602, measurement parity
+in 42984459755, and release planning in 42984459663. Every PR check was complete
+and successful or intentionally skipped before the administrator publisher PR
+route merged it. The separate no-bypass `CI required` gate passed.
+
+At exact merge SHA `4fe83c1cde62b3f3042a7b371e9b1cdb18be546d`,
+[main CI 42985659620](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/42985659620)
+and measurement parity 42985659478 passed.
+[Publisher 42986180521](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/42986180521)
+succeeded, confirmed that 4.0.2 was already published, and skipped publication.
+This delivers the workflow changes without a new crate or release tag.
+
+The future tag's end-to-end runtime remains unmeasured; the 52-second validation
+job excludes publication and does not replace installer lifecycle, signing,
+compatibility, provenance or complete-inventory requirements.
