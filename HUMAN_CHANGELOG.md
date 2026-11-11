@@ -6,6 +6,13 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## June 8, 2026 — safer developer automation downloads
+
+**Fixed (behind the scenes)**
+- Tightened the repository's optional Claude/MCP and Windows-installer validation helpers so they no longer run whatever tool version happens to be newest on the internet. The MCP helper now names a specific reviewed Context7 version, and the Windows installer validation helper checks downloaded WiX and Inno Setup files against known fingerprints before unpacking or running them. This does not change ND-300 itself; it protects developer and release machines that use the repo-local automation.
+
+---
+
 ## June 8, 2026 — same release process across the tools, and a license file
 
 **Changed (mostly behind the scenes)**

@@ -19,6 +19,7 @@ Cross-platform network diagnostic tool for Windows, macOS, and Linux. Includes *
 - **Unicode box-drawing** table rendering with ASCII fallback
 - **Color-coded** status indicators (OK/Warn/Fail/Skip)
 - **Cross-platform** — native support for Windows, macOS, and Linux
+- **Hardened repo-local automation** — optional Claude/MCP and Windows installer validation helpers pin third-party tool versions and verify downloaded WiX/Inno Setup artifacts before extracting or executing them.
 
 ## Installation
 

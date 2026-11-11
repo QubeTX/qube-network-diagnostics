@@ -11,9 +11,11 @@
   Steps:
     1. Ensure WiX 3.11 binaries (candle.exe / light.exe) are available.
        Downloads wix311-binaries.zip from the WiX Toolset GitHub release into a
-       local cache if not already present / not on PATH.
-    2. Ensure Inno Setup 6 (iscc.exe) is available. Installs it
-       (/CURRENTUSER /VERYSILENT) via the JRSoftware installer if missing.
+       local cache if not already present / not on PATH, and verifies the pinned
+       SHA-256 before extracting or trusting the cache.
+    2. Ensure Inno Setup 6 (iscc.exe) is available. Downloads the pinned
+       JRSoftware installer if missing, verifies the pinned SHA-256, then installs
+       it (/CURRENTUSER /VERYSILENT).
     3. cargo build --release (produces target\release\nd300.exe + speedqx.exe).
     4. Build the 4 installers:
          - Global MSI       : wix\main.wxs            (candle + light)
@@ -79,6 +81,29 @@ Write-Host "Version: $Version"
 $cacheDir = Join-Path $env:LOCALAPPDATA 'nd300-installer-tools'
 New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
 
+# Pinned third-party tool inputs. Keep these hashes in lockstep with the URLs.
+# WiX v3.11.2 (wix3112rtm) is the WiX 3 line used by cargo-dist/cargo-wix.
+$WixZipUrl = 'https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip'
+$WixZipSha256 = '2c1888d5d1dba377fc7fa14444cf556963747ff9a0a289a3599cf09da03b9e2e'
+$WixVerifiedMarker = Join-Path $cacheDir 'wix311-binaries.zip.sha256.verified'
+# Inno Setup 6.7.1 is pinned rather than using JRSoftware's mutable latest redirector.
+$InnoSetupUrl = 'https://files.jrsoftware.org/is/6/innosetup-6.7.1.exe'
+$InnoSetupSha256 = '4d11e8050b6185e0d49bd9e8cc661a7a59f44959a621d31d11033124c4e8a7b0'
+
+function Assert-FileSha256 {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][string]$ExpectedSha256,
+        [Parameter(Mandatory=$true)][string]$Label
+    )
+
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $expected = $ExpectedSha256.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        throw "$Label SHA-256 mismatch. Expected $expected but got $actual. Refusing to use downloaded tool."
+    }
+}
+
 # --- Ensure WiX 3.11 (candle/light) ------------------------------------------
 function Get-WixBinDir {
     # 1. $env:WIX (CI / installed WiX) — binaries live under $env:WIX\bin.
@@ -89,7 +114,12 @@ function Get-WixBinDir {
     $candle = Get-Command candle.exe -ErrorAction SilentlyContinue
     if ($candle) { return (Split-Path $candle.Source) }
     # 3. Local cache (downloaded wix311-binaries.zip extracts candle/light at root).
-    if (Test-Path (Join-Path $cacheDir 'candle.exe')) { return $cacheDir }
+    #    Only trust the cache if this script previously verified the pinned ZIP hash.
+    if ((Test-Path (Join-Path $cacheDir 'candle.exe')) -and
+        (Test-Path $WixVerifiedMarker) -and
+        ((Get-Content $WixVerifiedMarker -Raw).Trim().ToLowerInvariant() -eq $WixZipSha256.ToLowerInvariant())) {
+        return $cacheDir
+    }
     return $null
 }
 
@@ -97,9 +127,10 @@ $wixBin = Get-WixBinDir
 if (-not $wixBin) {
     Write-Host "WiX 3.11 not found — downloading wix311-binaries.zip..."
     $zip = Join-Path $cacheDir 'wix311-binaries.zip'
-    $url = 'https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip'
-    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    Invoke-WebRequest -Uri $WixZipUrl -OutFile $zip -UseBasicParsing
+    Assert-FileSha256 -Path $zip -ExpectedSha256 $WixZipSha256 -Label 'WiX 3.11 binaries ZIP'
     Expand-Archive -Path $zip -DestinationPath $cacheDir -Force
+    Set-Content -Path $WixVerifiedMarker -Value $WixZipSha256 -NoNewline
     $wixBin = Get-WixBinDir
 }
 if (-not $wixBin) { throw "Failed to obtain WiX 3.11 candle/light binaries." }
@@ -123,8 +154,8 @@ $iscc = Get-Iscc
 if (-not $iscc) {
     Write-Host "Inno Setup 6 not found — installing (/CURRENTUSER /VERYSILENT)..."
     $innoExe = Join-Path $cacheDir 'innosetup-6.exe'
-    # JRSoftware's stable redirector for the latest Inno Setup 6.
-    Invoke-WebRequest -Uri 'https://jrsoftware.org/download.php/is.exe' -OutFile $innoExe -UseBasicParsing
+    Invoke-WebRequest -Uri $InnoSetupUrl -OutFile $innoExe -UseBasicParsing
+    Assert-FileSha256 -Path $innoExe -ExpectedSha256 $InnoSetupSha256 -Label 'Inno Setup installer'
     $p = Start-Process -FilePath $innoExe -ArgumentList '/CURRENTUSER','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
     if ($p.ExitCode -ne 0) { throw "Inno Setup install failed with exit $($p.ExitCode)." }
     $iscc = Get-Iscc

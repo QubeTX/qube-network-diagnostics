@@ -54,9 +54,12 @@ It will:
 1. **Ensure WiX 3.11** (`candle.exe` / `light.exe`). Checks `$env:WIX\bin`, then
    PATH, then a local cache; if missing, downloads
    `wix311-binaries.zip` from the WiX Toolset GitHub release into
-   `%LOCALAPPDATA%\nd300-installer-tools\` and extracts it.
+   `%LOCALAPPDATA%\nd300-installer-tools\`, verifies its pinned SHA-256, then
+   extracts it. A local cache is only trusted when this script previously wrote
+   the matching verification marker.
 2. **Ensure Inno Setup 6** (`iscc.exe`). Checks PATH and the standard install
-   dirs; if missing, downloads and installs it
+   dirs; if missing, downloads the pinned Inno Setup installer, verifies its
+   pinned SHA-256, and installs it
    **`/CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`** (no admin needed).
 3. **`cargo build --release`** (unless `-SkipBuild`) → `target\release\nd300.exe`
    + `speedqx.exe`. Both must exist or the script aborts (every installer

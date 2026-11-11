@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Hardened repo-local developer automation that can execute third-party tooling:
+  `.mcp.json` now pins the Context7 MCP package to `@upstash/context7-mcp@3.1.0`
+  instead of executing the mutable npm `latest`, and the Windows installer
+  validation skill now verifies pinned SHA-256 hashes before extracting WiX or
+  executing the Inno Setup installer. The Inno download is pinned to a concrete
+  installer URL instead of JRSoftware's mutable latest redirector.
+
 ## [3.3.0] - 2026-06-08
 
 Build + deploy cycle made consistent with the sibling TR-300 tool, plus a LICENSE
