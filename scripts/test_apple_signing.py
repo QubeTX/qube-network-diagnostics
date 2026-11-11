@@ -16,6 +16,15 @@ qualification = runpy.run_path(str(ROOT / "scripts/wait-apple-qualification.py")
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
 REPO = "QubeTX/qube-network-diagnostics"
+APPLE_CREDENTIAL_NAMES = {
+    "APPLE_CERTIFICATE_P12_BASE64",
+    "APPLE_CERTIFICATE_PASSWORD",
+    "APPLE_INSTALLER_CERTIFICATE_P12_BASE64",
+    "APPLE_INSTALLER_CERTIFICATE_PASSWORD",
+    "APPLE_API_KEY_P8_BASE64",
+    "APPLE_API_KEY_ID",
+    "APPLE_API_ISSUER_ID",
+}
 
 
 def context(**overrides):
@@ -191,7 +200,10 @@ class WorkflowContractTests(unittest.TestCase):
         consumers = set()
         for path in (ROOT / ".github/workflows").glob("*.yml"):
             for name, job in workflow(path.name)["jobs"].items():
-                if "secrets.APPLE_" in json.dumps(job):
+                # A reusable-workflow caller forwards names but cannot declare
+                # an environment. Execution jobs must protect every credential
+                # use, including job-level env as well as individual steps.
+                if "uses" not in job and "secrets.APPLE_" in json.dumps(job):
                     consumers.add((path.name, name))
                     self.assertEqual(job.get("environment"), "apple-signing", (path.name, name))
         self.assertEqual(consumers, {
@@ -201,6 +213,24 @@ class WorkflowContractTests(unittest.TestCase):
             ("macos-installer.yml", "candidate-archive"),
             ("macos-installer.yml", "candidate-package"),
         })
+
+    def test_reusable_apple_secrets_are_named_required_and_never_inherited(self):
+        mac = workflow("macos-installer.yml")
+        release = workflow("release.yml")
+        caller = release["jobs"]["macos-installer"]
+        self.assertEqual(caller.get("secrets"), {
+            name: "${{ secrets." + name + " }}" for name in APPLE_CREDENTIAL_NAMES
+        })
+        declared = mac["on"]["workflow_call"].get("secrets", {})
+        self.assertEqual(set(declared), APPLE_CREDENTIAL_NAMES)
+        for name, definition in declared.items():
+            self.assertEqual(definition.get("required"), "true", name)
+        self.assertNotIn("environment", caller)
+        self.assertNotIn("steps", caller)
+        for name, job in release["jobs"].items():
+            self.assertNotEqual(job.get("secrets"), "inherit", name)
+        for name, job in mac["jobs"].items():
+            self.assertNotEqual(job.get("secrets"), "inherit", name)
 
     def test_pr_native_builds_never_enter_signing_environment(self):
         mac = workflow("macos-installer.yml")
@@ -238,7 +268,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(set(mac["on"]["workflow_call"]["inputs"]), {"tag", "source_sha", "version"})
         release = workflow("release.yml")
         caller = release["jobs"]["macos-installer"]
-        self.assertNotIn("secrets", caller)
+        self.assertNotEqual(caller.get("secrets"), "inherit")
         self.assertEqual(caller["uses"], "./.github/workflows/macos-installer.yml")
         self.assertIn("wait-apple-qualification.py", json.dumps(release["jobs"]["plan"]))
         self.assertIn("wait-apple-qualification.py", json.dumps(mac["jobs"]["signing-context"]))
