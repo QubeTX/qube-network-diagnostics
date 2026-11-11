@@ -19,7 +19,7 @@
 - [ ] **Reconcile security PRs 42–46 and release the needed fixes** - current-source relevance, regression coverage, protected release and public verification (owner codex) #sec42
   - [x] Investigate each PR against current main and reconcile relevant fixes
   - [x] Pass security and cross-platform reviews plus required validation
-  - [ ] Merge and publish the forward patch release and homepage update
+  - [ ] Complete the existing 4.0.2 release and homepage update after reusable preflight
   - [ ] Verify public artifacts and record exact release evidence
 
 - [ ] **Compare live SpeedQX with Ookla and assess measurement accuracy** - alternating browser trials, inspect both measurement contracts, retain limits and correct demonstrated flaws (owner codex) #sqcmp

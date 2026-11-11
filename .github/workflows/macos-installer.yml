@@ -18,6 +18,11 @@ on:
         description: "Stable release version without v prefix"
         required: true
         type: string
+      preflight_only:
+        description: "On main only: verify credential handoff and sign disposable packages"
+        required: false
+        default: false
+        type: boolean
     secrets:
       APPLE_CERTIFICATE_P12_BASE64:
         required: true
@@ -103,6 +108,35 @@ jobs:
         with:
           ref: ${{ needs.signing-context.outputs.source_sha }}
           persist-credentials: false
+      - name: Verify reusable Apple credential handoff
+        if: ${{ needs.signing-context.outputs.mode == 'preflight' }}
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_P12_BASE64 }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        shell: python
+        run: |
+          import os
+          import sys
+
+          names = (
+              "APPLE_CERTIFICATE_P12_BASE64",
+              "APPLE_CERTIFICATE_PASSWORD",
+              "APPLE_INSTALLER_CERTIFICATE_P12_BASE64",
+              "APPLE_INSTALLER_CERTIFICATE_PASSWORD",
+              "APPLE_API_KEY_P8_BASE64",
+              "APPLE_API_KEY_ID",
+              "APPLE_API_ISSUER_ID",
+          )
+          missing = [name for name in names if not os.environ.get(name)]
+          if missing:
+              print("::error::Missing required Apple credentials: " + ", ".join(missing))
+              sys.exit(1)
+          print("All seven required Apple credentials are present.")
       - name: Import Installer identity and sign disposable PKG
         env:
           APPLE_INSTALLER_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_P12_BASE64 }}

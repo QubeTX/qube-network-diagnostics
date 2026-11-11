@@ -10,7 +10,7 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 **Fixed**
 
-- Correct how the release process accesses protected Apple credentials so it can finish publishing the signed Mac installer. The earlier attempt published the command archives and Windows installers but stopped before the Mac package was ready. Signing keys retain their existing protections.
+- Correct how the release process accesses protected Apple credentials so it can finish publishing the signed Mac installer. The earlier attempt published the command archives and Windows installers but stopped before the Mac package was ready. Signing keys retain their existing protections. Add a publishing-free check of the real credential handoff before delivery. Recover the existing release instead of publishing another product version for this packaging-only issue.
 
 ## November 10, 2026 — Safer repairs and verified build tools
 

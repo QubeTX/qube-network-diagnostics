@@ -15,7 +15,7 @@ Exact tag SHA passes post-merge qualification, all release targets, public archi
 - [ ] Native Intel and Apple Silicon compatibility bridges and public Apple trust checks pass
 
 ## Status
-Active under the authorized PR #42–46 deployment. The 4.0.2 release at `ceb10bf6e5818a36200c8292c78c3202160de864` passed main qualification but stopped at 28 public assets: its reusable Mac call omitted GitHub's required explicit environment-secret interface. No secret protection is removed. Preparing forward 4.0.3 with an exact seven-name interface; all production publication and native compatibility gates remain open until that release completes. Existing 4.0.2 artifacts/tag remain immutable.
+The operator resumed deployment. Recover the existing 4.0.2 release through its protected standalone exact-tag repair after a non-publishing test of the real reusable credential handoff. Withdraw the unused 4.0.3 bump while preserving its interface fix. All production publication and native compatibility gates remain open until the recovered 32-asset release passes; retain separate receipts for the failed original run and successful repair.
 
 ## Activity
 - 2026-10-06 — #asign completed and the critical finding was closed after credential isolation, native qualification and cleanup. Preserve this task for the next normal tag; no new release was created for remediation (agent: codex)
