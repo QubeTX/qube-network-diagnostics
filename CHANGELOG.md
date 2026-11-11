@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Development
+
+- Reuse the exact tag/source verified Windows archive for release installer add-ons instead of recompiling its binary pair. Retain checksum, provenance, binary-version, immutable-asset and complete-inventory checks, with a read-only validation mode before publication.
+- Pin and cache cargo-audit's executable by version, host and Rust toolchain, validate its version on use, and continue refreshing current advisories and running the audit on every CI run.
+
 ### Fixed
 
 - Declare and forward only the seven named Apple credentials when the tag workflow calls the reusable macOS installer workflow. Add a manual, protected-main preflight that exercises the actual reusable handoff and disposable-package signing on both native platforms without publishing. Keep credentials in the protected `apple-signing` environment, with exact-source qualification and no broad inheritance.

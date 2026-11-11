@@ -72,7 +72,7 @@ cargo run --bin speedqx -- --duration 5 --fastcom-duration 5 --no-color   # quic
 cargo run --bin nd300 -- -t --fast --no-color   # live smoke of all 25 deep modules without the saturating phases
 ```
 
-Security advisories: `cargo audit` (install once via `cargo install cargo-audit --locked`) auto-reads the project's `.cargo/audit.toml` ignore-list — when an advisory can't be cleared by a dep bump, add it there with a rationale instead of re-triaging. On a Windows host, use `cargo tree --target all -i <crate>` to see platform-gated transitive deps (e.g. the Linux netlink stack that pulls `paste`); plain `cargo tree` only shows host-target deps.
+Security advisories: `cargo audit` (install once via `cargo install cargo-audit --locked`) auto-reads the project's `.cargo/audit.toml` ignore-list — when an advisory can't be cleared by a dep bump, add it there with a rationale instead of re-triaging. On a Windows host, use `cargo tree --target all -i <crate>` to see platform-gated transitive deps (e.g. the Linux netlink stack that pulls `paste`); plain `cargo tree` only shows host-target deps. CI pins cargo-audit 0.23.0 and caches only its executable under an exact OS/architecture/Rust 1.97.0 key; every use validates the version and the audit still fetches advisory data. Never cache audit results or disable fetching.
 
 Tests cover the fix planner and confirmation rules, platform command construction, latency argument selection, and speed-test aggregation. CI release builds remain the source of truth for all 6 platform targets.
 
@@ -497,9 +497,10 @@ Top-level Windows uninstall uses the proven owner so both binaries, ARP registra
 ### `windows-installers.yml` — tag-triggered (consistent with TR-300)
 
 ND-300's `Release` workflow fires on a `vX.Y.Z` **tag push**, so a tag-triggered Release run has `head_branch == the tag name`. `windows-installers.yml`:
-- Is a reusable `workflow_call` invoked by the tag-push Release job with validated `tag` and `source_sha`; it no longer uses `workflow_run`, whose SHA is the default branch. Manual repair remains `workflow_dispatch` and must itself run at `--ref <tag>`.
+- Is a reusable `workflow_call` invoked by the tag-push Release job with validated `tag` and `source_sha`; it no longer uses `workflow_run`, whose SHA is the default branch. Manual publishing repair must itself run at `--ref <tag>`. The separate `validate_only=true` dispatch uses read permissions and can test candidate packaging against an existing tag/source without publishing.
 - **Resolves the immutable tag**, requires it to match the caller/manual SHA, checks out that commit, and blocks Release announcement until success.
-- **Pre-flight + idempotency:** probes the release for `dist-manifest.json` + `nd300-x86_64-pc-windows-msvc.msi` (torn-release guard); if all 6 corporate/EXE assets are already attached on a non-dispatch run, logs and exits 0. `workflow_dispatch` always rebuilds (`--clobber`).
+- **Reuse verified binaries:** `prepare-windows-release-binaries.ps1` downloads the exact tag's Windows ZIP and sidecar, validates tag/source/installer checkout, checksum and source/ref/release-workflow provenance, and safely extracts/version-checks both binaries. `build-windows-addon-installers.ps1` packages that pair without recompilation or an unverified rebuild fallback.
+- **Pre-flight + idempotency:** probes the release for `dist-manifest.json` + `nd300-x86_64-pc-windows-msvc.msi` (torn-release guard); if all 6 corporate/EXE assets are already attached on a non-dispatch run, logs and exits 0. Publishing repair dispatch retains its explicit rebuild/`--clobber` behavior and therefore requires authorization before replacing existing assets. Read-only validation never uploads release assets.
 - Keeps the WiX `candle`/`light -sice:ICE38 -sice:ICE64 -sice:ICE91` + Inno `iscc /DMyAppVersion=` mechanics. Windows completes 28 assets; the reusable macOS package job adds four for the final 32.
 
 `Cargo.toml`: `allow-dirty = ["ci", "msi"]` (the `msi` is for the customized `wix/main.wxs` update, rollback, takeover, marker, and PATH maintenance), `/wix-corporate/**` + `/inno/*.iss` in the `include` list (never generated `inno/Output`), and the Windows-only `sha2`/`winreg` deps.

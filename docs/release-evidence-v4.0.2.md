@@ -160,3 +160,50 @@ independent workflow/security review, and the full regex secret scan. Rust 1.97
 formatting, strict all-feature Clippy and all-target tests (338 library and five
 CLI tests) passed after restoring the already-published version metadata.
 Hosted preflight and immutable-tag repair remain pending.
+
+## Completed same-version recovery — November 11
+
+Recovery PR [#48](https://github.com/QubeTX/qube-network-diagnostics/pull/48),
+head `8f26345423f8985d69502a4b921454f689c62b39`, passed all five workflows:
+CI 42979785870, Windows lifecycle matrix 42979785970, native Mac PR builds
+42979785864, measurement parity 42979786014, and release plan 42979785943.
+It merged as `d7c0d5017b2e8c6e64d29eb0b81c6ca6f86207b2`. Main CI
+42981715203 and native signed qualification 42981714923 both passed. Automatic
+crate publishing was restored after main returned to 4.0.2; publisher
+42982360234 succeeded, logged that 4.0.2 already existed, and skipped Publish.
+No 4.0.3 tag or crate was created.
+
+The real reusable preflight [42981719549](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/42981719549)
+passed at that exact main SHA. Source validation and both native credential/
+disposable-PKG signing rows succeeded; all eight production rows were skipped.
+This directly exercises the credential boundary that the original qualification
+missed, without publishing anything.
+
+The immutable-tag repair [42982227834](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/42982227834)
+used original source `ceb10bf6e5818a36200c8292c78c3202160de864` and passed.
+It verified the exact-source qualification, signed/notarized the universal PKG
+and compatibility DMG, passed native Intel/Apple Silicon installation lifecycles,
+and added only the four absent Mac assets. Publication verified the exact
+32-file inventory, checksums and source attestations before latest promotion.
+Both v3.7.2-to-4.0.2 native compatibility bridges passed. The Intel bridge needed
+two failed-job-only retries: Apple's CloudKit ticket lookup lost its connection
+first while checking the immutable old baseline and then the new package.
+Attempt 3 passed unchanged bytes. No code/version change, file replacement or
+trust-check waiver was used to resolve those transport errors.
+
+Independent public verification downloaded the complete inventory, checked all
+32 GitHub SHA-256 digests, 13 sidecars and eight aggregate checksum entries, and
+verified all 32 attestations against the exact source SHA, tag ref and signer
+repository. The saved original-28 API baseline proves asset IDs, sizes, hashes
+and update timestamps did not change. The Windows public ZIP contains both
+4.0.2 binaries with successful help output and both man pages. The public crate
+and isolated Cargo installation were already verified above.
+
+The original root release run 42972625036 remains **failed**. Its successful six
+platform builds, global assets, hosting, Windows installer job and both public
+Mac archive jobs supply the base evidence; the separately successful exact-tag
+repair supplies Mac package/publication/compatibility evidence. No record is
+rewritten to claim the original orchestration succeeded.
+
+Homepage PR #23 merged as `56b2c56dceb783762fa55d9fb9599c13d2324c15` after
+complete public CLI verification. Production deployment `dpl_EjEk4wmkDGz9ftMRfZkU5E2ZNkrM` is READY at that exact SHA and owns the reports.qubetx.com alias. Chrome confirmed the live 4.0.2 label, working macOS selector and direct universal PKG link, with zero captured console warnings or errors. The homepage delivery gate is complete.

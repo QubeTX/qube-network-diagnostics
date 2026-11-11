@@ -14,13 +14,11 @@
 
 ## Active
 
-- [ ] **Verify the first environment-backed Apple release** - next normal tag must pass all 32 assets, attestations and both compatibility bridges (needs #asign) (owner codex) #asrel
+- [ ] **Remove redundant release compilation** - reuse verified Windows archives and cache pinned audit tooling while retaining release checks (owner codex) #cieff
+  - [ ] Verify the same-source Windows archive acquisition and all installer outputs without publishing
+  - [ ] Prove cached audit tooling still runs a fresh advisory check
+  - [ ] Pass review and hosted CI, merge, and record measured limits
 
-- [ ] **Reconcile security PRs 42–46 and release the needed fixes** - current-source relevance, regression coverage, protected release and public verification (owner codex) #sec42
-  - [x] Investigate each PR against current main and reconcile relevant fixes
-  - [x] Pass security and cross-platform reviews plus required validation
-  - [ ] Complete the existing 4.0.2 release and homepage update after reusable preflight
-  - [ ] Verify public artifacts and record exact release evidence
 
 - [ ] **Compare live SpeedQX with Ookla and assess measurement accuracy** - alternating browser trials, inspect both measurement contracts, retain limits and correct demonstrated flaws (owner codex) #sqcmp
   - [ ] Record predeclared alternating live comparisons on the same connection
@@ -28,6 +26,12 @@
   - [x] Record evidence and justified conclusions without claiming unproven comparative accuracy
 
 ## Done
+- [x] **Reconcile security PRs 42–46 and release the needed fixes** - current-source relevance, regression coverage, protected release and public verification (owner codex) (done 2026-11-11) #sec42
+  - [x] Investigate each PR against current main and reconcile relevant fixes
+  - [x] Pass security and cross-platform reviews plus required validation
+  - [x] Complete the existing 4.0.2 release and homepage update after reusable preflight
+  - [x] Verify public artifacts and record exact release evidence
+- [x] **Verify the first environment-backed Apple release** - 4.0.2 complete32assets/source attestations and both native bridges; separate exact-tag repair evidence (needs #asign) (owner codex) (done 2026-11-11) #asrel
 - [x] **Secure automatic Apple signing** - environment-only credentials, protected refs, both native signing/lifecycles verified, critical finding fixed (owner codex) (done 2026-10-06) #asign
   - [x] Merge source-bound signing and release regression coverage
   - [x] Migrate credentials and verify GitHub enforcement
