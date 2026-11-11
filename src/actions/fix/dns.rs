@@ -90,7 +90,7 @@ async fn read_macos_networksetup_values(
     service: &str,
     empty_message: &str,
 ) -> Result<Vec<String>, String> {
-    let mut process = tokio::process::Command::new("networksetup");
+    let mut process = crate::platform::system_command("networksetup");
     process.args([command, service]);
     let output = run_cmd(process, TIMEOUT_QUICK).await?;
     if !output.status.success() {
@@ -134,7 +134,7 @@ pub async fn capture_macos_dns_snapshot(service: &str) -> Result<MacosDnsSnapsho
 #[cfg(target_os = "macos")]
 pub async fn restore_macos_dns_snapshot(snapshot: &MacosDnsSnapshot) -> Result<(), String> {
     for args in snapshot.restore_args() {
-        let mut command = tokio::process::Command::new("networksetup");
+        let mut command = crate::platform::system_command("networksetup");
         command.args(&args);
         let output = run_macos_mutation(command, TIMEOUT_MEDIUM).await?;
         if !output.status.success() {
@@ -456,7 +456,7 @@ async fn set_dns_macos(service: &str, provider: DnsProvider) -> Result<String, S
         let servers = provider.servers_v4();
         let mut args: Vec<&str> = vec!["-setdnsservers", service];
         args.extend_from_slice(servers);
-        let mut cmd = tokio::process::Command::new("networksetup");
+        let mut cmd = crate::platform::system_command("networksetup");
         cmd.args(&args);
         return match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
             Ok(output) if output.status.success() => {
@@ -476,7 +476,7 @@ async fn set_dns_macos(service: &str, provider: DnsProvider) -> Result<String, S
 
     let label = provider.label();
     let expected_servers = provider.servers_v4().to_vec();
-    let mut cmd = tokio::process::Command::new("networksetup");
+    let mut cmd = crate::platform::system_command("networksetup");
     match &provider {
         DnsProvider::Automatic => {
             cmd.args(["-setdnsservers", service, "empty"]);
@@ -522,7 +522,7 @@ async fn set_dns_windows(iface: &str, provider: DnsProvider) -> Result<String, S
     if let DnsProvider::NextDns(ref id) = provider {
         for ip in &NEXTDNS_V4 {
             let template = format!("https://dns.nextdns.io/{}", id);
-            let mut cmd = tokio::process::Command::new("netsh");
+            let mut cmd = crate::platform::system_command("netsh");
             cmd.args([
                 "dns",
                 "add",
@@ -539,7 +539,7 @@ async fn set_dns_windows(iface: &str, provider: DnsProvider) -> Result<String, S
     let label = provider.label();
     match provider {
         DnsProvider::Automatic => {
-            let mut cmd = tokio::process::Command::new("netsh");
+            let mut cmd = crate::platform::system_command("netsh");
             cmd.args(["interface", "ip", "set", "dns", iface, "dhcp"]);
             match run_cmd(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => {
@@ -555,7 +555,7 @@ async fn set_dns_windows(iface: &str, provider: DnsProvider) -> Result<String, S
         _ => {
             let servers = provider.servers_v4();
             // Set primary
-            let mut cmd1 = tokio::process::Command::new("netsh");
+            let mut cmd1 = crate::platform::system_command("netsh");
             cmd1.args(["interface", "ip", "set", "dns", iface, "static", servers[0]]);
             match run_cmd(cmd1, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => {}
@@ -570,7 +570,7 @@ async fn set_dns_windows(iface: &str, provider: DnsProvider) -> Result<String, S
 
             // Add secondary
             if servers.len() > 1 {
-                let mut cmd2 = tokio::process::Command::new("netsh");
+                let mut cmd2 = crate::platform::system_command("netsh");
                 cmd2.args([
                     "interface",
                     "ip",
@@ -591,7 +591,7 @@ async fn set_dns_windows(iface: &str, provider: DnsProvider) -> Result<String, S
 #[cfg(target_os = "linux")]
 async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, String> {
     // Check if systemd-resolved is available
-    let mut check = tokio::process::Command::new("systemctl");
+    let mut check = crate::platform::system_command("systemctl");
     check.args(["is-active", "systemd-resolved"]);
     let has_resolved = if let Ok(output) = run_cmd(check, TIMEOUT_QUICK).await {
         String::from_utf8_lossy(&output.stdout).trim() == "active"
@@ -605,7 +605,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
         // NextDNS with systemd-resolved: configure DoT via resolved.conf
         if let DnsProvider::NextDns(ref id) = provider {
             // Back up existing config
-            let mut backup = tokio::process::Command::new("cp");
+            let mut backup = crate::platform::system_command("cp");
             backup.args([
                 "/etc/systemd/resolved.conf",
                 "/etc/systemd/resolved.conf.bak",
@@ -621,7 +621,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
                 return Err(format!("Failed to write resolved.conf: {}", e));
             }
 
-            let mut restart = tokio::process::Command::new("systemctl");
+            let mut restart = crate::platform::system_command("systemctl");
             restart.args(["restart", "systemd-resolved"]);
             match run_cmd(restart, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => {
@@ -633,7 +633,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
 
         match provider {
             DnsProvider::Automatic => {
-                let mut cmd = tokio::process::Command::new("resolvectl");
+                let mut cmd = crate::platform::system_command("resolvectl");
                 cmd.args(["revert", iface]);
                 match run_cmd(cmd, TIMEOUT_MEDIUM).await {
                     Ok(output) if output.status.success() => {
@@ -648,7 +648,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
             }
             _ => {
                 let servers = provider.servers_v4();
-                let mut cmd = tokio::process::Command::new("resolvectl");
+                let mut cmd = crate::platform::system_command("resolvectl");
                 let mut args: Vec<&str> = vec!["dns", iface];
                 args.extend_from_slice(servers);
                 cmd.args(&args);
@@ -671,7 +671,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
             .unwrap_or_else(|| iface.to_string());
         match provider {
             DnsProvider::Automatic => {
-                let mut cmd = tokio::process::Command::new("nmcli");
+                let mut cmd = crate::platform::system_command("nmcli");
                 cmd.args([
                     "con",
                     "mod",
@@ -690,7 +690,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
             }
             _ => {
                 let servers = provider.servers_v4().join(",");
-                let mut cmd = tokio::process::Command::new("nmcli");
+                let mut cmd = crate::platform::system_command("nmcli");
                 cmd.args([
                     "con",
                     "mod",
@@ -703,7 +703,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
                 match run_cmd(cmd, TIMEOUT_MEDIUM).await {
                     Ok(output) if output.status.success() => {
                         // Apply changes
-                        let mut apply = tokio::process::Command::new("nmcli");
+                        let mut apply = crate::platform::system_command("nmcli");
                         apply.args(["con", "up", &nm_connection]);
                         let _ = run_cmd(apply, TIMEOUT_MEDIUM).await;
                         Ok(format!("DNS set to {} on {}", label, iface))
@@ -717,7 +717,7 @@ async fn set_dns_linux(iface: &str, provider: DnsProvider) -> Result<String, Str
 
 #[cfg(target_os = "linux")]
 async fn active_nm_connection_for_iface(iface: &str) -> Option<String> {
-    let mut cmd = tokio::process::Command::new("nmcli");
+    let mut cmd = crate::platform::system_command("nmcli");
     cmd.args(["-g", "GENERAL.CONNECTION", "device", "show", iface]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         if output.status.success() {

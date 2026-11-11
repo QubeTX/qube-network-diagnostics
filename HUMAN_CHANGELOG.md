@@ -6,6 +6,21 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## November 10, 2026 — Safer repairs and verified build tools
+
+**Security**
+
+- Unusual Wi-Fi names can no longer add extra settings to the Linux repair configuration. Valid password punctuation is preserved, and write or reload failures are reported clearly.
+- Repairs and diagnostics use operating-system tools from trusted locations, preventing a similarly named program in a user-controlled folder from being selected. Missing tools fail safely.
+- Block inherited shell startup scripts and substituted PowerShell modules from taking over those tools. When a recognized VPN's control program is unavailable, ask for manual disconnection and leave its adapter alone.
+- Standalone Windows updates use the Windows-provided shell. If it is unavailable, provide manual update guidance instead of searching for an optional shell elsewhere.
+- Downloaded build tools are checked against known fingerprints before use, and the optional documentation helper uses a fixed release.
+- Refresh the networking and secure-connection libraries to address published security advisories, including certificate distrust and denial-of-service fixes.
+
+**Behind the scenes**
+
+- Update the coding-agent guidance to allow the approved Codex reviewer model while retaining the existing high-effort review requirements.
+
 ## October 6, 2026 — Safer automatic Mac releases
 
 **Security**

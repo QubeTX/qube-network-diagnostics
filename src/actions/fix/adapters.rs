@@ -52,7 +52,7 @@ pub async fn list_active_adapters() -> Vec<String> {
 #[cfg(target_os = "macos")]
 pub async fn list_active_adapters() -> Vec<String> {
     let mut adapters = Vec::new();
-    let mut cmd = tokio::process::Command::new("networksetup");
+    let mut cmd = crate::platform::system_command("networksetup");
     cmd.args(["-listallhardwareports"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -64,7 +64,7 @@ pub async fn list_active_adapters() -> Vec<String> {
             } else if let Some(dev) = line.strip_prefix("Device: ") {
                 let device = dev.trim();
                 // Check if this interface is active
-                let mut ifcfg_cmd = tokio::process::Command::new("ifconfig");
+                let mut ifcfg_cmd = crate::platform::system_command("ifconfig");
                 ifcfg_cmd.arg(device);
                 if let Ok(status_output) = run_cmd(ifcfg_cmd, TIMEOUT_QUICK).await {
                     let status_text = String::from_utf8_lossy(&status_output.stdout);
@@ -82,7 +82,7 @@ pub async fn list_active_adapters() -> Vec<String> {
 pub async fn list_active_adapters() -> Vec<String> {
     // Detect active non-loopback interfaces via `ip link show`
     let mut adapters = Vec::new();
-    let mut cmd = tokio::process::Command::new("ip");
+    let mut cmd = crate::platform::system_command("ip");
     cmd.args(["link", "show", "up"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -109,9 +109,9 @@ pub async fn list_active_adapters() -> Vec<String> {
 /// Restart a network adapter — all platforms.
 #[cfg(windows)]
 pub async fn restart_adapter(name: &str) -> Result<String, String> {
-    let mut disable_cmd = tokio::process::Command::new("netsh");
+    let mut disable_cmd = crate::platform::system_command("netsh");
     disable_cmd.args(["interface", "set", "interface", name, "disabled"]);
-    let mut enable_cmd = tokio::process::Command::new("netsh");
+    let mut enable_cmd = crate::platform::system_command("netsh");
     enable_cmd.args(["interface", "set", "interface", name, "enabled"]);
     let pair = run_owned_mutation_pair(
         disable_cmd,
@@ -144,9 +144,9 @@ pub async fn restart_adapter(name_and_device: &str) -> Result<String, String> {
 }
 #[cfg(target_os = "linux")]
 pub async fn restart_adapter(name: &str) -> Result<String, String> {
-    let mut down_cmd = tokio::process::Command::new("ip");
+    let mut down_cmd = crate::platform::system_command("ip");
     down_cmd.args(["link", "set", name, "down"]);
-    let mut up_cmd = tokio::process::Command::new("ip");
+    let mut up_cmd = crate::platform::system_command("ip");
     up_cmd.args(["link", "set", name, "up"]);
     let pair = run_owned_mutation_pair(
         down_cmd,
@@ -191,7 +191,7 @@ pub async fn detect_default_interface() -> Option<String> {
 
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = tokio::process::Command::new("route");
+        let mut cmd = crate::platform::system_command("route");
         cmd.args(["-n", "get", "default"]);
         if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -207,7 +207,7 @@ pub async fn detect_default_interface() -> Option<String> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cmd = tokio::process::Command::new("ip");
+        let mut cmd = crate::platform::system_command("ip");
         cmd.args(["route", "show", "default"]);
         if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -276,9 +276,9 @@ fn require_macos_dhcp_mode(mode: MacosIpv4Mode, service: &str) -> Result<(), Str
 pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
     #[cfg(windows)]
     {
-        let mut release_cmd = tokio::process::Command::new("ipconfig");
+        let mut release_cmd = crate::platform::system_command("ipconfig");
         release_cmd.args(["/release", iface]);
-        let mut renew_cmd = tokio::process::Command::new("ipconfig");
+        let mut renew_cmd = crate::platform::system_command("ipconfig");
         renew_cmd.args(["/renew", iface]);
         let pair = run_owned_mutation_pair(
             release_cmd,
@@ -302,7 +302,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
                     iface
                 )
             })?;
-        let mut inspect = tokio::process::Command::new("networksetup");
+        let mut inspect = crate::platform::system_command("networksetup");
         inspect.args(["-getinfo", &service]);
         let inspect_output = run_cmd(inspect, TIMEOUT_QUICK).await?;
         if !inspect_output.status.success() {
@@ -316,7 +316,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
             &service,
         )?;
 
-        let mut cmd = tokio::process::Command::new("ipconfig");
+        let mut cmd = crate::platform::system_command("ipconfig");
         cmd.args(["set", iface, "DHCP"]);
         match super::cmd::run_macos_mutation(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(format!("DHCP renewed on {}", iface)),
@@ -331,7 +331,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         // Try NetworkManager first
-        let mut nmcli_cmd = tokio::process::Command::new("nmcli");
+        let mut nmcli_cmd = crate::platform::system_command("nmcli");
         nmcli_cmd.args(["device", "connect", iface]);
         if let Ok(output) = run_owned_mutation(nmcli_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
@@ -340,7 +340,7 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         }
 
         // Fallback to dhcpcd
-        let mut dhcpcd_cmd = tokio::process::Command::new("dhcpcd");
+        let mut dhcpcd_cmd = crate::platform::system_command("dhcpcd");
         dhcpcd_cmd.args(["-n", iface]);
         if let Ok(output) = run_owned_mutation(dhcpcd_cmd, TIMEOUT_SLOW).await {
             if output.status.success() {
@@ -349,9 +349,9 @@ pub async fn renew_dhcp_on_interface(iface: &str) -> Result<String, String> {
         }
 
         // Fallback to dhclient
-        let mut release_cmd = tokio::process::Command::new("dhclient");
+        let mut release_cmd = crate::platform::system_command("dhclient");
         release_cmd.args(["-r", iface]);
-        let mut renew_cmd = tokio::process::Command::new("dhclient");
+        let mut renew_cmd = crate::platform::system_command("dhclient");
         renew_cmd.arg(iface);
         let pair = run_owned_mutation_pair(
             release_cmd,

@@ -206,7 +206,7 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
 
     #[cfg(windows)]
     {
-        let cmd = tokio::process::Command::new("ipconfig");
+        let cmd = crate::platform::system_command("ipconfig");
         if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
             let mut current_iface = String::new();
@@ -255,7 +255,7 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
 
     #[cfg(unix)]
     {
-        let mut cmd = tokio::process::Command::new("ip");
+        let mut cmd = crate::platform::system_command("ip");
         cmd.args(["-6", "addr", "show"]);
         if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -282,7 +282,7 @@ async fn get_ipv6_addresses() -> Vec<Ipv6Address> {
 
         // Fallback for macOS if `ip` not available
         if addrs.is_empty() {
-            let cmd = tokio::process::Command::new("ifconfig");
+            let cmd = crate::platform::system_command("ifconfig");
             if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let mut current_iface = String::new();

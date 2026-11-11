@@ -5,7 +5,7 @@ use super::cmd::{run_cmd, TIMEOUT_QUICK};
 pub async fn capture_current_ssid() -> Option<String> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["wlan", "show", "interfaces"]);
         if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -40,7 +40,7 @@ pub async fn capture_current_ssid() -> Option<String> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cmd = tokio::process::Command::new("iwgetid");
+        let mut cmd = crate::platform::system_command("iwgetid");
         cmd.arg("-r");
         if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
             if output.status.success() {
@@ -61,7 +61,7 @@ pub async fn scan_wifi_networks() -> Vec<String> {
 
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["wlan", "show", "networks"]);
         if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -87,11 +87,11 @@ pub async fn scan_wifi_networks() -> Vec<String> {
     #[cfg(target_os = "linux")]
     {
         // Try nmcli
-        let mut rescan_cmd = tokio::process::Command::new("nmcli");
+        let mut rescan_cmd = crate::platform::system_command("nmcli");
         rescan_cmd.args(["device", "wifi", "rescan"]);
         let _ = run_cmd(rescan_cmd, TIMEOUT_QUICK).await;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let mut list_cmd = tokio::process::Command::new("nmcli");
+        let mut list_cmd = crate::platform::system_command("nmcli");
         list_cmd.args(["-t", "-f", "SSID", "device", "wifi", "list"]);
         if let Ok(output) = run_cmd(list_cmd, TIMEOUT_QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);

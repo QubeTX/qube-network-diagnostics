@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-11-10
+
 ### Security
 
-- Update the locked rustls dependency to 0.23.45 (and its required webpki patch) to fix TLS encryption-level validation advisory RUSTSEC-2026-0285 and restore the required security audit.
+- Serialize the Linux dhcpcd Wi-Fi fallback with hexadecimal SSIDs and derived WPA-PSKs instead of interpolating quoted credentials. Validate SSID/passphrase limits, preserve printable password punctuation, and report configuration write/reload failures without claiming connectivity.
+- Resolve built-in repair and diagnostic utilities from fixed system locations, obtain the Windows system directory from the OS, and give children a trusted utility search path. Missing utilities fail without falling back to caller-controlled PATH/current directories; proven installer/provider paths and invoking-user Cargo ownership remain intact.
+- Constrain inherited PowerShell module paths and shell startup/function hooks. A recognized VPN whose provider CLI is unavailable now requires manual disconnection instead of substituting a generic adapter-disable operation.
+- Use only OS-resolved native Windows PowerShell for standalone Windows updates; retire the optional PATH-discovered PowerShell 7 fallback. If the native launcher is unavailable, report failure with same-channel manual recovery guidance.
+- Verify cargo-dist, WiX and Inno downloads against pinned publisher SHA-256 digests before use, and pin the Context7 MCP package in both agent configurations. Preserve the protected Apple signing and publication gates.
+- Update locked rustls to 0.23.46, rustls-webpki to 0.103.16, webpki-roots to 1.0.10 and optional quinn-proto to 0.11.18. Clear the current RustSec audit findings, including TLS secret logging, handshake handling, distrusted intermediates and QUIC denial-of-service advisories, without adding exceptions.
 - Restrict Apple signing credentials to the GitHub `apple-signing` environment and protected source refs. Pull requests build without signing secrets; every main push automatically qualifies signed native archives and the universal PKG/compatibility DMG on Intel and Apple Silicon. Exact-SHA qualification gates release signing without a recurring approval step. Preserve all 32 release assets, checksums, attestations, native lifecycle and legacy updater checks.
+
+### Development
+
+- Permit GPT-6.1 Sol at xhigh for Codex subagents alongside the existing Opus/Sonnet model choices, keeping AGENTS.md and CLAUDE.md guidance aligned.
 
 ## [4.0.1] - 2026-09-05
 

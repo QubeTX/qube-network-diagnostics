@@ -28,7 +28,7 @@ pub async fn collect() -> Option<Vec<DnsCacheEntry>> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<Vec<DnsCacheEntry>> {
-    let mut cmd = tokio::process::Command::new("ipconfig");
+    let mut cmd = crate::platform::system_command("ipconfig");
     cmd.args(["/displaydns"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -98,7 +98,7 @@ async fn collect_windows() -> Option<Vec<DnsCacheEntry>> {
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<Vec<DnsCacheEntry>> {
     // Try resolvectl
-    let mut cmd = tokio::process::Command::new("resolvectl");
+    let mut cmd = crate::platform::system_command("resolvectl");
     cmd.args(["statistics"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::SLOW).await {
         let text = String::from_utf8_lossy(&output.stdout);

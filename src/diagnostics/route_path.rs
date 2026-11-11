@@ -62,7 +62,7 @@ pub async fn collect() -> Option<RoutePath> {
 async fn run_traceroute() -> Option<String> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("tracert");
+        let mut cmd = crate::platform::system_command("tracert");
         cmd.args(["-d", "-h", &MAX_HOPS.to_string(), "-w", "800", TARGET]);
         let output = util::run_with_timeout(cmd, util::TRACE).await?;
         Some(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -70,7 +70,7 @@ async fn run_traceroute() -> Option<String> {
 
     #[cfg(unix)]
     {
-        let mut cmd = tokio::process::Command::new("traceroute");
+        let mut cmd = crate::platform::system_command("traceroute");
         cmd.args([
             "-n",
             "-m",
@@ -87,7 +87,7 @@ async fn run_traceroute() -> Option<String> {
             }
         }
         // Fallback: tracepath (iputils — nearly always present, unprivileged).
-        let mut cmd = tokio::process::Command::new("tracepath");
+        let mut cmd = crate::platform::system_command("tracepath");
         cmd.args(["-n", "-m", &MAX_HOPS.to_string(), TARGET]);
         let output = util::run_with_timeout(cmd, util::TRACE).await?;
         Some(String::from_utf8_lossy(&output.stdout).into_owned())

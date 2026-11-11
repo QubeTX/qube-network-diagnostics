@@ -1,6 +1,6 @@
 [package]
 name = "nd300"
-version = "4.0.1"
+version = "4.0.2"
 edition = "2021"
 authors = ["Emmett S <hey@emmetts.dev>"]
 description = "Cross-platform network diagnostic tool"
@@ -69,6 +69,8 @@ url = "2"
 # platforms. Keep SHA-256 outside a target-specific section because the native
 # Unix updater verifies cargo-dist archives before extraction.
 sha2 = "0.10"
+# WPA-PSK derivation avoids placing user-controlled strings in privileged config.
+ring = "0.17"
 x509-parser = "0.17"
 
 [target.'cfg(windows)'.dependencies]

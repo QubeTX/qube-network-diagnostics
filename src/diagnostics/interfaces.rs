@@ -632,7 +632,7 @@ fn format_mac(bytes: [u8; 6]) -> String {
 async fn get_wifi_summary() -> String {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["wlan", "show", "interfaces"]);
         match super::util::run_with_timeout(cmd, super::util::QUICK).await {
             Some(output) => {
@@ -700,13 +700,13 @@ async fn get_wifi_summary() -> String {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cmd = tokio::process::Command::new("iwgetid");
+        let mut cmd = crate::platform::system_command("iwgetid");
         cmd.args(["-r"]);
         match super::util::run_with_timeout(cmd, super::util::QUICK).await {
             Some(output) => {
                 let ssid = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 // Try to get frequency
-                let mut freq_cmd = tokio::process::Command::new("iwgetid");
+                let mut freq_cmd = crate::platform::system_command("iwgetid");
                 freq_cmd.args(["--freq", "-r"]);
                 let band = match super::util::run_with_timeout(freq_cmd, super::util::QUICK).await {
                     Some(freq_out) => {

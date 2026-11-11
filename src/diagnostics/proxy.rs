@@ -101,7 +101,7 @@ pub async fn collect() -> Option<ProxyConfig> {
 /// GNOME proxy settings via gsettings (best-effort; absent on servers).
 #[cfg(target_os = "linux")]
 async fn check_gnome_proxy(config: &mut ProxyConfig) {
-    let mut mode_cmd = tokio::process::Command::new("gsettings");
+    let mut mode_cmd = crate::platform::system_command("gsettings");
     mode_cmd.args(["get", "org.gnome.system.proxy", "mode"]);
     let Some(output) = super::util::run_with_timeout(mode_cmd, super::util::QUICK).await else {
         return;
@@ -111,7 +111,7 @@ async fn check_gnome_proxy(config: &mut ProxyConfig) {
         .replace('\'', "");
     match mode.as_str() {
         "manual" => {
-            let mut host_cmd = tokio::process::Command::new("gsettings");
+            let mut host_cmd = crate::platform::system_command("gsettings");
             host_cmd.args(["get", "org.gnome.system.proxy.http", "host"]);
             if let Some(host_out) =
                 super::util::run_with_timeout(host_cmd, super::util::QUICK).await
@@ -125,7 +125,7 @@ async fn check_gnome_proxy(config: &mut ProxyConfig) {
             }
         }
         "auto" => {
-            let mut url_cmd = tokio::process::Command::new("gsettings");
+            let mut url_cmd = crate::platform::system_command("gsettings");
             url_cmd.args(["get", "org.gnome.system.proxy", "autoconfig-url"]);
             if let Some(url_out) = super::util::run_with_timeout(url_cmd, super::util::QUICK).await
             {
@@ -144,7 +144,7 @@ async fn check_gnome_proxy(config: &mut ProxyConfig) {
 #[cfg(windows)]
 async fn check_windows_proxy(config: &mut ProxyConfig) {
     // Check Windows registry via reg query
-    let mut cmd = tokio::process::Command::new("reg");
+    let mut cmd = crate::platform::system_command("reg");
     cmd.args([
         "query",
         r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
@@ -157,7 +157,7 @@ async fn check_windows_proxy(config: &mut ProxyConfig) {
             config.proxy_enabled = true;
 
             // Get proxy server
-            let mut cmd = tokio::process::Command::new("reg");
+            let mut cmd = crate::platform::system_command("reg");
             cmd.args([
                 "query",
                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
@@ -178,7 +178,7 @@ async fn check_windows_proxy(config: &mut ProxyConfig) {
             }
 
             // Get PAC URL
-            let mut cmd = tokio::process::Command::new("reg");
+            let mut cmd = crate::platform::system_command("reg");
             cmd.args([
                 "query",
                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
@@ -199,7 +199,7 @@ async fn check_windows_proxy(config: &mut ProxyConfig) {
 
 #[cfg(target_os = "macos")]
 async fn check_macos_proxy(config: &mut ProxyConfig) {
-    let mut cmd = tokio::process::Command::new("scutil");
+    let mut cmd = crate::platform::system_command("scutil");
     cmd.args(["--proxy"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);

@@ -39,7 +39,7 @@ pub struct WifiLink {
 pub async fn collect() -> Option<Vec<WifiLink>> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["wlan", "show", "interfaces"]);
         let output = util::run_with_timeout(cmd, util::QUICK).await?;
         let text = String::from_utf8_lossy(&output.stdout);
@@ -77,7 +77,7 @@ pub async fn collect() -> Option<Vec<WifiLink>> {
     #[cfg(target_os = "linux")]
     {
         // Primary: nmcli terse mode (carries security info).
-        let mut cmd = tokio::process::Command::new("nmcli");
+        let mut cmd = crate::platform::system_command("nmcli");
         cmd.args([
             "-t",
             "-f",
@@ -96,7 +96,7 @@ pub async fn collect() -> Option<Vec<WifiLink>> {
         }
 
         // Fallback: iw (no NetworkManager).
-        let mut dev_cmd = tokio::process::Command::new("iw");
+        let mut dev_cmd = crate::platform::system_command("iw");
         dev_cmd.arg("dev");
         let dev_output = util::run_with_timeout(dev_cmd, util::QUICK).await?;
         let dev_text = String::from_utf8_lossy(&dev_output.stdout);
@@ -108,7 +108,7 @@ pub async fn collect() -> Option<Vec<WifiLink>> {
 
         let mut links = Vec::new();
         for iface in ifaces {
-            let mut link_cmd = tokio::process::Command::new("iw");
+            let mut link_cmd = crate::platform::system_command("iw");
             link_cmd.args(["dev", &iface, "link"]);
             if let Some(output) = util::run_with_timeout(link_cmd, util::QUICK).await {
                 let text = String::from_utf8_lossy(&output.stdout);

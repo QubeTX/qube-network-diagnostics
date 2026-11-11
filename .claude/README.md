@@ -52,6 +52,8 @@ EXE, Corporate EXE) and reports exit codes, reproducing
 catch installer-build bugs (CNDL0104, dropped arg quotes, invalid Inno
 constants) locally. Bundles `scripts/validate-installers.ps1`, which ensures WiX
 3.11 and Inno Setup 6 are present (downloading/installing them if needed),
+verifies pinned publisher SHA-256 hashes before extracting WiX or executing
+Inno Setup 6.7.4, reverifies cached WiX archives before recreating its tool cache,
 `cargo build --release`s, and builds all four installers with the exact CI
 candle/light/iscc invocations.
 
@@ -112,7 +114,8 @@ allowlist and reuses `update.rs` / `uninstall.rs`.
 
 Live, version-accurate documentation for ND-300's key dependencies (clap, tokio,
 reqwest, tokio-tungstenite, and the rest). Configured as a **stdio** server via
-`npx -y @upstash/context7-mcp` (Node/npx are on the dev host). No API key is
+`npx -y @upstash/context7-mcp@4.6.0` (Node 20.18.1 or newer and npx), pinned
+in both agent declarations to avoid executing a mutable npm `latest`. No API key is
 required for basic use; the free tier works out of the box. To raise rate limits,
 set a `CONTEXT7_API_KEY` environment variable — `.mcp.json` expands
 `${CONTEXT7_API_KEY}` into the server's env, so the key stays out of the repo.

@@ -91,7 +91,7 @@ fn parse_windows_listeners(
 async fn collect_windows() -> Option<Vec<ListeningPort>> {
     use sysinfo::System;
 
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     cmd.args(["-ano"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -147,7 +147,7 @@ fn parse_macos_addr_port(value: &str) -> Option<(String, u16)> {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<Vec<ListeningPort>> {
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     cmd.args(["-anW", "-p", "tcp"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -158,7 +158,7 @@ async fn collect_macos() -> Option<Vec<ListeningPort>> {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<Vec<ListeningPort>> {
-    let mut cmd = tokio::process::Command::new("ss");
+    let mut cmd = crate::platform::system_command("ss");
     cmd.args(["-tulnp"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 

@@ -181,7 +181,7 @@ fn parse_vpn_from_ipconfig(text: &str, vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(windows)]
 async fn collect_windows_ipconfig(vpns: &mut Vec<VpnAdapter>) {
-    let mut cmd = tokio::process::Command::new("ipconfig");
+    let mut cmd = crate::platform::system_command("ipconfig");
     cmd.args(["/all"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -264,9 +264,9 @@ async fn collect_windows_wmi(vpns: &mut Vec<VpnAdapter>) {
 async fn collect_macos_active_interfaces() -> std::collections::HashSet<String> {
     let mut cmd = tokio::process::Command::new("/usr/sbin/scutil");
     cmd.arg("--nwi");
-    let mut routes4 = tokio::process::Command::new("netstat");
+    let mut routes4 = crate::platform::system_command("netstat");
     routes4.args(["-rn", "-f", "inet"]);
-    let mut routes6 = tokio::process::Command::new("netstat");
+    let mut routes6 = crate::platform::system_command("netstat");
     routes6.args(["-rn", "-f", "inet6"]);
     let (nwi, routes4, routes6) = tokio::join!(
         super::util::run_with_timeout(cmd, super::util::QUICK),
@@ -340,7 +340,7 @@ async fn collect_macos_ifconfig(
     vpns: &mut Vec<VpnAdapter>,
     active_interfaces: &std::collections::HashSet<String>,
 ) {
-    let cmd = tokio::process::Command::new("ifconfig");
+    let cmd = crate::platform::system_command("ifconfig");
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
         vpns.extend(parse_macos_ifconfig(&text, active_interfaces));
@@ -413,7 +413,7 @@ fn parse_macos_ifconfig(
 
 #[cfg(target_os = "macos")]
 async fn collect_macos_scutil(vpns: &mut Vec<VpnAdapter>) {
-    let mut cmd = tokio::process::Command::new("scutil");
+    let mut cmd = crate::platform::system_command("scutil");
     cmd.args(["--nc", "list"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -470,7 +470,7 @@ fn parse_macos_scutil(text: &str) -> Vec<VpnAdapter> {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux_ip_link(vpns: &mut Vec<VpnAdapter>) {
-    let mut cmd = tokio::process::Command::new("ip");
+    let mut cmd = crate::platform::system_command("ip");
     cmd.args(["link", "show"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -499,7 +499,7 @@ async fn collect_linux_ip_link(vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux_nmcli(vpns: &mut Vec<VpnAdapter>) {
-    let mut cmd = tokio::process::Command::new("nmcli");
+    let mut cmd = crate::platform::system_command("nmcli");
     cmd.args([
         "-t",
         "-f",
@@ -545,7 +545,7 @@ async fn collect_linux_nmcli(vpns: &mut Vec<VpnAdapter>) {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux_wireguard(vpns: &mut Vec<VpnAdapter>) {
-    let mut cmd = tokio::process::Command::new("wg");
+    let mut cmd = crate::platform::system_command("wg");
     cmd.args(["show", "interfaces"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         if output.status.success() {

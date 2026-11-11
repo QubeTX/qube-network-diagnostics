@@ -123,6 +123,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --workspace --all-targets --all-features
+      - name: Verify Wi-Fi credentials with the real Linux parser
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends wpasupplicant
+          cargo test --locked --lib actions::fix::wpa_config::tests::real_parser_preserves_credentials -- --ignored --nocapture
       - name: Test release checksum verifier
         if: runner.os == 'Windows'
         shell: pwsh
@@ -131,6 +138,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test-harden-cargo-dist-windows-installer.ps1
+      - name: Test installer tool download integrity
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-installer-tool-integrity.ps1
+      - name: Test cargo-dist download integrity
+        shell: bash
+        run: bash scripts/test-cargo-dist-install.sh
 
   build:
     name: Release Build (${{ matrix.name }})
@@ -246,21 +260,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install cargo-dist v0.31.0
+      - name: Install verified cargo-dist v0.31.0
         shell: bash
-        # Fetch the prebuilt `dist` binary tarball directly instead of piping the
-        # cargo-dist-installer.sh script asset. GitHub's release CDN has repeatedly
-        # (and sometimes for hours) returned 504 on that small script while the
-        # .tar.xz stayed 200 — a flake that failed this job and, because dist-plan
-        # is not continue-on-error, blocked the crates.io publish. --retry covers
-        # transient blips on the tarball itself.
-        run: |
-          mkdir -p "$HOME/.cargo/bin"
-          curl --proto '=https' --tlsv1.2 -fL --retry 6 --retry-all-errors --retry-delay 5 \
-            https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-x86_64-unknown-linux-gnu.tar.xz \
-            | tar -xJ -C "$HOME/.cargo/bin" --strip-components=1 cargo-dist-x86_64-unknown-linux-gnu/dist
-          chmod +x "$HOME/.cargo/bin/dist"
-          "$HOME/.cargo/bin/dist" --version
+        run: bash scripts/install-cargo-dist.sh
       - name: Verify dist plan parses
         shell: bash
         run: |

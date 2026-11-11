@@ -113,7 +113,7 @@ pub async fn collect() -> Option<Vec<ArpEntry>> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<Vec<ArpEntry>> {
-    let mut cmd = tokio::process::Command::new("arp");
+    let mut cmd = crate::platform::system_command("arp");
     cmd.args(["-a"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -147,7 +147,7 @@ async fn collect_windows() -> Option<Vec<ArpEntry>> {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<Vec<ArpEntry>> {
-    let mut cmd = tokio::process::Command::new("arp");
+    let mut cmd = crate::platform::system_command("arp");
     cmd.args(["-a"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 

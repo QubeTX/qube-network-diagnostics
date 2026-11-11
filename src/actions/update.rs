@@ -57,8 +57,8 @@ const RELEASES_PAGE: &str = "https://github.com/QubeTX/qube-network-diagnostics/
 /// A proven installation owner gets only strategies that preserve that owner:
 /// Cargo stays Cargo, a receipt-proven Unix archive stays a verified archive,
 /// and the Windows MSI/EXE variants stay the same format, edition, and scope.
-/// The only multi-entry plan is the legacy Windows standalone installer, where
-/// Windows PowerShell and pwsh execute the same signed installer script.
+/// Windows standalone installs use only the native Windows PowerShell to
+/// execute the exact-release installer script; optional shells are not searched.
 ///
 /// For first-class Windows installs (v3.1.0+), `build_strategy_list` returns a
 /// *single* matching MSI/EXE strategy (no cross-fall-back between installer
@@ -79,7 +79,6 @@ enum UpdateStrategy {
     #[cfg(target_os = "macos")]
     MacPackage,
     InstallerPowerShell,
-    InstallerPwsh,
     /// Re-runs the Global perMachine MSI (UAC required).
     MsiGlobal,
     /// Re-runs the Corporate perUser MSI (no UAC required).
@@ -99,7 +98,6 @@ impl UpdateStrategy {
             #[cfg(target_os = "macos")]
             UpdateStrategy::MacPackage => "macOS Apple Installer package",
             UpdateStrategy::InstallerPowerShell => "PowerShell installer",
-            UpdateStrategy::InstallerPwsh => "pwsh installer",
             UpdateStrategy::MsiGlobal => "Global MSI installer",
             UpdateStrategy::MsiCorporate => "Corporate MSI installer",
             UpdateStrategy::ExeGlobal => "Global EXE installer",
@@ -117,7 +115,6 @@ impl UpdateStrategy {
             // stable for existing JSON consumers and installed receipts.
             UpdateStrategy::MacPackage => "mac_dmg_pkg",
             UpdateStrategy::InstallerPowerShell => "installer_powershell",
-            UpdateStrategy::InstallerPwsh => "installer_pwsh",
             UpdateStrategy::MsiGlobal => "msi_global",
             UpdateStrategy::MsiCorporate => "msi_corporate",
             UpdateStrategy::ExeGlobal => "exe_global",
@@ -855,10 +852,7 @@ fn windows_cargo_or_installer_plan(
                     .to_string()
             });
     }
-    Ok(vec![
-        UpdateStrategy::InstallerPowerShell,
-        UpdateStrategy::InstallerPwsh,
-    ])
+    Ok(vec![UpdateStrategy::InstallerPowerShell])
 }
 
 #[cfg(windows)]
@@ -994,8 +988,7 @@ async fn try_strategy(strategy: UpdateStrategy, latest: &str) -> Result<(), Stra
         UpdateStrategy::UnixArchive => try_unix_archive(latest).await,
         #[cfg(target_os = "macos")]
         UpdateStrategy::MacPackage => try_macos_package(latest).await,
-        UpdateStrategy::InstallerPowerShell => try_installer_powershell("powershell", latest),
-        UpdateStrategy::InstallerPwsh => try_installer_powershell("pwsh", latest),
+        UpdateStrategy::InstallerPowerShell => try_installer_powershell(latest),
         UpdateStrategy::MsiGlobal => {
             try_msi_install(&exact_release_asset_url(latest, MSI_GLOBAL_ASSET)?, latest)
         }
@@ -1145,14 +1138,12 @@ fn recovery_asset_for_strategy(strategy: UpdateStrategy) -> Option<&'static str>
         UpdateStrategy::ExeGlobal => Some(EXE_GLOBAL_ASSET),
         UpdateStrategy::ExeCorporate => Some(EXE_CORPORATE_ASSET),
         #[cfg(windows)]
-        UpdateStrategy::InstallerPowerShell | UpdateStrategy::InstallerPwsh => {
-            Some(PS_INSTALLER_ASSET)
-        }
+        UpdateStrategy::InstallerPowerShell => Some(PS_INSTALLER_ASSET),
         UpdateStrategy::Cargo => None,
         #[cfg(unix)]
         UpdateStrategy::UnixArchive => None,
         #[cfg(not(windows))]
-        UpdateStrategy::InstallerPowerShell | UpdateStrategy::InstallerPwsh => None,
+        UpdateStrategy::InstallerPowerShell => None,
     }
 }
 
@@ -1452,7 +1443,9 @@ fn cargo_failure_suggests_existing_binary_collision(message: &str) -> bool {
 /// mode retains one machine-readable stdout document.
 #[cfg(windows)]
 fn run_command_status(launcher: &Path, args: &[&str]) -> Result<(), StrategyError> {
-    let res = Command::new(launcher).args(args).output();
+    let res = crate::platform::system_std_command(launcher)
+        .args(args)
+        .output();
     match res {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(StrategyError::Preflight(
             format!("{} was not found", launcher.display()),
@@ -1536,17 +1529,15 @@ fn summarize_output(output: &Output) -> String {
 }
 
 #[cfg(windows)]
-fn try_installer_powershell(launcher: &str, latest: &str) -> Result<(), StrategyError> {
+fn try_installer_powershell(latest: &str) -> Result<(), StrategyError> {
     // `$ErrorActionPreference='Stop'` so an `irm` failure aborts the pipeline
     // rather than feeding nothing into iex (which would exit 0 and look like a
     // successful update).
     let installer = exact_release_asset_url(latest, PS_INSTALLER_ASSET)?;
     let script = format!("$ErrorActionPreference='Stop'; irm {installer} | iex");
-    let launcher = if launcher.eq_ignore_ascii_case("powershell") {
-        super::uninstall::system_powershell_path().map_err(StrategyError::Preflight)?
-    } else {
-        PathBuf::from(launcher)
-    };
+    // The optional PowerShell 7 fallback was retired: it needs an independent
+    // installation ownership proof, and inherited PATH is not that proof.
+    let launcher = super::uninstall::system_powershell_path().map_err(StrategyError::Preflight)?;
     run_command_status(
         &launcher,
         &[
@@ -1561,7 +1552,7 @@ fn try_installer_powershell(launcher: &str, latest: &str) -> Result<(), Strategy
 }
 
 #[cfg(not(windows))]
-fn try_installer_powershell(_launcher: &str, _latest: &str) -> Result<(), StrategyError> {
+fn try_installer_powershell(_latest: &str) -> Result<(), StrategyError> {
     Err(StrategyError::Preflight(
         "PowerShell installer is Windows-only".into(),
     ))
@@ -2574,14 +2565,13 @@ mod tests {
     }
 
     #[test]
-    fn windows_standalone_route_never_migrates_to_cargo() {
-        assert_eq!(
-            windows_cargo_or_installer_plan(false, true).expect("standalone route"),
-            vec![
-                UpdateStrategy::InstallerPowerShell,
-                UpdateStrategy::InstallerPwsh,
-            ]
-        );
+    fn windows_standalone_route_uses_only_native_powershell() {
+        for cargo_invokable in [false, true] {
+            assert_eq!(
+                windows_cargo_or_installer_plan(false, cargo_invokable).expect("standalone route"),
+                vec![UpdateStrategy::InstallerPowerShell]
+            );
+        }
     }
 
     #[test]
@@ -2632,7 +2622,6 @@ mod tests {
             UpdateStrategy::InstallerPowerShell.json_method(),
             "installer"
         );
-        assert_eq!(UpdateStrategy::InstallerPwsh.json_method(), "installer");
         // New v3.1.0+ MSI/EXE strategies map to "installer" in the legacy
         // `method` field. External consumers wanting the specific installer type
         // should read the precise `strategy` field instead.
@@ -2647,6 +2636,10 @@ mod tests {
         // These IDs are part of the public JSON contract; renaming them is a
         // schema break. Keep them in lockstep with the README Self-Update
         // section and CLAUDE.md / AGENTS.md.
+        assert_eq!(
+            UpdateStrategy::InstallerPowerShell.json_id(),
+            "installer_powershell"
+        );
         assert_eq!(UpdateStrategy::MsiGlobal.json_id(), "msi_global");
         assert_eq!(UpdateStrategy::MsiCorporate.json_id(), "msi_corporate");
         assert_eq!(UpdateStrategy::ExeGlobal.json_id(), "exe_global");
@@ -2711,7 +2704,6 @@ mod tests {
             UpdateStrategy::ExeCorporate.label(),
             UpdateStrategy::Cargo.label(),
             UpdateStrategy::InstallerPowerShell.label(),
-            UpdateStrategy::InstallerPwsh.label(),
         ];
         #[cfg(target_os = "linux")]
         let labels = [
@@ -2721,7 +2713,6 @@ mod tests {
             UpdateStrategy::ExeCorporate.label(),
             UpdateStrategy::Cargo.label(),
             UpdateStrategy::InstallerPowerShell.label(),
-            UpdateStrategy::InstallerPwsh.label(),
             UpdateStrategy::UnixArchive.label(),
         ];
         #[cfg(target_os = "macos")]
@@ -2732,7 +2723,6 @@ mod tests {
             UpdateStrategy::ExeCorporate.label(),
             UpdateStrategy::Cargo.label(),
             UpdateStrategy::InstallerPowerShell.label(),
-            UpdateStrategy::InstallerPwsh.label(),
             UpdateStrategy::UnixArchive.label(),
             UpdateStrategy::MacPackage.label(),
         ];

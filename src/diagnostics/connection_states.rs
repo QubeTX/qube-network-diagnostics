@@ -68,14 +68,14 @@ fn parse_connection_states(lines: &[String]) -> ConnectionStates {
 pub async fn collect() -> Option<ConnectionStates> {
     #[cfg(windows)]
     let output = {
-        let mut cmd = tokio::process::Command::new("netstat");
+        let mut cmd = crate::platform::system_command("netstat");
         cmd.args(["-an"]);
         super::util::run_with_timeout(cmd, super::util::QUICK).await
     };
 
     #[cfg(unix)]
     let output = {
-        let mut cmd = tokio::process::Command::new("netstat");
+        let mut cmd = crate::platform::system_command("netstat");
         cmd.args(["-an"]);
         super::util::run_with_timeout(cmd, super::util::QUICK).await
     };

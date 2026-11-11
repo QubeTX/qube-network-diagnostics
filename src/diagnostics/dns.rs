@@ -132,7 +132,7 @@ async fn get_dns_servers() -> Vec<String> {
 async fn get_dns_servers_windows() -> Vec<String> {
     let mut servers = Vec::new();
 
-    let mut cmd = tokio::process::Command::new("netsh");
+    let mut cmd = crate::platform::system_command("netsh");
     cmd.args(["interface", "ip", "show", "dns"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -149,7 +149,7 @@ async fn get_dns_servers_windows() -> Vec<String> {
 
     if servers.is_empty() {
         // Fallback: try ipconfig
-        let mut cmd = tokio::process::Command::new("ipconfig");
+        let mut cmd = crate::platform::system_command("ipconfig");
         cmd.args(["/all"]);
         if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -181,7 +181,7 @@ async fn get_dns_servers_windows() -> Vec<String> {
 async fn get_dns_servers_macos() -> Vec<String> {
     let mut servers = Vec::new();
 
-    let mut cmd = tokio::process::Command::new("scutil");
+    let mut cmd = crate::platform::system_command("scutil");
     cmd.args(["--dns"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -216,7 +216,7 @@ async fn get_dns_servers_linux() -> Vec<String> {
 
     // Fallback: try resolvectl
     if servers.is_empty() || servers.iter().all(|s| s == "127.0.0.53") {
-        let mut cmd = tokio::process::Command::new("resolvectl");
+        let mut cmd = crate::platform::system_command("resolvectl");
         cmd.args(["status"]);
         if let Some(output) = super::util::run_with_timeout(cmd, super::util::SLOW).await {
             let text = String::from_utf8_lossy(&output.stdout);

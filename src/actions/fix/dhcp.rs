@@ -30,9 +30,9 @@ fn mutation_error(result: &Result<std::process::Output, String>) -> String {
 pub async fn renew_dhcp() -> Result<String, String> {
     #[cfg(windows)]
     {
-        let mut release_cmd = tokio::process::Command::new("ipconfig");
+        let mut release_cmd = crate::platform::system_command("ipconfig");
         release_cmd.arg("/release");
-        let mut renew_cmd = tokio::process::Command::new("ipconfig");
+        let mut renew_cmd = crate::platform::system_command("ipconfig");
         renew_cmd.arg("/renew");
         let pair = run_owned_mutation_pair(
             release_cmd,
@@ -64,9 +64,9 @@ pub async fn renew_dhcp() -> Result<String, String> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut release_cmd = tokio::process::Command::new("dhclient");
+        let mut release_cmd = crate::platform::system_command("dhclient");
         release_cmd.arg("-r");
-        let renew_cmd = tokio::process::Command::new("dhclient");
+        let renew_cmd = crate::platform::system_command("dhclient");
         let dhclient = run_owned_mutation_pair(
             release_cmd,
             TIMEOUT_SLOW,
@@ -80,9 +80,9 @@ pub async fn renew_dhcp() -> Result<String, String> {
         }
 
         // Fallback to nmcli
-        let mut off_cmd = tokio::process::Command::new("nmcli");
+        let mut off_cmd = crate::platform::system_command("nmcli");
         off_cmd.args(["networking", "off"]);
-        let mut on_cmd = tokio::process::Command::new("nmcli");
+        let mut on_cmd = crate::platform::system_command("nmcli");
         on_cmd.args(["networking", "on"]);
         let nmcli = run_owned_mutation_pair(
             off_cmd,
@@ -108,7 +108,7 @@ pub async fn renew_dhcp() -> Result<String, String> {
 /// Detect the active network device on macOS using `route -n get default`.
 #[cfg(target_os = "macos")]
 async fn detect_active_device_macos() -> Option<String> {
-    let mut cmd = tokio::process::Command::new("route");
+    let mut cmd = crate::platform::system_command("route");
     cmd.args(["-n", "get", "default"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);

@@ -32,6 +32,8 @@ pub mod stages;
 pub mod triage;
 pub mod vpn;
 pub mod wifi;
+#[cfg(any(target_os = "linux", test))]
+mod wpa_config;
 
 use crate::config::Config;
 use crate::render::color;

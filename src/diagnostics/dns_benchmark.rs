@@ -282,7 +282,7 @@ async fn query_via_server(domain: &str, server: &str) -> Option<f64> {
     #[cfg(windows)]
     {
         let start = Instant::now();
-        let mut cmd = tokio::process::Command::new("nslookup");
+        let mut cmd = crate::platform::system_command("nslookup");
         cmd.args(["-timeout=2", domain, server]);
         let output = util::run_with_timeout(cmd, util::SLOW).await?;
         if !output.status.success() {
@@ -299,7 +299,7 @@ async fn query_via_server(domain: &str, server: &str) -> Option<f64> {
 
     #[cfg(unix)]
     {
-        let mut cmd = tokio::process::Command::new("dig");
+        let mut cmd = crate::platform::system_command("dig");
         cmd.args([
             &format!("@{}", server),
             domain,

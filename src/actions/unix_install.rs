@@ -1854,7 +1854,7 @@ async fn run_installer_command(
     launcher: &str,
     args: &[&OsStr],
 ) -> Result<std::process::Output, String> {
-    let mut command = tokio::process::Command::new(launcher);
+    let mut command = crate::platform::system_command(launcher);
     command.args(args);
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
@@ -1922,8 +1922,10 @@ async fn run_bounded_command(
     launcher: &str,
     args: &[&OsStr],
 ) -> Result<std::process::Output, String> {
-    let mut command = tokio::process::Command::new(launcher);
+    let mut command = crate::platform::system_command(launcher);
     command.args(args);
+    // pkgutil/codesign/spctl evidence is parsed using their English fields.
+    command.env("LC_ALL", "C");
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());

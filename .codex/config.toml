@@ -2,6 +2,6 @@
 command = "npx"
 args = [
     "-y",
-    "@upstash/context7-mcp",
+    "@upstash/context7-mcp@4.6.0",
 ]
 env_vars = ["CONTEXT7_API_KEY"]

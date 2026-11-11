@@ -424,6 +424,12 @@ Continue? Type 'y' to proceed, anything else to skip:
 
 `--yes` does **not** bypass high-risk prompts — they always require an explicit `y`. Anything else (including a blank Enter) is treated as N. In `--json` / non-interactive contexts, high-risk actions are skipped, not auto-applied, with a clear marker in the report.
 
+Repair and diagnostic system tools are resolved from operating-system directories, with no fallback to a caller-controlled `PATH` or working directory. Optional utilities installed only in custom directories may therefore be unavailable; the existing safe fallback or skip behavior applies.
+
+PowerShell module lookup and shell startup hooks are also constrained. If a recognized VPN provider's CLI is unavailable in trusted locations, ND-300 asks you to disconnect it manually and leaves its adapter alone. Enterprise VPNs remain excluded from automatic disconnection.
+
+The Linux dhcpcd Wi-Fi fallback writes network names and derived WPA-PSKs as hexadecimal values so network text cannot introduce extra configuration settings. It accepts network names of 1–32 bytes and WPA passphrases of 8–63 printable ASCII characters, including quotes and backslashes. Configuration write and reload failures are reported; a successful reload alone is not reported as a successful connection.
+
 #### macOS deep-reset safety
 
 ND300 no longer deletes and recreates a macOS network service. That older design
@@ -592,6 +598,12 @@ locations and prints manual guidance instead.
 
 If you installed via one of the four first-class Windows installers (MSI/EXE × Global/Corporate — see [Installation](#windows-installers-msi--exe-global--corporate)), `nd300 update` matches the running executable to its normalized HKCU/HKLM Add/Remove Programs record and downloads the **matching** installer for an in-place upgrade — rather than switching you to a different installer/format. The `HKCU\Software\ND300\InstallSource` marker and known install path are fallbacks, not unconditional authority. A binary in `.cargo\bin`, or a single proven registered owner, overrides a contradictory stale marker.
 
+Standalone Windows updates run the exact-release installer script through native
+Windows PowerShell, resolved from the operating system's system directory. The
+optional PowerShell 7 (`pwsh`) fallback has been retired. If native Windows
+PowerShell is unavailable, the update reports the failure and provides manual
+installation guidance while preserving the current installation.
+
 Windows locks a running executable against overwrite but permits an in-place
 rename. Before replacement, the updater/installer moves only `nd300.exe` and
 `speedqx.exe` to versioned `*.update-old-*` siblings. MSI performs that move in
@@ -645,8 +657,10 @@ and safe recovery state; a failed known installer route also includes
 ```
 
 The precise `"strategy"` values are `cargo`, `unix_archive`, `mac_dmg_pkg`,
-`installer_powershell`, `installer_pwsh`, `msi_global`, `msi_corporate`,
+`installer_powershell`, `msi_global`, `msi_corporate`,
 `exe_global`, and `exe_corporate`.
+Older releases could emit `installer_pwsh`; current releases use
+`installer_powershell` for standalone Windows updates.
 
 ## Speed Test Methodology
 

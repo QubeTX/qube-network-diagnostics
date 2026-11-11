@@ -78,7 +78,7 @@ async fn fetch_macos_lsof_tcp_lines() -> Option<Vec<String>> {
 async fn fetch_netstat() -> Option<NetstatCache> {
     use sysinfo::System;
 
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     cmd.args(["-ano"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -103,7 +103,7 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 
 #[cfg(target_os = "macos")]
 async fn fetch_netstat() -> Option<NetstatCache> {
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     // `-W` is still useful for Darwin's other wide columns. Long IPv6
     // endpoints remain fixed-width on macOS 26, so `connections` prefers the
     // bounded lsof field cache above when it is available.
@@ -123,7 +123,7 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 async fn fetch_netstat() -> Option<NetstatCache> {
     // Linux modules use `ss` and `netstat -an`, not `netstat -ano`.
     // We still fetch `netstat -an` for connection_states.
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     cmd.args(["-an"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -140,7 +140,7 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 
 #[cfg(windows)]
 async fn fetch_ipconfig() -> Option<IpconfigCache> {
-    let mut cmd = tokio::process::Command::new("ipconfig");
+    let mut cmd = crate::platform::system_command("ipconfig");
     cmd.args(["/all"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 

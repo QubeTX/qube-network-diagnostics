@@ -29,7 +29,7 @@ pub async fn collect() -> Option<Vec<RouteEntry>> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<Vec<RouteEntry>> {
-    let mut cmd = tokio::process::Command::new("route");
+    let mut cmd = crate::platform::system_command("route");
     cmd.args(["print", "-4"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -70,7 +70,7 @@ async fn collect_windows() -> Option<Vec<RouteEntry>> {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<Vec<RouteEntry>> {
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     cmd.args(["-rn", "-f", "inet"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -109,7 +109,7 @@ fn parse_macos_routes(text: &str) -> Vec<RouteEntry> {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<Vec<RouteEntry>> {
-    let mut cmd = tokio::process::Command::new("ip");
+    let mut cmd = crate::platform::system_command("ip");
     cmd.args(["route", "show"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 

@@ -217,6 +217,27 @@ async fn run_registered_disable(
     }
 }
 
+/// A recognized provider owns its disconnect operation. If its CLI is absent
+/// from the trusted locations, leave the VPN alone rather than substituting a
+/// different adapter mutation. Unrecognized adapters retain their OS fallback.
+async fn run_provider_or_adapter<F, Fut>(
+    provider: Option<(DisabledVpn, tokio::process::Command)>,
+    adapter_fallback: F,
+    config: &Config,
+    restore: &super::session::RestoreRegistry,
+) -> DisableAttempt
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = DisableAttempt>,
+{
+    match provider {
+        Some((vpn, command)) => {
+            run_registered_disable(vpn, command, TIMEOUT_MEDIUM, config, restore).await
+        }
+        None => adapter_fallback().await,
+    }
+}
+
 /// Detect connected VPNs and prompt user to disable them before fix stages.
 /// Every returned VPN had its reconnect operation registered before the
 /// disconnect subprocess was spawned.
@@ -266,8 +287,7 @@ pub async fn detect_and_disable(
             continue;
         }
 
-        // Try a vendor CLI first, but guard it before spawning.
-        if let Some((bin, args)) = find_vendor_cli(adapter) {
+        let provider = find_vendor_cli(adapter).map(|(bin, args)| {
             let guarded = DisabledVpn {
                 name: adapter.name.clone(),
                 method: DisableMethod::VendorCli(
@@ -281,36 +301,21 @@ pub async fn detect_and_disable(
                         .collect(),
                 ),
             };
-            let mut command = tokio::process::Command::new(&bin);
+            let mut command = crate::platform::system_command(&bin);
             command.args(&args);
-            let spinner = create_spinner(&format!("Disabling {}...", adapter.name));
-            let result =
-                run_registered_disable(guarded, command, TIMEOUT_MEDIUM, config, restore).await;
-            spinner.finish_and_clear();
-            match result {
-                DisableAttempt::Disabled(result) => {
-                    batch.disabled.push(result);
-                    continue;
-                }
-                DisableAttempt::Uncertain => {
-                    batch.uncertain_attempts += 1;
-                    if is_interactive(config) {
-                        print_step_fail(
-                            &format!("Could not confirm {} disconnected", adapter.name),
-                            "ND300 will conservatively reconnect it during cleanup",
-                            config,
-                        );
-                    }
-                    continue;
-                }
-                DisableAttempt::DefinitelyNotRun => {}
-            }
-        }
-
+            (guarded, command)
+        });
+        let recognized_provider = provider.is_some();
         let spinner = create_spinner(&format!("Disabling {}...", adapter.name));
-        let fallback_result = disable_adapter_fallback(adapter, config, restore).await;
+        let result = run_provider_or_adapter(
+            provider,
+            || disable_adapter_fallback(adapter, config, restore),
+            config,
+            restore,
+        )
+        .await;
         spinner.finish_and_clear();
-        match fallback_result {
+        match result {
             DisableAttempt::Disabled(disabled_vpn) => batch.disabled.push(disabled_vpn),
             DisableAttempt::Uncertain => {
                 batch.uncertain_attempts += 1;
@@ -326,7 +331,11 @@ pub async fn detect_and_disable(
                 if is_interactive(config) {
                     print_step_fail(
                         &format!("Could not disable {}", adapter.name),
-                        "Try disconnecting manually before running fix",
+                        if recognized_provider {
+                            "Provider CLI unavailable in trusted locations; disconnect manually before running fix"
+                        } else {
+                            "Try disconnecting manually before running fix"
+                        },
                         config,
                     );
                 }
@@ -355,7 +364,7 @@ async fn disable_adapter_fallback(
                 name: adapter.name.clone(),
                 method: DisableMethod::Netsh(iface.clone()),
             };
-            let mut command = tokio::process::Command::new("netsh");
+            let mut command = crate::platform::system_command("netsh");
             command.args(["interface", "set", "interface", iface, "disabled"]);
             return run_registered_disable(vpn, command, TIMEOUT_SLOW, config, restore).await;
         }
@@ -368,7 +377,7 @@ async fn disable_adapter_fallback(
             name: adapter.name.clone(),
             method: DisableMethod::Scutil(adapter.name.clone()),
         };
-        let mut command = tokio::process::Command::new("scutil");
+        let mut command = crate::platform::system_command("scutil");
         command.args(["--nc", "stop", &adapter.name]);
         run_registered_disable(vpn, command, TIMEOUT_MEDIUM, config, restore).await
     }
@@ -379,7 +388,7 @@ async fn disable_adapter_fallback(
             name: adapter.name.clone(),
             method: DisableMethod::Nmcli(adapter.name.clone()),
         };
-        let mut nmcli = tokio::process::Command::new("nmcli");
+        let mut nmcli = crate::platform::system_command("nmcli");
         nmcli.args(["connection", "down", &adapter.name]);
         match run_registered_disable(nmcli_vpn, nmcli, TIMEOUT_MEDIUM, config, restore).await {
             result @ DisableAttempt::Disabled(_) | result @ DisableAttempt::Uncertain => {
@@ -393,7 +402,7 @@ async fn disable_adapter_fallback(
                 name: adapter.name.clone(),
                 method: DisableMethod::WgQuick(iface.clone()),
             };
-            let mut wg = tokio::process::Command::new("wg-quick");
+            let mut wg = crate::platform::system_command("wg-quick");
             wg.args(["down", iface]);
             return run_registered_disable(wireguard_vpn, wg, TIMEOUT_MEDIUM, config, restore)
                 .await;
@@ -644,7 +653,7 @@ async fn read_state_text(command: tokio::process::Command) -> Option<String> {
 }
 
 async fn read_wireguard_state(iface: &str) -> VpnConnectionState {
-    let mut command = tokio::process::Command::new("wg");
+    let mut command = crate::platform::system_command("wg");
     command.args(["show", "interfaces"]);
     read_state_text(command)
         .await
@@ -668,22 +677,22 @@ async fn read_vpn_state(vpn: &DisabledVpn) -> VpnConnectionState {
             let (command, parser): (tokio::process::Command, fn(&str) -> VpnConnectionState) =
                 match program.as_str() {
                     "nordvpn" | "nordvpn.exe" => {
-                        let mut command = tokio::process::Command::new(bin);
+                        let mut command = crate::platform::system_command(bin);
                         command.arg("status");
                         (command, parse_nordvpn_state)
                     }
                     "expressvpn" | "expressvpn.exe" => {
-                        let mut command = tokio::process::Command::new(bin);
+                        let mut command = crate::platform::system_command(bin);
                         command.arg("status");
                         (command, parse_expressvpn_state)
                     }
                     "mullvad" | "mullvad.exe" => {
-                        let mut command = tokio::process::Command::new(bin);
+                        let mut command = crate::platform::system_command(bin);
                         command.arg("status");
                         (command, parse_mullvad_state)
                     }
                     "tailscale" | "tailscale.exe" => {
-                        let mut command = tokio::process::Command::new(bin);
+                        let mut command = crate::platform::system_command(bin);
                         command.args(["status", "--json"]);
                         (command, parse_tailscale_state)
                     }
@@ -698,7 +707,7 @@ async fn read_vpn_state(vpn: &DisabledVpn) -> VpnConnectionState {
             read_state_command(command, parser).await
         }
         DisableMethod::Netsh(iface) => {
-            let mut command = tokio::process::Command::new("netsh");
+            let mut command = crate::platform::system_command("netsh");
             command.args(["interface", "show", "interface", &format!("name={iface}")]);
             read_state_command(command, parse_netsh_state).await
         }
@@ -710,7 +719,7 @@ async fn read_vpn_state(vpn: &DisabledVpn) -> VpnConnectionState {
         }
         #[cfg(target_os = "linux")]
         DisableMethod::Nmcli(conn) => {
-            let mut command = tokio::process::Command::new("nmcli");
+            let mut command = crate::platform::system_command("nmcli");
             command.args(["-g", "GENERAL.STATE", "connection", "show", conn]);
             read_state_command(command, parse_nmcli_state).await
         }
@@ -746,12 +755,12 @@ async fn run_vpn_mutation(vpn: &DisabledVpn, reconnect: bool) -> bool {
                     })
                     .collect()
             };
-            let mut command = tokio::process::Command::new(bin);
+            let mut command = crate::platform::system_command(bin);
             command.args(args);
             command
         }
         DisableMethod::Netsh(iface) => {
-            let mut command = tokio::process::Command::new("netsh");
+            let mut command = crate::platform::system_command("netsh");
             command.args([
                 "interface",
                 "set",
@@ -769,13 +778,13 @@ async fn run_vpn_mutation(vpn: &DisabledVpn, reconnect: bool) -> bool {
         }
         #[cfg(target_os = "linux")]
         DisableMethod::Nmcli(conn) => {
-            let mut command = tokio::process::Command::new("nmcli");
+            let mut command = crate::platform::system_command("nmcli");
             command.args(["connection", if reconnect { "up" } else { "down" }, conn]);
             command
         }
         #[cfg(target_os = "linux")]
         DisableMethod::WgQuick(iface) => {
-            let mut command = tokio::process::Command::new("wg-quick");
+            let mut command = crate::platform::system_command("wg-quick");
             command.args([if reconnect { "up" } else { "down" }, iface]);
             command
         }
@@ -959,6 +968,48 @@ mod restore_registration_tests {
             name: "Test VPN".to_string(),
             method: DisableMethod::VendorCli("rustc".to_string(), vec!["--version".to_string()]),
         }
+    }
+
+    #[tokio::test]
+    async fn missing_provider_never_invokes_generic_adapter_fallback() {
+        let restore = RestoreRegistry::new();
+        let adapter_attempted = std::cell::Cell::new(false);
+        let provider = Some((
+            test_vpn(),
+            crate::platform::system_command("nd300-nonexistent-vpn-disconnector"),
+        ));
+        let result = run_provider_or_adapter(
+            provider,
+            || async {
+                adapter_attempted.set(true);
+                DisableAttempt::DefinitelyNotRun
+            },
+            &Config::new().with_json(),
+            &restore,
+        )
+        .await;
+        assert!(matches!(result, DisableAttempt::DefinitelyNotRun));
+        assert!(!adapter_attempted.get());
+        assert_eq!(restore.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn unrecognized_provider_retains_generic_adapter_fallback() {
+        let restore = RestoreRegistry::new();
+        let adapter_attempted = std::cell::Cell::new(false);
+        let result = run_provider_or_adapter(
+            None,
+            || async {
+                adapter_attempted.set(true);
+                DisableAttempt::DefinitelyNotRun
+            },
+            &Config::new().with_json(),
+            &restore,
+        )
+        .await;
+        assert!(matches!(result, DisableAttempt::DefinitelyNotRun));
+        assert!(adapter_attempted.get());
+        assert_eq!(restore.pending_count().await, 0);
     }
 
     #[tokio::test]

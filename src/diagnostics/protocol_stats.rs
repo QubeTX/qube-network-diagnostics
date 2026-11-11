@@ -54,7 +54,7 @@ pub async fn collect() -> Option<ProtocolStatistics> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<ProtocolStatistics> {
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     cmd.args(["-s"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -155,14 +155,14 @@ async fn collect_windows() -> Option<ProtocolStatistics> {
 
 #[cfg(target_os = "macos")]
 async fn collect_macos() -> Option<ProtocolStatistics> {
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     cmd.args(["-s"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
 
     let mut stats = parse_macos_protocol_stats(&text)?;
-    let mut connections_cmd = tokio::process::Command::new("netstat");
+    let mut connections_cmd = crate::platform::system_command("netstat");
     connections_cmd.args(["-anW", "-p", "tcp"]);
     let connections = super::util::run_with_timeout(connections_cmd, super::util::QUICK).await?;
     stats.tcp.current_connections = String::from_utf8_lossy(&connections.stdout)

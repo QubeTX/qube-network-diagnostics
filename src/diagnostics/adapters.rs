@@ -456,7 +456,7 @@ pub async fn enrich_driver_info(_adapters: &mut [AdapterInfo]) {
 async fn collect_adapters_macos() -> Vec<AdapterInfo> {
     let mut adapters = Vec::new();
 
-    let mut cmd = tokio::process::Command::new("networksetup");
+    let mut cmd = crate::platform::system_command("networksetup");
     cmd.args(["-listallhardwareports"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -517,7 +517,7 @@ fn detect_macos_type(name: &str) -> String {
 
 #[cfg(target_os = "macos")]
 async fn check_interface_up(device: &str) -> bool {
-    let mut cmd = tokio::process::Command::new("ifconfig");
+    let mut cmd = crate::platform::system_command("ifconfig");
     cmd.arg(device);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -531,7 +531,7 @@ async fn check_interface_up(device: &str) -> bool {
 async fn collect_adapters_linux() -> Vec<AdapterInfo> {
     let mut adapters = Vec::new();
 
-    let mut cmd = tokio::process::Command::new("ip");
+    let mut cmd = crate::platform::system_command("ip");
     cmd.args(["-o", "link", "show"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);

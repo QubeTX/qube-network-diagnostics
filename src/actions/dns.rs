@@ -193,13 +193,13 @@ pub async fn run(config: &Config) -> i32 {
         #[cfg(target_os = "linux")]
         if matches!(provider, DnsProvider::NextDns(_)) {
             // Restore backed-up resolved.conf if it exists
-            let mut restore = tokio::process::Command::new("cp");
+            let mut restore = crate::platform::system_command("cp");
             restore.args([
                 "/etc/systemd/resolved.conf.bak",
                 "/etc/systemd/resolved.conf",
             ]);
             let _ = super::fix::cmd::run_cmd(restore, super::fix::cmd::TIMEOUT_QUICK).await;
-            let mut restart = tokio::process::Command::new("systemctl");
+            let mut restart = crate::platform::system_command("systemctl");
             restart.args(["restart", "systemd-resolved"]);
             let _ = super::fix::cmd::run_cmd(restart, super::fix::cmd::TIMEOUT_MEDIUM).await;
         }

@@ -123,7 +123,7 @@ pub fn ping_args(host: &str, count: u32) -> Vec<String> {
 /// spawn failure, timeout, or zero replies. The budget scales with the count
 /// via [`util::ping_budget`] so long bursts aren't truncated by a fixed cap.
 pub async fn run_ping(host: &str, count: u32) -> Option<String> {
-    let mut cmd = tokio::process::Command::new("ping");
+    let mut cmd = crate::platform::system_command("ping");
     cmd.args(ping_args(host, count));
     let output = util::run_with_timeout(cmd, util::ping_budget(count)).await?;
     if output.status.success() {

@@ -11,9 +11,11 @@
   Steps:
     1. Ensure WiX 3.11 binaries (candle.exe / light.exe) are available.
        Downloads wix311-binaries.zip from the WiX Toolset GitHub release into a
-       local cache if not already present / not on PATH.
-    2. Ensure Inno Setup 6 (iscc.exe) is available. Installs it
-       (/CURRENTUSER /VERYSILENT) via the JRSoftware installer if missing.
+       local cache if not already present / not on PATH. Verifies the pinned
+       ZIP hash before every extraction, including reuse of a cached archive.
+    2. Ensure Inno Setup 6 (iscc.exe) is available. Downloads the pinned
+       publisher installer, verifies its SHA-256, then installs it
+       (/CURRENTUSER /VERYSILENT) if missing.
     3. cargo build --release (produces target\release\nd300.exe + speedqx.exe).
     4. Build the 4 installers:
          - Global MSI       : wix\main.wxs            (candle + light)
@@ -78,18 +80,84 @@ Write-Host "Version: $Version"
 
 $cacheDir = Join-Path $env:LOCALAPPDATA 'nd300-installer-tools'
 New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+if ((Get-Item -LiteralPath $cacheDir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw 'Refusing a redirected installer-tool cache.'
+}
+
+# Publisher release inputs, verified against their official release assets:
+# https://github.com/wixtoolset/wix3/releases/tag/wix3112rtm
+# https://github.com/jrsoftware/issrc/releases/tag/is-6_7_4
+$WixZipUrl = 'https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip'
+$WixZipSha256 = '2c1888d5d1dba377fc7fa14444cf556963747ff9a0a289a3599cf09da03b9e2e'
+$InnoSetupUrl = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe'
+$InnoSetupSha256 = 'a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c'
+
+function Assert-FileSha256 {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][string]$ExpectedSha256,
+        [Parameter(Mandatory=$true)][string]$Label
+    )
+
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $ExpectedSha256.ToLowerInvariant()) {
+        throw "$Label SHA-256 mismatch. Refusing to extract or execute downloaded tool."
+    }
+}
+
+function Expand-VerifiedWix {
+    param([Parameter(Mandatory=$true)][string]$Archive)
+
+    Assert-FileSha256 -Path $Archive -ExpectedSha256 $WixZipSha256 -Label 'WiX 3.11 binaries ZIP'
+    # A marker cannot authenticate extracted executables. Recreate only our
+    # dedicated cache subdirectory from the verified archive on every use.
+    $destination = [IO.Path]::GetFullPath((Join-Path $cacheDir 'wix3112rtm'))
+    $cacheRoot = (Resolve-Path -LiteralPath $cacheDir).Path
+    if ([IO.Path]::GetDirectoryName($destination) -ne $cacheRoot -or
+        [IO.Path]::GetFileName($destination) -ne 'wix3112rtm') {
+        throw 'WiX extraction path escaped the managed cache.'
+    }
+    if (Test-Path -LiteralPath $destination) {
+        $item = Get-Item -LiteralPath $destination -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Refusing a redirected WiX extraction directory.'
+        }
+        Remove-Item -LiteralPath $destination -Recurse -Force
+    }
+    Expand-Archive -LiteralPath $Archive -DestinationPath $destination
+    return $destination
+}
+
+function Install-VerifiedInno {
+    param([Parameter(Mandatory=$true)][string]$Installer)
+
+    Assert-FileSha256 -Path $Installer -ExpectedSha256 $InnoSetupSha256 -Label 'Inno Setup installer'
+    return Start-Process -FilePath $Installer -ArgumentList '/CURRENTUSER','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -Wait -PassThru
+}
 
 # --- Ensure WiX 3.11 (candle/light) ------------------------------------------
 function Get-WixBinDir {
-    # 1. $env:WIX (CI / installed WiX) — binaries live under $env:WIX\bin.
-    if ($env:WIX -and (Test-Path (Join-Path $env:WIX 'bin\candle.exe'))) {
-        return (Join-Path $env:WIX 'bin')
-    }
-    # 2. On PATH.
+    # Installed tools outside our cache may come from $env:WIX\bin or PATH.
+    $candidates = @()
+    if ($env:WIX) { $candidates += Join-Path $env:WIX 'bin' }
     $candle = Get-Command candle.exe -ErrorAction SilentlyContinue
-    if ($candle) { return (Split-Path $candle.Source) }
-    # 3. Local cache (downloaded wix311-binaries.zip extracts candle/light at root).
-    if (Test-Path (Join-Path $cacheDir 'candle.exe')) { return $cacheDir }
+    if ($candle) { $candidates += Split-Path $candle.Source }
+    $cacheRoot = [IO.Path]::GetFullPath($cacheDir).TrimEnd('\', '/')
+    $cachePrefix = $cacheRoot + [IO.Path]::DirectorySeparatorChar
+    foreach ($candidate in $candidates) {
+        $absolute = [IO.Path]::GetFullPath($candidate).TrimEnd('\', '/')
+        # Adding an old flat cache or our versioned extraction to PATH/WIX
+        # must not turn cached bytes into a trusted installed-tool override.
+        if ($absolute -eq $cacheRoot -or
+            $absolute.StartsWith($cachePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        if ((Test-Path (Join-Path $absolute 'candle.exe')) -and
+            (Test-Path (Join-Path $absolute 'light.exe'))) {
+            return $absolute
+        }
+    }
+    # Managed extracted caches are never returned here without ZIP verification.
     return $null
 }
 
@@ -97,12 +165,15 @@ $wixBin = Get-WixBinDir
 if (-not $wixBin) {
     Write-Host "WiX 3.11 not found — downloading wix311-binaries.zip..."
     $zip = Join-Path $cacheDir 'wix311-binaries.zip'
-    $url = 'https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip'
-    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-    Expand-Archive -Path $zip -DestinationPath $cacheDir -Force
-    $wixBin = Get-WixBinDir
+    if (-not (Test-Path -LiteralPath $zip)) {
+        Invoke-WebRequest -Uri $WixZipUrl -OutFile $zip -UseBasicParsing
+    }
+    $wixBin = Expand-VerifiedWix -Archive $zip
 }
-if (-not $wixBin) { throw "Failed to obtain WiX 3.11 candle/light binaries." }
+if (-not $wixBin -or -not (Test-Path (Join-Path $wixBin 'candle.exe')) -or
+    -not (Test-Path (Join-Path $wixBin 'light.exe'))) {
+    throw "Failed to obtain WiX 3.11 candle/light binaries."
+}
 $candle = Join-Path $wixBin 'candle.exe'
 $light  = Join-Path $wixBin 'light.exe'
 Write-Host "WiX bin: $wixBin"
@@ -122,10 +193,9 @@ function Get-Iscc {
 $iscc = Get-Iscc
 if (-not $iscc) {
     Write-Host "Inno Setup 6 not found — installing (/CURRENTUSER /VERYSILENT)..."
-    $innoExe = Join-Path $cacheDir 'innosetup-6.exe'
-    # JRSoftware's stable redirector for the latest Inno Setup 6.
-    Invoke-WebRequest -Uri 'https://jrsoftware.org/download.php/is.exe' -OutFile $innoExe -UseBasicParsing
-    $p = Start-Process -FilePath $innoExe -ArgumentList '/CURRENTUSER','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+    $innoExe = Join-Path $cacheDir 'innosetup-6.7.4.exe'
+    Invoke-WebRequest -Uri $InnoSetupUrl -OutFile $innoExe -UseBasicParsing
+    $p = Install-VerifiedInno -Installer $innoExe
     if ($p.ExitCode -ne 0) { throw "Inno Setup install failed with exit $($p.ExitCode)." }
     $iscc = Get-Iscc
 }

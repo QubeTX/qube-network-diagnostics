@@ -11,7 +11,7 @@ pub async fn collect() -> Option<Vec<MtuInfo>> {
 
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["interface", "ipv4", "show", "subinterfaces"]);
         if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -33,7 +33,7 @@ pub async fn collect() -> Option<Vec<MtuInfo>> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cmd = tokio::process::Command::new("ip");
+        let mut cmd = crate::platform::system_command("ip");
         cmd.args(["link", "show"]);
         if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -63,7 +63,7 @@ pub async fn collect() -> Option<Vec<MtuInfo>> {
 
     #[cfg(target_os = "macos")]
     {
-        let cmd = tokio::process::Command::new("ifconfig");
+        let cmd = crate::platform::system_command("ifconfig");
         if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             let text = String::from_utf8_lossy(&output.stdout);
             let mut current_iface = String::new();
@@ -258,7 +258,7 @@ async fn probe_df(payload: u32) -> Option<bool> {
         PROBE_TARGET.into(),
     ];
 
-    let mut cmd = tokio::process::Command::new("ping");
+    let mut cmd = crate::platform::system_command("ping");
     cmd.args(&args);
     let output = super::util::run_with_timeout(cmd, super::util::SLOW).await?;
     Some(output.status.success())

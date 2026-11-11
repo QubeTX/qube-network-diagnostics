@@ -719,7 +719,7 @@ pub(crate) fn spawn_delayed_delete(exe_path: &Path) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let powershell = system_powershell_path()?;
-    std::process::Command::new(&powershell)
+    crate::platform::system_std_command(&powershell)
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -829,10 +829,8 @@ fn path_entry_matches_target(entry: &str, target: &str) -> bool {
 /// Returns Ok(true) if the entry was found and removed, Ok(false) if it wasn't in PATH.
 #[cfg(windows)]
 fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
-    use std::process::Command;
-
     // Read current user PATH from registry
-    let output = Command::new("reg")
+    let output = crate::platform::system_std_command("reg")
         .args(["query", "HKCU\\Environment", "/v", "PATH"])
         .output()
         .map_err(|e| format!("Failed to query registry: {}", e))?;
@@ -882,7 +880,7 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
     let new_path = new_parts.join(";");
 
     // Write updated PATH back to registry
-    let status = Command::new("reg")
+    let status = crate::platform::system_std_command("reg")
         .args([
             "add",
             "HKCU\\Environment",
@@ -899,7 +897,7 @@ fn remove_from_user_path(dir_to_remove: &Path) -> Result<bool, String> {
 
     if status.status.success() {
         // Broadcast WM_SETTINGCHANGE so Explorer picks up the change
-        let _ = Command::new("powershell")
+        let _ = crate::platform::system_std_command("powershell")
             .args([
                 "-NoProfile",
                 "-Command",

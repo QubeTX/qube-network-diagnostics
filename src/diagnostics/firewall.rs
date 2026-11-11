@@ -34,7 +34,7 @@ pub async fn collect() -> Option<FirewallInfo> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<FirewallInfo> {
-    let mut cmd = tokio::process::Command::new("netsh");
+    let mut cmd = crate::platform::system_command("netsh");
     cmd.args(["advfirewall", "show", "allprofiles", "state"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -66,7 +66,7 @@ async fn collect_windows() -> Option<FirewallInfo> {
     }
 
     // Get policy info
-    let mut cmd = tokio::process::Command::new("netsh");
+    let mut cmd = crate::platform::system_command("netsh");
     cmd.args(["advfirewall", "show", "allprofiles"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -150,7 +150,7 @@ async fn collect_macos() -> Option<FirewallInfo> {
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<FirewallInfo> {
     // Try ufw first
-    let mut cmd = tokio::process::Command::new("ufw");
+    let mut cmd = crate::platform::system_command("ufw");
     cmd.args(["status"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -174,7 +174,7 @@ async fn collect_linux() -> Option<FirewallInfo> {
     }
 
     // Try iptables
-    let mut cmd = tokio::process::Command::new("iptables");
+    let mut cmd = crate::platform::system_command("iptables");
     cmd.args(["-L", "-n", "--line-numbers"]);
     if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);

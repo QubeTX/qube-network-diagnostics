@@ -76,7 +76,7 @@ pub async fn collect() -> Option<Vec<ReverseDnsEntry>> {
 async fn reverse_lookup(ip: &str) -> Option<String> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("nslookup");
+        let mut cmd = crate::platform::system_command("nslookup");
         cmd.args([ip]);
         let output = super::util::run_with_timeout(cmd, super::util::SLOW).await?;
 
@@ -91,7 +91,7 @@ async fn reverse_lookup(ip: &str) -> Option<String> {
 
     #[cfg(unix)]
     {
-        let mut cmd = tokio::process::Command::new("dig");
+        let mut cmd = crate::platform::system_command("dig");
         cmd.args(["-x", ip, "+short"]);
         let output = super::util::run_with_timeout(cmd, super::util::SLOW).await?;
 

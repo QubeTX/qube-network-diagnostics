@@ -29,9 +29,9 @@ pub async fn restart_services() -> Result<String, String> {
 
         // Try sc stop/start with internal service names (works better than net stop/start)
         for (internal, display) in &[("dnscache", "DNS Client"), ("Dhcp", "DHCP Client")] {
-            let mut stop_cmd = tokio::process::Command::new("sc");
+            let mut stop_cmd = crate::platform::system_command("sc");
             stop_cmd.args(["stop", internal]);
-            let mut start_cmd = tokio::process::Command::new("sc");
+            let mut start_cmd = crate::platform::system_command("sc");
             start_cmd.args(["start", internal]);
             match super::cmd::run_owned_mutation_pair(
                 stop_cmd,
@@ -57,7 +57,7 @@ pub async fn restart_services() -> Result<String, String> {
         // If sc failed (PPL-protected services), try PowerShell Restart-Service
         if restarted.is_empty() {
             for (internal, display) in &[("dnscache", "DNS Client"), ("Dhcp", "DHCP Client")] {
-                let mut cmd = tokio::process::Command::new("powershell");
+                let mut cmd = crate::platform::system_command("powershell");
                 cmd.args([
                     "-NoProfile",
                     "-Command",
@@ -85,7 +85,7 @@ pub async fn restart_services() -> Result<String, String> {
 
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = tokio::process::Command::new("killall");
+        let mut cmd = crate::platform::system_command("killall");
         cmd.args(["-HUP", "configd"]);
         match run_cmd(cmd, TIMEOUT_QUICK).await {
             Ok(output) if output.status.success() => Ok("Restarted configd".to_string()),
@@ -96,7 +96,7 @@ pub async fn restart_services() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         // Try NetworkManager first
-        let mut nm_cmd = tokio::process::Command::new("systemctl");
+        let mut nm_cmd = crate::platform::system_command("systemctl");
         nm_cmd.args(["restart", "NetworkManager"]);
         if let Ok(output) = super::cmd::run_owned_mutation(nm_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
@@ -105,7 +105,7 @@ pub async fn restart_services() -> Result<String, String> {
         }
 
         // Fallback to dhcpcd
-        let mut dhcpcd_cmd = tokio::process::Command::new("systemctl");
+        let mut dhcpcd_cmd = crate::platform::system_command("systemctl");
         dhcpcd_cmd.args(["restart", "dhcpcd"]);
         if let Ok(output) = super::cmd::run_owned_mutation(dhcpcd_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
@@ -120,7 +120,7 @@ pub async fn restart_services() -> Result<String, String> {
 pub async fn disable_interface(iface: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["interface", "set", "interface", iface, "disabled"]);
         match super::cmd::run_owned_mutation(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(()),
@@ -135,7 +135,7 @@ pub async fn disable_interface(iface: &str) -> Result<(), String> {
         // never guess that an unknown Wi-Fi device is wired and run ifconfig.
         let is_wifi = is_wifi_device(iface).await?;
         if is_wifi {
-            let mut cmd = tokio::process::Command::new("networksetup");
+            let mut cmd = crate::platform::system_command("networksetup");
             cmd.args(["-setairportpower", iface, "off"]);
             match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
@@ -143,7 +143,7 @@ pub async fn disable_interface(iface: &str) -> Result<(), String> {
                 Err(e) => Err(e),
             }
         } else {
-            let mut cmd = tokio::process::Command::new("ifconfig");
+            let mut cmd = crate::platform::system_command("ifconfig");
             cmd.args([iface, "down"]);
             match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
@@ -155,7 +155,7 @@ pub async fn disable_interface(iface: &str) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cmd = tokio::process::Command::new("ip");
+        let mut cmd = crate::platform::system_command("ip");
         cmd.args(["link", "set", iface, "down"]);
         match super::cmd::run_owned_mutation(cmd, TIMEOUT_MEDIUM).await {
             Ok(output) if output.status.success() => Ok(()),
@@ -168,7 +168,7 @@ pub async fn disable_interface(iface: &str) -> Result<(), String> {
 pub async fn enable_interface(iface: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["interface", "set", "interface", iface, "enabled"]);
         match super::cmd::run_owned_mutation(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(()),
@@ -181,7 +181,7 @@ pub async fn enable_interface(iface: &str) -> Result<(), String> {
     {
         let is_wifi = is_wifi_device(iface).await?;
         if is_wifi {
-            let mut cmd = tokio::process::Command::new("networksetup");
+            let mut cmd = crate::platform::system_command("networksetup");
             cmd.args(["-setairportpower", iface, "on"]);
             match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
@@ -189,7 +189,7 @@ pub async fn enable_interface(iface: &str) -> Result<(), String> {
                 Err(e) => Err(e),
             }
         } else {
-            let mut cmd = tokio::process::Command::new("ifconfig");
+            let mut cmd = crate::platform::system_command("ifconfig");
             cmd.args([iface, "up"]);
             match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
@@ -201,7 +201,7 @@ pub async fn enable_interface(iface: &str) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cmd = tokio::process::Command::new("ip");
+        let mut cmd = crate::platform::system_command("ip");
         cmd.args(["link", "set", iface, "up"]);
         match super::cmd::run_owned_mutation(cmd, TIMEOUT_MEDIUM).await {
             Ok(output) if output.status.success() => Ok(()),
@@ -261,7 +261,7 @@ async fn macos_interface_operational(iface: &str) -> Result<bool, String> {
         });
     }
 
-    let mut command = tokio::process::Command::new("ifconfig");
+    let mut command = crate::platform::system_command("ifconfig");
     command.arg(iface);
     let output = run_cmd(command, TIMEOUT_QUICK).await?;
     if !output.status.success() {
@@ -356,7 +356,7 @@ async fn stage3_windows(
     // 1. Winsock reset
     {
         let spinner = create_spinner("Resetting Winsock catalog...");
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["winsock", "reset"]);
         let r = run_cmd(cmd, TIMEOUT_SLOW).await;
         spinner.finish_and_clear();
@@ -369,7 +369,7 @@ async fn stage3_windows(
     // 2. TCP/IP reset
     {
         let spinner = create_spinner("Resetting TCP/IP stack...");
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["int", "ip", "reset"]);
         let r = run_cmd(cmd, TIMEOUT_SLOW).await;
         spinner.finish_and_clear();
@@ -382,7 +382,7 @@ async fn stage3_windows(
     // 3. IPv6 reset
     {
         let spinner = create_spinner("Resetting IPv6 stack...");
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["int", "ipv6", "reset"]);
         let r = run_cmd(cmd, TIMEOUT_SLOW).await;
         spinner.finish_and_clear();
@@ -394,7 +394,7 @@ async fn stage3_windows(
 
     // 4. DNS flush
     {
-        let mut cmd = tokio::process::Command::new("ipconfig");
+        let mut cmd = crate::platform::system_command("ipconfig");
         cmd.arg("/flushdns");
         let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
     }
@@ -407,7 +407,7 @@ async fn stage3_windows(
                 ssid,
             );
             if prompt_yes_no(&prompt) {
-                let mut cmd = tokio::process::Command::new("netsh");
+                let mut cmd = crate::platform::system_command("netsh");
                 cmd.args(["wlan", "delete", "profile", &format!("name={}", ssid)]);
                 let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
                 completed.push(format!("Deleted Wi-Fi profile: {}", ssid));
@@ -515,7 +515,7 @@ fn parse_macos_network_service_order(text: &str) -> Vec<MacosNetworkService> {
 
 #[cfg(target_os = "macos")]
 async fn run_networksetup_checked(args: &[&str]) -> Result<String, String> {
-    let mut command = tokio::process::Command::new("networksetup");
+    let mut command = crate::platform::system_command("networksetup");
     command.args(args);
     let output = run_cmd(command, TIMEOUT_MEDIUM).await?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -599,7 +599,7 @@ async fn macos_service_enabled(service: &str) -> Result<bool, String> {
 #[cfg(target_os = "macos")]
 async fn set_macos_service_enabled(service: &str, enabled: bool) -> Result<(), String> {
     let state = if enabled { "on" } else { "off" };
-    let mut command = tokio::process::Command::new("networksetup");
+    let mut command = crate::platform::system_command("networksetup");
     command.args(["-setnetworkserviceenabled", service, state]);
     let output = run_macos_mutation(command, TIMEOUT_MEDIUM).await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -642,7 +642,7 @@ async fn wait_for_macos_service_state(service: &str, expected: bool) -> Result<(
 
 #[cfg(target_os = "macos")]
 async fn macos_default_route_interface() -> Result<String, String> {
-    let mut command = tokio::process::Command::new("route");
+    let mut command = crate::platform::system_command("route");
     command.args(["-n", "get", "default"]);
     let output = run_cmd(command, TIMEOUT_QUICK).await?;
     if !output.status.success() {
@@ -1376,13 +1376,13 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
     // dhcpcd fallback
     let spinner = create_spinner("Resetting dhcpcd configuration...");
     // Back up config
-    let mut cp_cmd = tokio::process::Command::new("cp");
+    let mut cp_cmd = crate::platform::system_command("cp");
     cp_cmd.args(["/etc/dhcpcd.conf", "/etc/dhcpcd.conf.bak"]);
     let _ = run_cmd(cp_cmd, TIMEOUT_QUICK).await;
     completed.push("Backed up /etc/dhcpcd.conf".to_string());
 
     // Just restart dhcpcd to pick up changes
-    let mut restart_cmd = tokio::process::Command::new("systemctl");
+    let mut restart_cmd = crate::platform::system_command("systemctl");
     restart_cmd.args(["restart", "dhcpcd"]);
     let _ = super::cmd::run_owned_mutation(restart_cmd, TIMEOUT_MEDIUM).await;
     spinner.finish_and_clear();
@@ -1397,36 +1397,36 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
             prompt_string("  Enter SSID to connect to: ")
         };
         let passphrase = prompt_string("  Enter passphrase: ");
+        let wpa_conf = super::wpa_config::network_block(&ssid_to_connect, &passphrase)?;
 
         // Add network via wpa_cli
         let spinner = create_spinner("Scanning for Wi-Fi networks...");
-        let mut scan_cmd = tokio::process::Command::new("wpa_cli");
+        let mut scan_cmd = crate::platform::system_command("wpa_cli");
         scan_cmd.args(["-i", &iface, "scan"]);
         let _ = run_cmd(scan_cmd, TIMEOUT_QUICK).await;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         spinner.finish_and_clear();
 
-        // Create wpa_supplicant entry
-        let wpa_conf = format!(
-            "network={{\n  ssid=\"{}\"\n  psk=\"{}\"\n}}\n",
-            ssid_to_connect, passphrase,
-        );
-        // Append to wpa_supplicant.conf
-        if let Ok(mut file) = tokio::fs::OpenOptions::new()
+        // Only the validated hexadecimal fields reach the privileged file.
+        let mut file = tokio::fs::OpenOptions::new()
             .append(true)
             .open("/etc/wpa_supplicant/wpa_supplicant.conf")
             .await
-        {
-            use tokio::io::AsyncWriteExt;
-            let _ = file.write_all(wpa_conf.as_bytes()).await;
-            let mut reconf_cmd = tokio::process::Command::new("wpa_cli");
-            reconf_cmd.args(["-i", &iface, "reconfigure"]);
-            let _ = super::cmd::run_owned_mutation(reconf_cmd, TIMEOUT_QUICK).await;
-            completed.push(format!(
-                "Connected to {} via wpa_supplicant",
-                ssid_to_connect
-            ));
+            .map_err(|e| format!("Could not open wpa_supplicant configuration: {e}"))?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(wpa_conf.as_bytes())
+            .await
+            .map_err(|e| format!("Could not write wpa_supplicant configuration: {e}"))?;
+        file.flush()
+            .await
+            .map_err(|e| format!("Could not flush wpa_supplicant configuration: {e}"))?;
+        let mut reconf_cmd = crate::platform::system_command("wpa_cli");
+        reconf_cmd.args(["-i", &iface, "reconfigure"]);
+        let result = super::cmd::run_owned_mutation(reconf_cmd, TIMEOUT_QUICK).await?;
+        if !result.status.success() || String::from_utf8_lossy(&result.stdout).trim() != "OK" {
+            return Err("wpa_supplicant did not accept the configuration reload".to_string());
         }
+        completed.push("Reloaded the Wi-Fi configuration via wpa_supplicant".to_string());
     }
 
     if completed.is_empty() {
@@ -1438,7 +1438,7 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
 
 #[cfg(target_os = "linux")]
 async fn has_network_manager() -> bool {
-    let mut cmd = tokio::process::Command::new("systemctl");
+    let mut cmd = crate::platform::system_command("systemctl");
     cmd.args(["is-active", "NetworkManager"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -1449,7 +1449,7 @@ async fn has_network_manager() -> bool {
 
 #[cfg(target_os = "linux")]
 async fn is_linux_wifi(iface: &str) -> bool {
-    let mut cmd = tokio::process::Command::new("iw");
+    let mut cmd = crate::platform::system_command("iw");
     cmd.args(["dev", iface, "info"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         return output.status.success();

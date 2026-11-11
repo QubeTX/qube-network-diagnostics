@@ -120,7 +120,7 @@ fn parse_dhcp_from_ipconfig(text: &str) -> Option<Vec<DhcpLease>> {
 
 #[cfg(windows)]
 async fn collect_windows() -> Option<Vec<DhcpLease>> {
-    let mut cmd = tokio::process::Command::new("ipconfig");
+    let mut cmd = crate::platform::system_command("ipconfig");
     cmd.args(["/all"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -139,7 +139,7 @@ async fn collect_macos() -> Option<Vec<DhcpLease>> {
         .unwrap_or_else(|| vec!["en0".to_string(), "en1".to_string()]);
 
     let probes = interfaces.into_iter().map(|iface| async move {
-        let mut cmd = tokio::process::Command::new("ipconfig");
+        let mut cmd = crate::platform::system_command("ipconfig");
         cmd.args(["getpacket", &iface]);
         if let Some(output) = super::util::run_with_timeout(cmd, super::util::QUICK).await {
             if output.status.success() {

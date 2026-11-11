@@ -94,7 +94,7 @@ fn parse_windows_connections(
 async fn collect_windows() -> Option<Vec<ConnectionEntry>> {
     use sysinfo::System;
 
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     cmd.args(["-ano"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -209,7 +209,7 @@ async fn collect_macos() -> Option<Vec<ConnectionEntry>> {
         }
     }
 
-    let mut cmd = tokio::process::Command::new("netstat");
+    let mut cmd = crate::platform::system_command("netstat");
     cmd.args(["-anW", "-p", "tcp"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
@@ -220,7 +220,7 @@ async fn collect_macos() -> Option<Vec<ConnectionEntry>> {
 
 #[cfg(target_os = "linux")]
 async fn collect_linux() -> Option<Vec<ConnectionEntry>> {
-    let mut cmd = tokio::process::Command::new("ss");
+    let mut cmd = crate::platform::system_command("ss");
     cmd.args(["-tupn"]);
     let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 

@@ -2,8 +2,12 @@
 // Individual diagnostics handle their own platform-specific code via #[cfg] attributes.
 // This module provides shared utilities for platform detection and common operations.
 
+mod command;
 #[cfg(unix)]
 pub mod invoking_user;
+pub(crate) use command::system_command;
+#[cfg(windows)]
+pub(crate) use command::system_std_command;
 
 pub fn platform_name() -> &'static str {
     #[cfg(windows)]
@@ -42,8 +46,7 @@ pub fn is_elevated() -> bool {
 #[cfg(windows)]
 fn is_elevated_windows() -> bool {
     // Check if running as administrator
-    use std::process::Command;
-    match Command::new("net").args(["session"]).output() {
+    match system_std_command("net").args(["session"]).output() {
         Ok(output) => output.status.success(),
         Err(_) => false,
     }

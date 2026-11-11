@@ -112,6 +112,8 @@ Diagnostic counts: README/CHANGELOG cite the canonical totals (**8 core**, **25 
 
 **Platform abstraction:** Compile-time `#[cfg(target_os)]` branching per module — no runtime OS checks. Windows uses `winapi` (GetIfEntry2, TCP/UDP tables), `ipconfig` crate, and WMI (tech-mode only). Unix uses `nix` and `libc`.
 
+**Trusted utility execution:** `platform::system_command` / `system_std_command` resolve bare OS utility names through fixed system directories and supply a trusted child PATH. Never fall back to caller PATH/current directory or environment-provided SystemRoot. Diagnostics share this rule because they run inside elevated repair sessions. Preserve explicitly verified installer/provider paths and invoking-user Cargo ownership. Linux Wi-Fi configuration uses `actions/fix/wpa_config.rs` hexadecimal SSIDs and WPA-derived PSKs; ordinary quoted wpa_supplicant values do not decode C-style escapes.
+
 **Diagnostic module contract:** Every diagnostic module exports `pub async fn check() -> (DiagnosticResult, Option<DetailType>)`. DiagnosticResult carries status + summary; the optional detail struct carries rich data for rendering.
 
 **Subprocess timeouts:** All fix commands use explicit timeout classes from `actions/fix/cmd.rs`. Diagnostic subprocess/DNS calls are bounded by `diagnostics/util.rs`; a timed-out child is killed and reaped rather than left running. The Apple provider adds progress heartbeats, a whole-phase deadline, and capped exponential backoff with jitter. `run_all` returns partial results at its cap and `main.rs` retains the Ctrl-C race.
@@ -340,6 +342,12 @@ const PS_INSTALLER_ASSET: &str = "nd300-installer.ps1";
 
 ### Platform Notes
 
+Standalone Windows self-update uses only OS-resolved native Windows PowerShell
+with the trusted system-command environment. The optional PowerShell 7 (`pwsh`)
+strategy is retired; do not search caller PATH or guess an optional shell
+installation. If native PowerShell is unavailable, preserve the current owner
+and report the same-channel manual recovery path.
+
 - **Windows**: The running `.exe` cannot be overwritten, but Windows permits an in-directory rename. Writable installs retire both binaries to versioned allowlisted siblings before strategy execution and restore them if every strategy fails. MSI performs the same move with the rollback-aware `MoveFiles` action before `RemoveExistingProducts`; Inno uses `PrepareToInstall` plus `DeinitializeSetup` restoration and disables Restart Manager shutdown; release automation fail-closed patches cargo-dist's generated PowerShell installer around its binary copy loop. The new binary runs hidden `migrate-cleanup --retired-update`, which removes non-running siblings immediately and schedules the still-running image for trusted delayed deletion. Keep all four paths and the generated-script anchors in lockstep.
 - **macOS/Linux**: `unix_install.rs` owns secure temporary directories, exact-tag archive/package download and verification, safe extraction, paired archive replacement/rollback markers, invoking-user Cargo execution, and origin classification. The archive route retains pinned Developer ID binary checks. The macOS package route requires `com.qubetx.nd300.pkg`, exact payload/PackageInfo, root-owned non-writable `/usr/local/bin` pair and hash metadata, Developer ID Installer identity/timestamp, a stapled ticket, and Gatekeeper install acceptance. It launches the direct PKG with `open -W -a Installer`; cancellation or mismatch is failure, never a cross-channel fallback. The release-only compatibility DMG is not part of new updater execution.
 - **Unix uninstall**: Cargo origin → `cargo uninstall nd300`; ordinary invocation symlink → remove only the symlink; valid cargo-dist receipt → allow the matching managed files; proven macOS PKG → authorize removal of only the pair/metadata then forget the receipt; package-manager/local-build/unknown → refuse. Never guess from location alone.
@@ -449,59 +457,52 @@ The older `statistics.rs`, `stat_primitives.rs`, provider implementations and `r
 
 ## Subagent model preference (applies to ALL subagents in this repo)
 
-When working in this repository, whenever you spawn a subagent — the `Agent` tool (**including Explore
-and Plan agents**), `Workflow` agents, or any other subagent — use a top-tier model/effort pairing.
-**Never** leave a subagent on a lower model or below `xhigh` effort.
+Whenever you spawn a subagent — including Explore/Plan agents, `Workflow` agents, and Codex agents —
+use one of the approved model/effort pairings supported by that host. **Never below `xhigh` effort.**
 
-**Per model — pick the model that fits the task, then its effort. Prefer the first; never go below either.**
+**Approved pairings:**
+
 - **Opus 4.8 [1m]:** `xhigh` **preferred** (most situations); `max` allowed when the agent judges it
   needs the deeper reasoning (e.g. the single hardest stage).
 - **Sonnet 5:** `max` **preferred** (most situations); `xhigh` allowed when the agent doesn't need the
   extra thinking (e.g. cheaper/faster mechanical fan-out).
+- **Codex GPT-6.1 Sol (`gpt-6.1-sol`):** `xhigh`, explicitly permitted for Codex subagents as needed.
 
-Only the **Opus** and **Sonnet** classes are in scope. **Never** a weaker/budget class (no **Haiku** or
-older), and do **not** substitute the **Fable ("mythos")** class or any other/new class into the Opus or
-Sonnet slot just because it's new or capable — adopting a different class is a deliberate change to this
-convention, not an automatic remap. **Never below `xhigh`** effort. Which model + which of its two efforts
-is the spawning/orchestrating agent's call per situation — just honor each model's preferred default and
-the floor.
+The orchestrating agent chooses among these pairings for the task. Do not substitute an unlisted model
+or class merely because it is newer or capable. Haiku and older/budget classes remain excluded; Fable
+("mythos") is not an Opus/Sonnet replacement. Adding another class or Codex model requires an explicit
+update to this convention.
 
 In `Workflow` scripts pass model + effort explicitly per agent (`{model:'opus', effort:'xhigh'|'max'}` or
-`{model:'sonnet', effort:'max'|'xhigh'}`); for the `Agent` tool set `model` to `opus`/`sonnet` (it inherits
-the session's `[1m]` context/effort).
+`{model:'sonnet', effort:'max'|'xhigh'}`). For the Claude `Agent` tool, set `model` to `opus`/`sonnet`
+and ensure the inherited context/effort meets the selected pairing. For Codex `spawn_agent`, pass
+`model: 'gpt-6.1-sol'`, `reasoning_effort: 'xhigh'`, and `fork_turns: 'none'` explicitly.
 
 ---
 
 ## Mapping this forward (when new models are released)
 
-This convention names **two specific model classes** — **Opus** and **Sonnet** — plus each one's **role**
-and an **effort floor**. It is not tied to version numbers. When Anthropic ships a new lineup, advance
-**each named class along its own lineage** (Opus → next Opus, Sonnet → next Sonnet) and keep it in role:
+The Opus and Sonnet permissions follow their respective class lineages. The Codex permission names
+`gpt-6.1-sol` specifically; do not automatically advance it to another model or change its `xhigh` effort.
+When updating the Anthropic model names, preserve each class's role and allowed efforts:
 
 - **Opus class — flagship / deepest reasoning.** Today **Opus 4.8 [1m]** → the newest **Opus-class**
   model in its **largest-context** variant. Keep **`xhigh` preferred, `max` when needed**. Role: deep
   synthesis, planning, verification, the single hardest stage.
 - **Sonnet class — workhorse / high-throughput.** Today **Sonnet 5** → the newest **Sonnet-class**
   model. Keep **`max` preferred, `xhigh` when lighter**. Role: high-parallelism fan-out, mechanical/bulk work.
-- **Only the Opus and Sonnet classes are in scope — mind the other classes.** **Haiku** is the excluded
-  budget class (never use it for subagents). The **Fable ("mythos") class** — and any other or brand-new
-  class — is **not** one of these two slots: do **not** silently map a Fable/mythos model into the Opus
-  or Sonnet role just because it's new, large, or capable. Adopting a different class is a *deliberate*
-  update to this convention, never an automatic role-remap.
-- **The floor holds regardless of names:** never a class below Sonnet (no Haiku/older), and **never
-  below `xhigh`** effort.
 
 **At each release, do this:**
+
 1. Find the current **Opus-class** and **Sonnet-class** models (same class lineage as today). Ignore
-   Haiku, and ignore any other class (e.g. Fable/mythos) unless this convention is explicitly updated to include it.
+   other Anthropic classes unless this convention is explicitly updated to include them.
 2. Swap in the new Opus-class and Sonnet-class names; keep each class's preferred/allowed efforts and the floor.
-3. If the effort-level names change, preserve the *shape* on the effort ladder: Opus defaults to
+3. If Anthropic effort-level names change, preserve the *shape* on its effort ladder: Opus defaults to
    **one below the top** and may go **top**; Sonnet defaults to the **top** and may drop **one below**.
-   The floor stays at "one below the top" (today = `xhigh`) — never lower.
+   Their floor stays at "one below the top" (today = `xhigh`) — never lower. Keep Codex at `xhigh`.
 4. Confirm the exact model IDs and the long-context suffix (today `[1m]`), and update the
    `{model:'opus'|'sonnet'}` tool aliases if the class keywords change. (Check current model docs /
    the `claude-api` reference.)
-5. Bump the "Set …" date.
 
-**Rule of thumb:** _Opus + Sonnet classes only (never Haiku, never auto-adopt Fable/mythos), top-ish
-effort, never below the second-highest effort._
+**Rule of thumb:** _Use the approved Opus/Sonnet pairing on Claude or `gpt-6.1-sol` at `xhigh` on Codex;
+never silently substitute another model or lower the effort floor._
