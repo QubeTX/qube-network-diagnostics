@@ -2,10 +2,12 @@ pub mod adapter_hw_stats;
 pub mod adapters;
 pub mod arp;
 pub mod bufferbloat;
+pub mod captive_portal;
 pub mod connection_states;
 pub mod connections;
 pub mod dhcp;
 pub mod dns;
+pub mod dns_benchmark;
 pub mod dns_cache;
 pub mod firewall;
 pub mod gateway;
@@ -14,17 +16,24 @@ pub mod ipv6;
 pub mod latency;
 pub mod listening_ports;
 pub mod mtu;
+pub mod nat;
+pub mod ntp;
+pub mod packet_loss;
+pub mod ping;
 pub mod ports;
 pub mod protocol_stats;
 pub mod proxy;
 pub mod public_ip;
 pub mod reverse_dns;
+pub mod route_path;
 pub mod routing_table;
 pub mod shared_cache;
 pub mod speed;
 pub mod tls_inspection;
 pub mod traffic_counters;
+pub mod util;
 pub mod vpn;
+pub mod wifi;
 
 use serde::Serialize;
 
@@ -44,6 +53,12 @@ pub struct DiagnosticResult {
     pub status: DiagnosticStatus,
     pub summary: String,
     pub details: Option<String>,
+    /// True when this row was fabricated because the check did not finish
+    /// before the wall-clock cap — it is evidence of overall slowness, not of
+    /// this specific subsystem failing. The fix flow's triage skips these
+    /// rows; the exit code still treats them as Fail. (Additive, v3.4.0+.)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub timed_out: bool,
 }
 
 impl DiagnosticResult {
@@ -53,6 +68,7 @@ impl DiagnosticResult {
             status: DiagnosticStatus::Ok,
             summary: summary.into(),
             details: None,
+            timed_out: false,
         }
     }
 
@@ -62,6 +78,7 @@ impl DiagnosticResult {
             status: DiagnosticStatus::Warn,
             summary: summary.into(),
             details: None,
+            timed_out: false,
         }
     }
 
@@ -71,6 +88,7 @@ impl DiagnosticResult {
             status: DiagnosticStatus::Fail,
             summary: summary.into(),
             details: None,
+            timed_out: false,
         }
     }
 
@@ -80,6 +98,20 @@ impl DiagnosticResult {
             status: DiagnosticStatus::Skip,
             summary: summary.into(),
             details: None,
+            timed_out: false,
+        }
+    }
+
+    /// A fabricated Fail row for a check that did not finish before the
+    /// wall-clock cap. Marked `timed_out` so consumers (the fix flow's
+    /// triage, JSON scripters) can tell it apart from a real finding.
+    pub fn timed_out_fail(category: impl Into<String>) -> Self {
+        Self {
+            category: category.into(),
+            status: DiagnosticStatus::Fail,
+            summary: "Timed out — network severely degraded".to_string(),
+            details: None,
+            timed_out: true,
         }
     }
 
@@ -122,6 +154,12 @@ pub struct DiagnosticResults {
     // Technician-mode deep diagnostics
     #[serde(skip_serializing_if = "Option::is_none")]
     pub technician: Option<TechnicianResults>,
+
+    /// True when the wall-clock cap fired mid-run: the rows above are partial
+    /// (completed checks are real; unfinished ones carry fabricated
+    /// `timed_out` Fail rows). (Additive, v3.4.0+.)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -162,12 +200,99 @@ pub struct TechnicianResults {
     pub tls_inspection: Option<tls_inspection::TlsInspectionResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traffic_counters: Option<Vec<traffic_counters::TrafficCounter>>,
+
+    // ── Exhaustive tech mode additions (v3.4.0+) ──
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_path: Option<route_path::RoutePath>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packet_loss: Option<Vec<packet_loss::LossResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nat_analysis: Option<nat::NatAnalysis>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<Vec<wifi::WifiLink>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_benchmark: Option<dns_benchmark::DnsBenchmark>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captive_portal: Option<captive_portal::CaptivePortalResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_sync: Option<ntp::ClockSync>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_mtu: Option<mtu::PathMtu>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arp_health: Option<arp::ArpHealth>,
 }
 
-pub async fn run_all(config: &Config) -> DiagnosticResults {
-    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+/// Wall-clock cap for a full `run_all` pass.
+///
+/// Diagnostics shell out and resolve hostnames, which on a badly-broken
+/// network could still take longer than is useful even though each individual
+/// call is bounded. The cap must scale with `--speed-duration`: the
+/// diagnostic speed test runs the CF + NDT7 providers sequentially, each
+/// doing a download AND an upload for `speed_duration` seconds per direction,
+/// so the legitimate speed-test floor is ~`4 * speed_duration` (2 providers ×
+/// 2 directions). A fixed 90s would falsely truncate a deliberately long
+/// speed test (e.g. `--speed-duration 60`). 30s of headroom covers
+/// discovery/latency probes and the non-speed diagnostics; a 90s floor keeps
+/// the default/`--fast` behavior unchanged.
+pub fn run_all_cap(config: &Config) -> std::time::Duration {
+    const RUN_ALL_CAP_FLOOR: std::time::Duration = std::time::Duration::from_secs(90);
+    const RUN_ALL_CAP_HEADROOM: u64 = 30;
+    /// Extra budget for technician mode's long deep probes: the concurrent
+    /// T1 set (≤~30s internal budgets) + traceroute/sustained-loss pair
+    /// (≤60s) + the real bufferbloat test (≤35s), plus slack. Every probe is
+    /// individually bounded, so the cap stays a pure anti-hang backstop.
+    const TECH_DEEP_BUDGET_SECS: u64 = 150;
 
-    // Run core diagnostics concurrently
+    let base = if config.skip_speed {
+        RUN_ALL_CAP_FLOOR
+    } else {
+        std::time::Duration::from_secs(
+            if config.speed_deep { 300 } else { 90 } + RUN_ALL_CAP_HEADROOM,
+        )
+        .max(RUN_ALL_CAP_FLOOR)
+    };
+
+    if config.is_tech_mode() {
+        base + std::time::Duration::from_secs(TECH_DEEP_BUDGET_SECS)
+    } else {
+        base
+    }
+}
+
+pub async fn run_all(config: &Config, cap: std::time::Duration) -> DiagnosticResults {
+    let deadline = tokio::time::Instant::now() + cap;
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut timed_out = false;
+
+    // Spawn the core checks so that, if the deadline fires, the ones that
+    // already finished can still be harvested — the user gets partial results
+    // instead of nothing.
+    let mut adapters_h = tokio::spawn(adapters::check());
+    let mut interfaces_h = tokio::spawn(interfaces::check());
+    let mut gateway_h = tokio::spawn(gateway::check());
+    let mut dns_h = tokio::spawn(dns::check());
+    let mut public_ip_h = tokio::spawn(public_ip::check());
+    let mut latency_h = tokio::spawn(latency::check());
+    let mut ports_h = tokio::spawn(ports::check());
+
+    // Race the joined set against the deadline. `&mut JoinHandle` is a future
+    // (JoinHandle: Unpin), so on the deadline branch the handles are still
+    // owned and can be harvested individually below.
+    let completed = tokio::select! {
+        results = async {
+            tokio::join!(
+                &mut adapters_h,
+                &mut interfaces_h,
+                &mut gateway_h,
+                &mut dns_h,
+                &mut public_ip_h,
+                &mut latency_h,
+                &mut ports_h,
+            )
+        } => Some(results),
+        _ = tokio::time::sleep_until(deadline) => None,
+    };
+
     let (
         (adapters_result, adapter_details),
         (interfaces_result, interface_details),
@@ -176,31 +301,104 @@ pub async fn run_all(config: &Config) -> DiagnosticResults {
         (public_ip_result, public_ip_details),
         (latency_result, latency_details),
         (ports_result, port_details),
-    ) = tokio::join!(
-        adapters::check(),
-        interfaces::check(),
-        gateway::check(),
-        dns::check(),
-        public_ip::check(),
-        latency::check(),
-        ports::check(),
-    );
+    ) = match completed {
+        Some((a, i, g, d, p, l, po)) => (
+            // A JoinError here means the check panicked; surface it as a
+            // timed-out-style fabricated row rather than crashing the run.
+            a.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Adapters"), Vec::new())),
+            i.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Network"), Vec::new())),
+            g.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Gateway"), None)),
+            d.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("DNS"), None)),
+            p.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Internet"), None)),
+            l.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Latency"), Vec::new())),
+            po.unwrap_or_else(|_| (DiagnosticResult::timed_out_fail("Ports"), Vec::new())),
+        ),
+        None => {
+            timed_out = true;
+            (
+                util::harvest_or(
+                    adapters_h,
+                    (DiagnosticResult::timed_out_fail("Adapters"), Vec::new()),
+                )
+                .await,
+                util::harvest_or(
+                    interfaces_h,
+                    (DiagnosticResult::timed_out_fail("Network"), Vec::new()),
+                )
+                .await,
+                util::harvest_or(
+                    gateway_h,
+                    (DiagnosticResult::timed_out_fail("Gateway"), None),
+                )
+                .await,
+                util::harvest_or(dns_h, (DiagnosticResult::timed_out_fail("DNS"), None)).await,
+                util::harvest_or(
+                    public_ip_h,
+                    (DiagnosticResult::timed_out_fail("Internet"), None),
+                )
+                .await,
+                util::harvest_or(
+                    latency_h,
+                    (DiagnosticResult::timed_out_fail("Latency"), Vec::new()),
+                )
+                .await,
+                util::harvest_or(
+                    ports_h,
+                    (DiagnosticResult::timed_out_fail("Ports"), Vec::new()),
+                )
+                .await,
+            )
+        }
+    };
 
-    // Run speed test sequentially (it needs to saturate bandwidth)
+    // Run speed test sequentially (it needs to saturate bandwidth), bounded
+    // by whatever budget remains.
+    let now = tokio::time::Instant::now();
     let (speed_result, speed_details) = if config.skip_speed {
         (
             DiagnosticResult::skip("Speed", "Speed test skipped (--fast)"),
             None,
         )
+    } else if timed_out || now >= deadline {
+        timed_out = true;
+        (
+            DiagnosticResult::skip("Speed", "Skipped — diagnostics timed out"),
+            None,
+        )
     } else {
-        speed::check(config).await
+        match tokio::time::timeout_at(deadline, speed::check(config)).await {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                timed_out = true;
+                (DiagnosticResult::timed_out_fail("Speed"), None)
+            }
+        }
     };
 
-    // Enrich adapter details with driver info in tech mode only (WMI query)
+    // Enrich adapter details with driver info in tech mode only (WMI query),
+    // and run the deep diagnostics with the remaining budget.
     let mut adapter_details = adapter_details;
     let technician = if config.is_tech_mode() {
-        adapters::enrich_driver_info(&mut adapter_details).await;
-        Some(run_technician_diagnostics(config).await)
+        if tokio::time::Instant::now() >= deadline {
+            timed_out = true;
+            None
+        } else {
+            let tech = tokio::time::timeout_at(
+                deadline,
+                Box::pin(async {
+                    adapters::enrich_driver_info(&mut adapter_details).await;
+                    run_technician_diagnostics(config, public_ip_details.as_ref()).await
+                }),
+            )
+            .await;
+            match tech {
+                Ok(t) => Some(t),
+                Err(_) => {
+                    timed_out = true;
+                    None
+                }
+            }
+        }
     } else {
         None
     };
@@ -224,10 +422,14 @@ pub async fn run_all(config: &Config) -> DiagnosticResults {
         speed_details,
         port_details: Some(port_details),
         technician,
+        timed_out,
     }
 }
 
-async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
+async fn run_technician_diagnostics(
+    config: &Config,
+    public_ip: Option<&public_ip::PublicIpInfo>,
+) -> TechnicianResults {
     if config.verbose {
         eprintln!("[verbose] Running technician deep diagnostics...");
     }
@@ -235,6 +437,11 @@ async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
     // Pre-fetch shared data to avoid duplicate subprocess calls
     let cache = shared_cache::SharedCache::build_for_tech_mode().await;
 
+    // ── T1: concurrent, bandwidth-light modules ─────────────────────
+    // Each module future is boxed: a flat join! of 21 inlined async state
+    // machines is large enough to overflow the main thread's stack on
+    // Windows (observed as STATUS_STACK_OVERFLOW); boxing keeps the joined
+    // future itself small.
     let (
         arp_table,
         routing,
@@ -253,28 +460,54 @@ async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
         rdns,
         tls_insp,
         traffic,
+        wifi_links,
+        dns_bench,
+        portal,
+        clock,
     ) = tokio::join!(
-        arp::collect(),
-        routing_table::collect(),
-        connections::collect_with_cache(&cache),
-        listening_ports::collect_with_cache(&cache),
-        dhcp::collect_with_cache(&cache),
-        protocol_stats::collect(),
-        adapter_hw_stats::collect_with_cache(&cache),
-        proxy::collect(),
-        vpn::collect_with_cache(&cache),
-        firewall::collect(),
-        dns_cache::collect(),
-        ipv6::collect_with_cache(&cache),
-        mtu::collect(),
-        connection_states::collect_with_cache(&cache),
-        reverse_dns::collect_with_cache(&cache),
-        tls_inspection::collect(),
-        traffic_counters::collect_with_cache(&cache),
+        Box::pin(arp::collect()),
+        Box::pin(routing_table::collect()),
+        Box::pin(connections::collect_with_cache(&cache)),
+        Box::pin(listening_ports::collect_with_cache(&cache)),
+        Box::pin(dhcp::collect_with_cache(&cache)),
+        Box::pin(protocol_stats::collect()),
+        Box::pin(adapter_hw_stats::collect_with_cache(&cache)),
+        Box::pin(proxy::collect()),
+        Box::pin(vpn::collect_with_cache(&cache)),
+        Box::pin(firewall::collect()),
+        Box::pin(dns_cache::collect()),
+        Box::pin(ipv6::collect_with_cache(&cache)),
+        Box::pin(mtu::collect()),
+        Box::pin(connection_states::collect_with_cache(&cache)),
+        Box::pin(reverse_dns::collect_with_cache(&cache)),
+        Box::pin(tls_inspection::collect()),
+        Box::pin(traffic_counters::collect_with_cache(&cache)),
+        Box::pin(wifi::collect()),
+        Box::pin(dns_benchmark::collect()),
+        Box::pin(captive_portal::collect()),
+        Box::pin(ntp::collect()),
     );
 
-    // Bufferbloat needs speed test data, run separately
-    let bufferbloat = bufferbloat::collect().await;
+    // ── T2: long, latency-sensitive probes — isolated from T1's
+    // subprocess spawn-storm so ping timings aren't scheduling-jittered,
+    // and from bufferbloat's saturation below.
+    let (route, loss, path_mtu) = tokio::join!(
+        Box::pin(route_path::collect()),
+        Box::pin(packet_loss::collect()),
+        Box::pin(mtu::probe_path_mtu()),
+    );
+
+    // ── T2b: derived analyses — pure post-processing, ~0ms ──────────
+    let nat_analysis = nat::analyze(
+        cache.gateway_ip.as_deref(),
+        public_ip,
+        route.as_ref().map(|r| r.hops.as_slice()),
+    );
+    let arp_health = arp::assess_health(arp_table.as_deref(), cache.gateway_ip.as_deref());
+
+    // ── T3: bufferbloat LAST — it deliberately saturates the link and
+    // would corrupt T2's loss/latency numbers if overlapped.
+    let bufferbloat = Box::pin(bufferbloat::collect(config)).await;
 
     TechnicianResults {
         arp_table,
@@ -295,5 +528,14 @@ async fn run_technician_diagnostics(config: &Config) -> TechnicianResults {
         reverse_dns: rdns,
         tls_inspection: tls_insp,
         traffic_counters: traffic,
+        route_path: route,
+        packet_loss: loss,
+        nat_analysis,
+        wifi: wifi_links,
+        dns_benchmark: dns_bench,
+        captive_portal: portal,
+        clock_sync: clock,
+        path_mtu,
+        arp_health,
     }
 }

@@ -1,0 +1,135 @@
+{
+  "status": "Observed comparison and source assessment recorded; comparative accuracy remains unproven.",
+  "date": "2026-09-05",
+  "siteVersion": "4.0.3",
+  "siteSource": "82c9a45593ed55e2d19d053caf1521eabf23a9cd",
+  "connection": {
+    "adapter": "Intel Wi-Fi 7 BE202",
+    "reportedLinkMbps": 574,
+    "isp": "Pavlov Media",
+    "linkRateIsInternetGroundTruth": false
+  },
+  "runs": [
+    {
+      "site": "SpeedQX",
+      "run": 1,
+      "source": "operator browser, automated UI",
+      "startedAt": "2026-09-05T23:15:55.053Z",
+      "profile": "Quick",
+      "mlabConsentAlreadyEnabled": true,
+      "elapsedSeconds": 66.2,
+      "downloadMbpsDisplayed": 267,
+      "uploadMbpsDisplayed": 160,
+      "idleHttpMedianMs": 63.9,
+      "idleHttpMinimumMs": 54.1,
+      "jitterP95MinusMedianMs": 7.0,
+      "downloadLoadedHttpMedianMs": 93.2,
+      "uploadLoadedHttpMedianMs": 108.2,
+      "confirmedPayloadMB": 1300.1,
+      "chargedBudgetMB": 1517.3,
+      "providers": [
+        {
+          "name": "Cloudflare",
+          "downloadMbps": 280.3,
+          "uploadMbps": 157.4
+        },
+        {
+          "name": "M-Lab MSAK",
+          "downloadMbps": 252.8,
+          "uploadMbps": 163.1
+        },
+        {
+          "name": "NDT7 single stream",
+          "downloadMbps": 277.9,
+          "uploadMbps": null
+        }
+      ],
+      "ndt7UploadDiagnostic": "UI trace: no successful transfer, zero recorded server application-byte counters; server TCP minimum RTT 46.9 ms. This does not prove that no bytes reached the server. NDT7 did not contribute to the headline."
+    },
+    {
+      "site": "Ookla",
+      "run": 1,
+      "source": "operator-provided screenshots of manual browser run",
+      "localTime": "2026-09-05 18:19 America/Chicago",
+      "connections": "Multi",
+      "downloadMbps": 297.05,
+      "uploadMbps": 142.42,
+      "idlePingMs": 7,
+      "downloadLoadedLatencyMs": 47,
+      "uploadLoadedLatencyMs": 83,
+      "server": "SmartBurst LLC, Aubrey TX",
+      "sourceImageSha256": [
+        "72159e8a43e10ad8c8d280ce94d35b46bd124bd05855c298a81921df08ff00eb",
+        "222297fb44a32f46f229d921e16f7363f6aa4766b185b1d76367c850c9b79ec9"
+      ]
+    },
+    {
+      "site": "SpeedQX",
+      "run": 2,
+      "source": "operator browser, automated UI; unpaired follow-up",
+      "startedAt": "2026-09-05T23:44:41.093Z",
+      "profile": "Quick",
+      "mlabConsentAlreadyEnabled": true,
+      "elapsedSeconds": 63.7,
+      "downloadMbpsDisplayed": 159,
+      "uploadMbpsDisplayed": 162,
+      "idleHttpMedianMs": 49.4,
+      "idleHttpMinimumMs": 45.4,
+      "jitterP95MinusMedianMs": 3.5,
+      "downloadLoadedHttpMedianMs": 73.0,
+      "uploadLoadedHttpMedianMs": 84.3,
+      "confirmedPayloadMB": 990.0,
+      "chargedBudgetMB": 1213.2,
+      "providers": [
+        {
+          "name": "Cloudflare",
+          "downloadMbps": 176.2,
+          "uploadMbps": 167.4
+        },
+        {
+          "name": "M-Lab MSAK",
+          "downloadMbps": 142.6,
+          "uploadMbps": 157.3
+        },
+        {
+          "name": "NDT7 single stream",
+          "downloadMbps": 186.6,
+          "uploadMbps": null
+        }
+      ]
+    },
+    {
+      "site": "SpeedQX",
+      "run": 3,
+      "source": "operator browser, automated UI; unpaired follow-up",
+      "startedAt": "2026-09-05T23:48:19.192Z",
+      "profile": "Quick",
+      "mlabConsentAlreadyEnabled": true,
+      "elapsedSeconds": 63.8,
+      "downloadMbpsDisplayed": 174,
+      "uploadMbpsDisplayed": 177,
+      "idleHttpMedianMs": 49.1,
+      "idleHttpMinimumMs": 42.4,
+      "jitterP95MinusMedianMs": 108.8,
+      "downloadLoadedHttpMedianMs": 84.9,
+      "uploadLoadedHttpMedianMs": 109.1,
+      "confirmedPayloadMB": 1057.6,
+      "chargedBudgetMB": 1301.2,
+      "providers": [
+        { "name": "Cloudflare", "downloadMbps": 179.4, "uploadMbps": 165.2 },
+        { "name": "M-Lab MSAK", "downloadMbps": 168.8, "uploadMbps": 189.7 },
+        { "name": "NDT7 single stream", "downloadMbps": 174.1, "uploadMbps": null }
+      ]
+    }
+  ],
+  "protocolNotes": [
+    "Planned alternating automated pairs could not proceed because browser policy blocked speedtest.net.",
+    "The operator opened the site manually; this did not alter the automation restriction. A second direct attempt remained blocked. No alternate access or workaround was used.",
+    "The first SpeedQX run completed before the operator-provided Ookla run. No simultaneous test was intentionally started.",
+    "Raw screenshots include the public IP; the report deliberately retains only result values and image hashes.",
+    "Follow-up SpeedQX runs are unpaired observations after the release/screenshot interruption, not substitutes for the planned alternating Ookla pairs."
+  ],
+  "accuracyConclusion": "No demonstrated accuracy winner. The one sequential cross-site pair has no independent delivered-payload reference. Later unpaired SpeedQX runs show substantial download variation. Planned alternating qualification was blocked; prior controlled-loss qualification misses remain open.",
+  "comparativeAccuracyProven": false,
+  "ndt7UploadUnavailableCount": 3
+}

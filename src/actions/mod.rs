@@ -1,7 +1,12 @@
 pub mod clear_dns;
 pub mod dns;
 pub mod fix;
+pub mod maintenance;
+pub mod migrate;
+pub mod takeover;
 pub mod uninstall;
+#[cfg(unix)]
+pub(crate) mod unix_install;
 pub mod update;
 
 use crate::config::{Config, OutputFormat};
@@ -14,7 +19,7 @@ use fix::cmd::{run_cmd, TIMEOUT_QUICK};
 pub async fn flush_dns_platform() -> Result<String, String> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("ipconfig");
+        let mut cmd = crate::platform::system_command("ipconfig");
         cmd.arg("/flushdns");
         match run_cmd(cmd, TIMEOUT_QUICK).await {
             Ok(output) if output.status.success() => {
@@ -28,11 +33,11 @@ pub async fn flush_dns_platform() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         // dscacheutil -flushcache
-        let mut flush_cmd = tokio::process::Command::new("dscacheutil");
+        let mut flush_cmd = crate::platform::system_command("dscacheutil");
         flush_cmd.arg("-flushcache");
         let flush = run_cmd(flush_cmd, TIMEOUT_QUICK).await;
         // killall -HUP mDNSResponder
-        let mut kill_cmd = tokio::process::Command::new("killall");
+        let mut kill_cmd = crate::platform::system_command("killall");
         kill_cmd.args(["-HUP", "mDNSResponder"]);
         let kill = run_cmd(kill_cmd, TIMEOUT_QUICK).await;
 
@@ -64,11 +69,11 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         let mut flushed = Vec::new();
 
         // Layer 1: systemd-resolved (resolvectl, fallback systemd-resolve)
-        let mut check_cmd = tokio::process::Command::new("systemctl");
+        let mut check_cmd = crate::platform::system_command("systemctl");
         check_cmd.args(["is-active", "systemd-resolved"]);
         if let Ok(output) = run_cmd(check_cmd, TIMEOUT_QUICK).await {
             if String::from_utf8_lossy(&output.stdout).trim() == "active" {
-                let mut resolvectl_cmd = tokio::process::Command::new("resolvectl");
+                let mut resolvectl_cmd = crate::platform::system_command("resolvectl");
                 resolvectl_cmd.arg("flush-caches");
                 let ok = if let Ok(r) = run_cmd(resolvectl_cmd, TIMEOUT_QUICK).await {
                     r.status.success()
@@ -77,7 +82,7 @@ pub async fn flush_dns_platform() -> Result<String, String> {
                 };
 
                 if !ok {
-                    let mut fallback_cmd = tokio::process::Command::new("systemd-resolve");
+                    let mut fallback_cmd = crate::platform::system_command("systemd-resolve");
                     fallback_cmd.arg("--flush-caches");
                     if let Ok(r) = run_cmd(fallback_cmd, TIMEOUT_QUICK).await {
                         if r.status.success() {
@@ -91,11 +96,11 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         }
 
         // Layer 2: dnsmasq (often a NetworkManager plugin)
-        let mut pgrep_dnsmasq = tokio::process::Command::new("pgrep");
+        let mut pgrep_dnsmasq = crate::platform::system_command("pgrep");
         pgrep_dnsmasq.arg("dnsmasq");
         if let Ok(output) = run_cmd(pgrep_dnsmasq, TIMEOUT_QUICK).await {
             if output.status.success() {
-                let mut killall_cmd = tokio::process::Command::new("killall");
+                let mut killall_cmd = crate::platform::system_command("killall");
                 killall_cmd.args(["-HUP", "dnsmasq"]);
                 if let Ok(r) = run_cmd(killall_cmd, TIMEOUT_QUICK).await {
                     if r.status.success() {
@@ -106,11 +111,11 @@ pub async fn flush_dns_platform() -> Result<String, String> {
         }
 
         // Layer 3: nscd
-        let mut pgrep_nscd = tokio::process::Command::new("pgrep");
+        let mut pgrep_nscd = crate::platform::system_command("pgrep");
         pgrep_nscd.arg("nscd");
         if let Ok(output) = run_cmd(pgrep_nscd, TIMEOUT_QUICK).await {
             if output.status.success() {
-                let mut nscd_cmd = tokio::process::Command::new("nscd");
+                let mut nscd_cmd = crate::platform::system_command("nscd");
                 nscd_cmd.args(["-i", "hosts"]);
                 if let Ok(r) = run_cmd(nscd_cmd, TIMEOUT_QUICK).await {
                     if r.status.success() {

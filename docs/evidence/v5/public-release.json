@@ -1,0 +1,171 @@
+{
+  "tag": "v4.0.1",
+  "sourceSha": "d76af2b2e282440e2e28c31c8b05d5d8833f458f",
+  "checkedAt": "2026-09-05T08:32:00.3921409Z",
+  "assetCount": 32,
+  "allDigestsMatch": true,
+  "sidecarsVerified": true,
+  "allAttestationsMatchSourceAndTag": true,
+  "assets": [
+    {
+      "name": "dist-manifest.json",
+      "sha256": "dfd5083c0d4c7be3d07d493b82a48de2518ff53a4a124694e31a1cf360e43ce9",
+      "size": 35461
+    },
+    {
+      "name": "nd-300-installer.ps1",
+      "sha256": "7a4c0e4b969d349c9dab8ba49ed1bb1351ba91be5fd57a3ef202842d1e68b510",
+      "size": 35505
+    },
+    {
+      "name": "nd-300-installer.sh",
+      "sha256": "35bc0b6467c73a28b87c9926dfa31f8b09c54caf8b444a16a1c48b6bd95ddd9a",
+      "size": 55626
+    },
+    {
+      "name": "nd300-aarch64-apple-darwin.tar.xz",
+      "sha256": "145086fc5d8a48a740c4122daf1deadcdd240995a4d724de2c1e3d436e250374",
+      "size": 4818584
+    },
+    {
+      "name": "nd300-aarch64-apple-darwin.tar.xz.sha256",
+      "sha256": "96aefdaa99080eb3628eab8e24e170ba960f412b6868496ea98ed420664a36c7",
+      "size": 100
+    },
+    {
+      "name": "nd300-aarch64-unknown-linux-gnu.tar.xz",
+      "sha256": "1f579931aaaa9e62862872cfadda27285cd9779bcb3f0e123d8dc7f6cc3007ed",
+      "size": 3679300
+    },
+    {
+      "name": "nd300-aarch64-unknown-linux-gnu.tar.xz.sha256",
+      "sha256": "ab65bcb19e7cf483c389afde54ce8d91afe9f2d4593b316c640b0f86b6ea424c",
+      "size": 106
+    },
+    {
+      "name": "nd300-installer.ps1",
+      "sha256": "7a4c0e4b969d349c9dab8ba49ed1bb1351ba91be5fd57a3ef202842d1e68b510",
+      "size": 35505
+    },
+    {
+      "name": "nd300-installer.sh",
+      "sha256": "35bc0b6467c73a28b87c9926dfa31f8b09c54caf8b444a16a1c48b6bd95ddd9a",
+      "size": 55626
+    },
+    {
+      "name": "nd300-universal-apple-darwin.dmg",
+      "sha256": "6c6f4f5d6619ae112dfa25129125ec81616c6313a570f8670c8a2948f81c1f9f",
+      "size": 15901225
+    },
+    {
+      "name": "nd300-universal-apple-darwin.dmg.sha256",
+      "sha256": "ab83815a77d08a9e4e4f5532173611b46478e0f4cd771b2eed3d618d70611a33",
+      "size": 99
+    },
+    {
+      "name": "nd300-universal-apple-darwin.pkg",
+      "sha256": "1dbb66b914244a48e56014be7166c3e3c51769152b4f56dd90a4621d22efa843",
+      "size": 15526770
+    },
+    {
+      "name": "nd300-universal-apple-darwin.pkg.sha256",
+      "sha256": "3643040821c19b98a35452fa8a6db2691dc7b81722c250d8de7f8ef1930f309d",
+      "size": 99
+    },
+    {
+      "name": "nd300-x86_64-apple-darwin.tar.xz",
+      "sha256": "ec15ef716ac62220183fb33e1c61fb8067e792d1dc3447a855f9b76dbfcf75e5",
+      "size": 5437312
+    },
+    {
+      "name": "nd300-x86_64-apple-darwin.tar.xz.sha256",
+      "sha256": "91c694714ce6e70b0a5949d4a20f7273aaba653f4f88ed33a14559428e175054",
+      "size": 99
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc-corporate-setup.exe",
+      "sha256": "13622b906039fb415154460b42ac99387a3f7bf40b6efbeca07f5d294f5a4649",
+      "size": 5304120
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc-corporate-setup.exe.sha256",
+      "sha256": "a2891085db25ad0e5aeb8c095c57c44a40a7dff055834b723ec9d3ff5d638c15",
+      "size": 114
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc-corporate.msi",
+      "sha256": "6a897d69f5be9d7c5661d22b565b95b497456573d7c1e9afdb724ea5990ac806",
+      "size": 17281024
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc-corporate.msi.sha256",
+      "sha256": "6f38150665eee55825556d97aacaa6011cb7fb22513090c482b35d7fc423c6f4",
+      "size": 108
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc-setup.exe",
+      "sha256": "c74c18f0072e0d63ac9fd7f39d1633599e894217a494f2655ab5f0608e0fc017",
+      "size": 5304115
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc-setup.exe.sha256",
+      "sha256": "8fc1415db085463e828fb43a2c682adc8b8661935b5235e549afbfbff924c7f4",
+      "size": 104
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc.msi",
+      "sha256": "e4f46acd7aeaf7acc95b810579432b068af58d0d361f23f56e24f97085c90a8d",
+      "size": 17932288
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc.msi.sha256",
+      "sha256": "650dfdcea8cdf81b0e4733c3d304220555f4055c8aa07b32ac1f301bc88102e4",
+      "size": 100
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc.zip",
+      "sha256": "2b188f060a81687ca120444e88c4e63744d02841b2a17d18956e2c345c967603",
+      "size": 7380114
+    },
+    {
+      "name": "nd300-x86_64-pc-windows-msvc.zip.sha256",
+      "sha256": "6dceceedb606df6e95901661e5c16618c92cec32e899b6874b4f28c448d9f5d8",
+      "size": 100
+    },
+    {
+      "name": "nd300-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "95a082bdcf6fe27ce6540b4b55e14054133414e8a9df7b5e5c42b53c1bb067f1",
+      "size": 3856492
+    },
+    {
+      "name": "nd300-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "sha256": "3ac1943a195aaafede603832fef58aee06945befd1b6f99b3348f96b936fc81a",
+      "size": 105
+    },
+    {
+      "name": "nd300-x86_64-unknown-linux-musl.tar.xz",
+      "sha256": "236c0d67415db0f6982728f2263b96f68a94060dda99f96cdb6ff453ab6a8ace",
+      "size": 4057052
+    },
+    {
+      "name": "nd300-x86_64-unknown-linux-musl.tar.xz.sha256",
+      "sha256": "30600aa64cc15eb5053820ede909227e5d68f3d243cafa791c31af55bd708e71",
+      "size": 106
+    },
+    {
+      "name": "sha256.sum",
+      "sha256": "e2016ca19e102d85c2c522db21190db981882e5b60d3152a886963c980ec0df6",
+      "size": 792
+    },
+    {
+      "name": "source.tar.gz",
+      "sha256": "cb0efa8f03d355f0fe5a3ce46099ebd2f51abe105d7407878d7982be9a93d4d9",
+      "size": 789979
+    },
+    {
+      "name": "source.tar.gz.sha256",
+      "sha256": "f11a941db641f846d2e98f3fe7d61d89d6b6db137fe32ce1528239ad0852ee88",
+      "size": 81
+    }
+  ]
+}

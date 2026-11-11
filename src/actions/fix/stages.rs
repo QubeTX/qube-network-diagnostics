@@ -1,226 +1,25 @@
 use crate::config::Config;
-use crate::render::color;
 use crate::render::progress::create_spinner;
 
-use super::adapters;
-use super::arp;
+#[cfg(target_os = "macos")]
+use super::cmd::run_macos_mutation;
 #[allow(unused_imports)]
 use super::cmd::{run_cmd, TIMEOUT_MEDIUM, TIMEOUT_QUICK, TIMEOUT_SLOW};
-use super::connectivity;
-use super::dhcp;
-use super::dns;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(windows)]
 use super::wifi;
-use super::{print_step_fail, print_step_ok, warn_icon, StepResult};
+// The macOS/Linux stage-3 paths look up the default interface; Windows takes
+// it from the caller, so the import is platform-gated to stay -D warnings
+// clean on all three OSes.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use super::adapters;
+#[cfg(any(windows, target_os = "linux"))]
+use crate::actions::is_interactive;
 #[cfg(target_os = "linux")]
 use crate::actions::prompt_string;
-use crate::actions::{flush_dns_platform, is_interactive, prompt_yes_no};
-
-// ── Stage 1: Service Restart (automatic, safe) ─────────────────────────────
-
-pub async fn run_stage1(config: &Config) -> (Vec<StepResult>, bool) {
-    let mut steps = Vec::new();
-
-    // Reset DNS to Automatic (DHCP) — clear any custom/broken DNS servers first
-    {
-        let spinner = create_spinner("Resetting DNS to automatic (DHCP)...");
-        match adapters::detect_default_interface().await {
-            Some(iface) => {
-                let service_name = detect_service_name(&iface).await;
-                let result =
-                    dns::set_dns_servers(&iface, &service_name, dns::DnsProvider::Automatic).await;
-                spinner.finish_and_clear();
-                match result {
-                    Ok(msg) => {
-                        if is_interactive(config) {
-                            print_step_ok("DNS reset to automatic (DHCP)", config);
-                        }
-                        steps.push(StepResult {
-                            name: "dns_reset_auto",
-                            success: true,
-                            message: msg,
-                        });
-                    }
-                    Err(msg) => {
-                        if is_interactive(config) {
-                            print_step_fail("Failed to reset DNS to automatic", &msg, config);
-                        }
-                        steps.push(StepResult {
-                            name: "dns_reset_auto",
-                            success: false,
-                            message: msg,
-                        });
-                    }
-                }
-            }
-            None => {
-                spinner.finish_and_clear();
-                if is_interactive(config) {
-                    print_step_fail("Could not detect interface for DNS reset", "", config);
-                }
-                steps.push(StepResult {
-                    name: "dns_reset_auto",
-                    success: false,
-                    message: "Could not detect default interface".to_string(),
-                });
-            }
-        }
-    }
-
-    // DNS flush
-    {
-        let spinner = create_spinner("Flushing DNS cache...");
-        let result = flush_dns_platform().await;
-        spinner.finish_and_clear();
-        match result {
-            Ok(msg) => {
-                if is_interactive(config) {
-                    print_step_ok("DNS cache flushed", config);
-                }
-                steps.push(StepResult {
-                    name: "dns_flush",
-                    success: true,
-                    message: msg,
-                });
-            }
-            Err(msg) => {
-                if is_interactive(config) {
-                    print_step_fail("Failed to flush DNS cache", &msg, config);
-                }
-                steps.push(StepResult {
-                    name: "dns_flush",
-                    success: false,
-                    message: msg,
-                });
-            }
-        }
-    }
-
-    // ARP flush
-    {
-        let spinner = create_spinner("Flushing ARP cache...");
-        let result = arp::flush_arp().await;
-        spinner.finish_and_clear();
-        match result {
-            Ok(msg) => {
-                if is_interactive(config) {
-                    print_step_ok("ARP cache flushed", config);
-                }
-                steps.push(StepResult {
-                    name: "arp_flush",
-                    success: true,
-                    message: msg,
-                });
-            }
-            Err(msg) => {
-                if is_interactive(config) {
-                    print_step_fail("Failed to flush ARP cache", &msg, config);
-                }
-                steps.push(StepResult {
-                    name: "arp_flush",
-                    success: false,
-                    message: msg,
-                });
-            }
-        }
-    }
-
-    // Service restart (platform-specific)
-    {
-        let spinner = create_spinner("Restarting network services...");
-        let result = restart_services().await;
-        spinner.finish_and_clear();
-        match result {
-            Ok(msg) => {
-                if is_interactive(config) {
-                    print_step_ok("Network services restarted", config);
-                }
-                steps.push(StepResult {
-                    name: "service_restart",
-                    success: true,
-                    message: msg,
-                });
-            }
-            Err(msg) => {
-                if is_interactive(config) {
-                    print_step_fail("Failed to restart services", &msg, config);
-                }
-                steps.push(StepResult {
-                    name: "service_restart",
-                    success: false,
-                    message: msg,
-                });
-            }
-        }
-    }
-
-    // DHCP renew
-    {
-        let spinner = create_spinner("Renewing DHCP lease...");
-        let result = dhcp::renew_dhcp().await;
-        spinner.finish_and_clear();
-        match result {
-            Ok(msg) => {
-                if is_interactive(config) {
-                    print_step_ok("DHCP lease renewed", config);
-                }
-                steps.push(StepResult {
-                    name: "dhcp_renew",
-                    success: true,
-                    message: msg,
-                });
-            }
-            Err(msg) => {
-                if is_interactive(config) {
-                    print_step_fail("Failed to renew DHCP lease", &msg, config);
-                }
-                steps.push(StepResult {
-                    name: "dhcp_renew",
-                    success: false,
-                    message: msg,
-                });
-            }
-        }
-    }
-
-    // Wait and check connectivity
-    let http_ok = {
-        let spinner = create_spinner("Waiting for network to reconnect...");
-        let connected = connectivity::wait_for_connectivity(&spinner).await;
-        spinner.finish_and_clear();
-        connected
-    };
-
-    if !http_ok {
-        return (steps, false);
-    }
-
-    // DNS verification after connectivity passes
-    let dns_ok = {
-        let spinner = create_spinner("Verifying DNS resolution...");
-        let ok = connectivity::verify_dns_stability(&spinner).await;
-        spinner.finish_and_clear();
-        ok
-    };
-
-    if dns_ok {
-        if is_interactive(config) {
-            print_step_ok("DNS resolution verified", config);
-        }
-        return (steps, true);
-    }
-
-    // DNS failed — offer the user a chance to change DNS servers before Stage 2
-    if is_interactive(config) {
-        print_step_fail("DNS is not resolving correctly", "", config);
-    }
-
-    let iface = adapters::detect_default_interface()
-        .await
-        .unwrap_or_default();
-    let dns_fixed = handle_dns_fallback_prompted(config, &iface, &mut steps).await;
-    (steps, dns_fixed)
-}
+// After the v3.4.0 legacy-orchestrator removal, only the Windows stage-3
+// Wi-Fi-profile prompt still asks a yes/no question in this file.
+#[cfg(windows)]
+use crate::actions::prompt_yes_no;
 
 /// Restart platform networking services.
 pub async fn restart_services() -> Result<String, String> {
@@ -230,14 +29,25 @@ pub async fn restart_services() -> Result<String, String> {
 
         // Try sc stop/start with internal service names (works better than net stop/start)
         for (internal, display) in &[("dnscache", "DNS Client"), ("Dhcp", "DHCP Client")] {
-            let mut stop_cmd = tokio::process::Command::new("sc");
+            let mut stop_cmd = crate::platform::system_command("sc");
             stop_cmd.args(["stop", internal]);
-            let _ = run_cmd(stop_cmd, TIMEOUT_MEDIUM).await;
-
-            let mut start_cmd = tokio::process::Command::new("sc");
+            let mut start_cmd = crate::platform::system_command("sc");
             start_cmd.args(["start", internal]);
-            match run_cmd(start_cmd, TIMEOUT_MEDIUM).await {
-                Ok(output) if output.status.success() => {
+            match super::cmd::run_owned_mutation_pair(
+                stop_cmd,
+                TIMEOUT_MEDIUM,
+                std::time::Duration::ZERO,
+                start_cmd,
+                TIMEOUT_MEDIUM,
+            )
+            .await
+            {
+                Ok(pair)
+                    if pair
+                        .inverse
+                        .as_ref()
+                        .is_ok_and(|output| output.status.success()) =>
+                {
                     restarted.push(*display);
                 }
                 _ => {}
@@ -247,13 +57,13 @@ pub async fn restart_services() -> Result<String, String> {
         // If sc failed (PPL-protected services), try PowerShell Restart-Service
         if restarted.is_empty() {
             for (internal, display) in &[("dnscache", "DNS Client"), ("Dhcp", "DHCP Client")] {
-                let mut cmd = tokio::process::Command::new("powershell");
+                let mut cmd = crate::platform::system_command("powershell");
                 cmd.args([
                     "-NoProfile",
                     "-Command",
                     &format!("Restart-Service -Name '{}' -Force", internal),
                 ]);
-                match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+                match super::cmd::run_owned_mutation(cmd, TIMEOUT_MEDIUM).await {
                     Ok(output) if output.status.success() => {
                         restarted.push(*display);
                     }
@@ -275,7 +85,7 @@ pub async fn restart_services() -> Result<String, String> {
 
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = tokio::process::Command::new("killall");
+        let mut cmd = crate::platform::system_command("killall");
         cmd.args(["-HUP", "configd"]);
         match run_cmd(cmd, TIMEOUT_QUICK).await {
             Ok(output) if output.status.success() => Ok("Restarted configd".to_string()),
@@ -286,18 +96,18 @@ pub async fn restart_services() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         // Try NetworkManager first
-        let mut nm_cmd = tokio::process::Command::new("systemctl");
+        let mut nm_cmd = crate::platform::system_command("systemctl");
         nm_cmd.args(["restart", "NetworkManager"]);
-        if let Ok(output) = run_cmd(nm_cmd, TIMEOUT_MEDIUM).await {
+        if let Ok(output) = super::cmd::run_owned_mutation(nm_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
                 return Ok("Restarted NetworkManager".to_string());
             }
         }
 
         // Fallback to dhcpcd
-        let mut dhcpcd_cmd = tokio::process::Command::new("systemctl");
+        let mut dhcpcd_cmd = crate::platform::system_command("systemctl");
         dhcpcd_cmd.args(["restart", "dhcpcd"]);
-        if let Ok(output) = run_cmd(dhcpcd_cmd, TIMEOUT_MEDIUM).await {
+        if let Ok(output) = super::cmd::run_owned_mutation(dhcpcd_cmd, TIMEOUT_MEDIUM).await {
             if output.status.success() {
                 return Ok("Restarted dhcpcd".to_string());
             }
@@ -307,195 +117,12 @@ pub async fn restart_services() -> Result<String, String> {
     }
 }
 
-// ── Stage 2: Interface Reset (prompts user) ─────────────────────────────────
-
-pub async fn run_stage2(config: &Config) -> (Vec<StepResult>, bool) {
-    let mut steps = Vec::new();
-
-    if is_interactive(config) {
-        println!();
-        let prompt = format!(
-            "  {} Stage 2 will briefly disconnect your network to reset the interface. Continue? (y/N): ",
-            warn_icon(config),
-        );
-        if !prompt_yes_no(&prompt) {
-            steps.push(StepResult {
-                name: "interface_reset",
-                success: false,
-                message: "Skipped by user".to_string(),
-            });
-            return (steps, false);
-        }
-    }
-
-    let iface = match adapters::detect_default_interface().await {
-        Some(i) => i,
-        None => {
-            if is_interactive(config) {
-                print_step_fail("Could not detect default network interface", "", config);
-            }
-            steps.push(StepResult {
-                name: "interface_reset",
-                success: false,
-                message: "Could not detect default interface".to_string(),
-            });
-            return (steps, false);
-        }
-    };
-
-    if is_interactive(config) {
-        println!("  Resetting interface: {}", color::cyan(&iface, config),);
-    }
-
-    // Disable/down
-    {
-        let spinner = create_spinner(&format!("Disabling {}...", iface));
-        let result = disable_interface(&iface).await;
-        spinner.finish_and_clear();
-        match result {
-            Ok(_) => {
-                if is_interactive(config) {
-                    print_step_ok(&format!("Disabled {}", iface), config);
-                }
-            }
-            Err(msg) => {
-                if is_interactive(config) {
-                    print_step_fail(&format!("Failed to disable {}", iface), &msg, config);
-                }
-                steps.push(StepResult {
-                    name: "interface_reset",
-                    success: false,
-                    message: msg,
-                });
-                return (steps, false);
-            }
-        }
-    }
-
-    // Wait for interface to fully disable
-    {
-        let spinner = create_spinner("Waiting for interface...");
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        spinner.finish_and_clear();
-    }
-
-    // Re-enable/up
-    {
-        let spinner = create_spinner(&format!("Re-enabling {}...", iface));
-        let result = enable_interface(&iface).await;
-        spinner.finish_and_clear();
-        match result {
-            Ok(_) => {
-                if is_interactive(config) {
-                    print_step_ok(&format!("Re-enabled {}", iface), config);
-                }
-            }
-            Err(_) => {
-                // Retry once — leaving interface disabled is worse than a slow retry
-                let spinner = create_spinner(&format!("Retrying re-enable {}...", iface));
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                let retry = enable_interface(&iface).await;
-                spinner.finish_and_clear();
-                match retry {
-                    Ok(_) => {
-                        if is_interactive(config) {
-                            print_step_ok(&format!("Re-enabled {} (retry)", iface), config);
-                        }
-                    }
-                    Err(msg) => {
-                        if is_interactive(config) {
-                            print_step_fail(
-                                &format!("Failed to re-enable {}", iface),
-                                &msg,
-                                config,
-                            );
-                        }
-                        steps.push(StepResult {
-                            name: "interface_reset",
-                            success: false,
-                            message: msg,
-                        });
-                        return (steps, false);
-                    }
-                }
-            }
-        }
-    }
-
-    // Wait for Wi-Fi to associate before DHCP (macOS needs ~5s after re-enable)
-    {
-        let spinner = create_spinner("Waiting for link to establish...");
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        spinner.finish_and_clear();
-    }
-
-    // Targeted DHCP renew
-    {
-        let spinner = create_spinner("Renewing DHCP on interface...");
-        let result = adapters::renew_dhcp_on_interface(&iface).await;
-        spinner.finish_and_clear();
-        match result {
-            Ok(msg) => {
-                if is_interactive(config) {
-                    print_step_ok("DHCP renewed", config);
-                }
-                steps.push(StepResult {
-                    name: "interface_reset",
-                    success: true,
-                    message: msg,
-                });
-            }
-            Err(msg) => {
-                if is_interactive(config) {
-                    print_step_fail("DHCP renew failed", &msg, config);
-                }
-                steps.push(StepResult {
-                    name: "interface_reset",
-                    success: false,
-                    message: msg,
-                });
-            }
-        }
-    }
-
-    // Wait and check connectivity
-    let http_ok = {
-        let spinner = create_spinner("Waiting for network to reconnect...");
-        let connected = connectivity::wait_for_connectivity(&spinner).await;
-        spinner.finish_and_clear();
-        connected
-    };
-
-    if !http_ok {
-        return (steps, false);
-    }
-
-    // DNS verification after connectivity passes
-    let dns_ok = {
-        let spinner = create_spinner("Verifying DNS resolution...");
-        let ok = connectivity::verify_dns_stability(&spinner).await;
-        spinner.finish_and_clear();
-        ok
-    };
-
-    if dns_ok {
-        if is_interactive(config) {
-            print_step_ok("DNS resolution verified", config);
-        }
-        return (steps, true);
-    }
-
-    // DNS failed — prompt user for DNS server choice
-    let dns_fixed = handle_dns_fallback_prompted(config, &iface, &mut steps).await;
-    (steps, dns_fixed)
-}
-
 pub async fn disable_interface(iface: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["interface", "set", "interface", iface, "disabled"]);
-        match run_cmd(cmd, TIMEOUT_SLOW).await {
+        match super::cmd::run_owned_mutation(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
             Err(e) => Err(e),
@@ -504,20 +131,21 @@ pub async fn disable_interface(iface: &str) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        // Check if Wi-Fi
-        let is_wifi = iface.starts_with("en") && is_wifi_device(iface).await;
+        // Fail closed if the exact physical service type cannot be mapped;
+        // never guess that an unknown Wi-Fi device is wired and run ifconfig.
+        let is_wifi = is_wifi_device(iface).await?;
         if is_wifi {
-            let mut cmd = tokio::process::Command::new("networksetup");
+            let mut cmd = crate::platform::system_command("networksetup");
             cmd.args(["-setairportpower", iface, "off"]);
-            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+            match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
                 Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
                 Err(e) => Err(e),
             }
         } else {
-            let mut cmd = tokio::process::Command::new("ifconfig");
+            let mut cmd = crate::platform::system_command("ifconfig");
             cmd.args([iface, "down"]);
-            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+            match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
                 Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
                 Err(e) => Err(e),
@@ -527,9 +155,9 @@ pub async fn disable_interface(iface: &str) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cmd = tokio::process::Command::new("ip");
+        let mut cmd = crate::platform::system_command("ip");
         cmd.args(["link", "set", iface, "down"]);
-        match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+        match super::cmd::run_owned_mutation(cmd, TIMEOUT_MEDIUM).await {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
             Err(e) => Err(e),
@@ -540,9 +168,9 @@ pub async fn disable_interface(iface: &str) -> Result<(), String> {
 pub async fn enable_interface(iface: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["interface", "set", "interface", iface, "enabled"]);
-        match run_cmd(cmd, TIMEOUT_SLOW).await {
+        match super::cmd::run_owned_mutation(cmd, TIMEOUT_SLOW).await {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
             Err(e) => Err(e),
@@ -551,19 +179,19 @@ pub async fn enable_interface(iface: &str) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        let is_wifi = iface.starts_with("en") && is_wifi_device(iface).await;
+        let is_wifi = is_wifi_device(iface).await?;
         if is_wifi {
-            let mut cmd = tokio::process::Command::new("networksetup");
+            let mut cmd = crate::platform::system_command("networksetup");
             cmd.args(["-setairportpower", iface, "on"]);
-            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+            match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
                 Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
                 Err(e) => Err(e),
             }
         } else {
-            let mut cmd = tokio::process::Command::new("ifconfig");
+            let mut cmd = crate::platform::system_command("ifconfig");
             cmd.args([iface, "up"]);
-            match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+            match run_macos_mutation(cmd, TIMEOUT_MEDIUM).await {
                 Ok(output) if output.status.success() => Ok(()),
                 Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
                 Err(e) => Err(e),
@@ -573,9 +201,9 @@ pub async fn enable_interface(iface: &str) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cmd = tokio::process::Command::new("ip");
+        let mut cmd = crate::platform::system_command("ip");
         cmd.args(["link", "set", iface, "up"]);
-        match run_cmd(cmd, TIMEOUT_MEDIUM).await {
+        match super::cmd::run_owned_mutation(cmd, TIMEOUT_MEDIUM).await {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
             Err(e) => Err(e),
@@ -583,145 +211,137 @@ pub async fn enable_interface(iface: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
-async fn is_wifi_device(iface: &str) -> bool {
-    let mut cmd = tokio::process::Command::new("networksetup");
-    cmd.args(["-listallhardwareports"]);
-    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
-        let text = String::from_utf8_lossy(&output.stdout);
-        let mut is_wifi_port = false;
-        for line in text.lines() {
-            if let Some(name) = line.strip_prefix("Hardware Port: ") {
-                let lower = name.to_lowercase();
-                is_wifi_port = lower.contains("wi-fi") || lower.contains("airport");
-            } else if let Some(dev) = line.strip_prefix("Device: ") {
-                if dev.trim() == iface && is_wifi_port {
-                    return true;
-                }
-                is_wifi_port = false;
-            }
-        }
-    }
-    false
-}
-
-// ── Stage 3: Network Stack / Profile Reset (prompts with strong warning) ────
-
-pub async fn run_stage3(config: &Config, saved_ssid: &Option<String>) -> (Vec<StepResult>, bool) {
-    let mut steps = Vec::new();
-
-    if is_interactive(config) {
-        println!();
-        let detail = platform_stage3_warning();
-        let prompt = format!(
-            "  {} WARNING: Stage 3 resets network configuration. {}\n  Saved Wi-Fi passwords and custom settings may be lost. Continue? (y/N): ",
-            warn_icon(config),
-            detail,
-        );
-        if !prompt_yes_no(&prompt) {
-            steps.push(StepResult {
-                name: "stack_reset",
-                success: false,
-                message: "Skipped by user".to_string(),
-            });
-            return (steps, false);
-        }
-    }
-
-    let result = platform_stage3(config, saved_ssid).await;
-    match result {
-        Ok(msgs) => {
-            for msg in &msgs {
-                if is_interactive(config) {
-                    print_step_ok(msg, config);
-                }
-            }
-            steps.push(StepResult {
-                name: "stack_reset",
-                success: true,
-                message: msgs.join("; "),
-            });
-        }
-        Err(msg) => {
-            if is_interactive(config) {
-                print_step_fail("Stack reset failed", &msg, config);
-            }
-            steps.push(StepResult {
-                name: "stack_reset",
-                success: false,
-                message: msg,
-            });
-        }
-    }
-
-    // Wait and check connectivity
-    let http_ok = {
-        let spinner = create_spinner("Waiting for network to reconnect...");
-        let connected = connectivity::wait_for_connectivity(&spinner).await;
-        spinner.finish_and_clear();
-        connected
-    };
-
-    if !http_ok {
-        return (steps, false);
-    }
-
-    // DNS verification after connectivity passes
-    let dns_ok = {
-        let spinner = create_spinner("Verifying DNS resolution...");
-        let ok = connectivity::verify_dns_stability(&spinner).await;
-        spinner.finish_and_clear();
-        ok
-    };
-
-    if dns_ok {
-        if is_interactive(config) {
-            print_step_ok("DNS resolution verified", config);
-        }
-        return (steps, true);
-    }
-
-    // DNS failed — auto-apply Google DNS (no prompt in Stage 3)
-    let iface = adapters::detect_default_interface()
-        .await
-        .unwrap_or_default();
-    let dns_fixed = handle_dns_fallback_auto(config, &iface, &mut steps).await;
-    (steps, dns_fixed)
-}
-
-fn platform_stage3_warning() -> &'static str {
-    #[cfg(windows)]
-    {
-        "This will reset Winsock, TCP/IP stack, and optionally delete your Wi-Fi profile."
-    }
+/// Re-enable an interface and verify recovery before a restore token may be
+/// resolved. On macOS, an exit-0 toggle is insufficient: prove the mapped
+/// physical service, power/link state, expected default route, and reachability.
+pub(crate) async fn restore_interface(iface: &str) -> Result<(), String> {
+    enable_interface(iface).await?;
 
     #[cfg(target_os = "macos")]
     {
-        "This will remove and recreate your network service."
+        let service = macos_service_for_device(iface).await?;
+        if !macos_service_enabled(&service.name).await? {
+            return Err(format!(
+                "macOS network service \"{}\" remains disabled",
+                service.name
+            ));
+        }
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut operational = false;
+        while tokio::time::Instant::now() < deadline {
+            if macos_interface_operational(iface).await? {
+                operational = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        if !operational {
+            return Err(format!(
+                "macOS interface {} did not return to an operational state",
+                iface
+            ));
+        }
+
+        wait_for_macos_route_and_reachability(iface).await?;
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        "This will delete and recreate your network connection profile."
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn macos_interface_operational(iface: &str) -> Result<bool, String> {
+    if is_wifi_device(iface).await? {
+        let text = run_networksetup_checked(&["-getairportpower", iface]).await?;
+        return parse_macos_airport_power(&text).ok_or_else(|| {
+            format!(
+                "networksetup returned an unknown Wi-Fi power state for {}",
+                iface
+            )
+        });
+    }
+
+    let mut command = crate::platform::system_command("ifconfig");
+    command.arg(iface);
+    let output = run_cmd(command, TIMEOUT_QUICK).await?;
+    if !output.status.success() {
+        return Err(format!("ifconfig could not inspect {}", iface));
+    }
+    Ok(parse_macos_ifconfig_operational(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_airport_power(text: &str) -> Option<bool> {
+    let state = text.trim().rsplit_once(':')?.1.trim();
+    match state {
+        "On" => Some(true),
+        "Off" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_ifconfig_operational(text: &str) -> bool {
+    let flags_up = text
+        .lines()
+        .next()
+        .and_then(|line| line.split_once("flags="))
+        .and_then(|(_, rest)| rest.split_once('<'))
+        .and_then(|(_, flags)| flags.split_once('>'))
+        .map(|(flags, _)| flags.split(',').any(|flag| flag == "UP"))
+        .unwrap_or(false);
+    flags_up && (text.contains("status: active") || text.contains("\n\tinet "))
+}
+
+#[cfg(target_os = "macos")]
+async fn is_wifi_device(iface: &str) -> Result<bool, String> {
+    let service = macos_service_for_device(iface).await?;
+    classify_macos_hardware_port(&service.hardware_port).ok_or_else(|| {
+        format!(
+            "Refused to cycle {} because hardware port {:?} could not be classified safely as Wi-Fi or Ethernet",
+            iface, service.hardware_port
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn classify_macos_hardware_port(hardware_port: &str) -> Option<bool> {
+    let hardware_port = hardware_port.to_ascii_lowercase();
+    if hardware_port.contains("wi-fi") || hardware_port.contains("airport") {
+        Some(true)
+    } else if hardware_port.contains("ethernet") || hardware_port.contains("lan") {
+        Some(false)
+    } else {
+        None
     }
 }
 
 pub async fn platform_stage3(
     config: &Config,
     saved_ssid: &Option<String>,
+    restore: &super::session::RestoreRegistry,
 ) -> Result<Vec<String>, String> {
     #[cfg(windows)]
     {
+        // Windows stack reset is in-place and self-recovering (no service is
+        // removed), so there is nothing to register for restore.
+        let _ = restore;
         stage3_windows(config, saved_ssid).await
     }
 
     #[cfg(target_os = "macos")]
     {
-        stage3_macos(config, saved_ssid).await
+        stage3_macos(config, saved_ssid, restore).await
     }
 
     #[cfg(target_os = "linux")]
     {
+        // Linux deletes/recreates the connection profile in one in-function
+        // sequence; the M3 fix makes the delete failure abort before recreate,
+        // so there is no half-applied state to register externally.
+        let _ = restore;
         stage3_linux(config, saved_ssid).await
     }
 }
@@ -736,7 +356,7 @@ async fn stage3_windows(
     // 1. Winsock reset
     {
         let spinner = create_spinner("Resetting Winsock catalog...");
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["winsock", "reset"]);
         let r = run_cmd(cmd, TIMEOUT_SLOW).await;
         spinner.finish_and_clear();
@@ -749,7 +369,7 @@ async fn stage3_windows(
     // 2. TCP/IP reset
     {
         let spinner = create_spinner("Resetting TCP/IP stack...");
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["int", "ip", "reset"]);
         let r = run_cmd(cmd, TIMEOUT_SLOW).await;
         spinner.finish_and_clear();
@@ -762,7 +382,7 @@ async fn stage3_windows(
     // 3. IPv6 reset
     {
         let spinner = create_spinner("Resetting IPv6 stack...");
-        let mut cmd = tokio::process::Command::new("netsh");
+        let mut cmd = crate::platform::system_command("netsh");
         cmd.args(["int", "ipv6", "reset"]);
         let r = run_cmd(cmd, TIMEOUT_SLOW).await;
         spinner.finish_and_clear();
@@ -774,7 +394,7 @@ async fn stage3_windows(
 
     // 4. DNS flush
     {
-        let mut cmd = tokio::process::Command::new("ipconfig");
+        let mut cmd = crate::platform::system_command("ipconfig");
         cmd.arg("/flushdns");
         let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
     }
@@ -787,7 +407,7 @@ async fn stage3_windows(
                 ssid,
             );
             if prompt_yes_no(&prompt) {
-                let mut cmd = tokio::process::Command::new("netsh");
+                let mut cmd = crate::platform::system_command("netsh");
                 cmd.args(["wlan", "delete", "profile", &format!("name={}", ssid)]);
                 let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
                 completed.push(format!("Deleted Wi-Fi profile: {}", ssid));
@@ -828,627 +448,911 @@ async fn stage3_windows(
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CommandSpec {
-    program: &'static str,
-    args: Vec<String>,
-}
-
-#[cfg(target_os = "macos")]
-impl CommandSpec {
-    fn new(program: &'static str, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self {
-            program,
-            args: args.into_iter().map(Into::into).collect(),
-        }
-    }
-}
+const MACOS_SERVICE_CYCLE_VALIDATED: bool = false;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum MacosIpv4Snapshot {
-    Dhcp,
-    Manual {
-        ip: String,
-        subnet: String,
-        router: String,
-    },
-    Unknown,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum MacosIpv6Snapshot {
-    Automatic,
-    LinkLocal,
-    Off,
-    Manual {
-        address: String,
-        prefix: String,
-        router: String,
-    },
-    Unknown,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MacosProxySnapshot {
-    kind: &'static str,
+struct MacosNetworkService {
+    name: String,
+    hardware_port: String,
+    device: String,
     enabled: bool,
-    server: Option<String>,
-    port: Option<String>,
 }
 
+/// Parse the paired service/device records emitted by
+/// `networksetup -listnetworkserviceorder`. The display name is the actual
+/// user-renamable network service; the hardware-port label is not used as a
+/// substitute.
 #[cfg(target_os = "macos")]
-impl MacosProxySnapshot {
-    fn disabled(kind: &'static str) -> Self {
-        Self {
-            kind,
-            enabled: false,
-            server: None,
-            port: None,
-        }
-    }
+fn parse_macos_network_service_order(text: &str) -> Vec<MacosNetworkService> {
+    let mut services = Vec::new();
+    let mut pending: Option<(String, bool)> = None;
 
-    fn restore_specs(&self, service: &str) -> Vec<CommandSpec> {
-        let set_cmd = match self.kind {
-            "secureweb" => "-setsecurewebproxy",
-            _ => "-setwebproxy",
-        };
-        let state_cmd = match self.kind {
-            "secureweb" => "-setsecurewebproxystate",
-            _ => "-setwebproxystate",
-        };
-
-        if self.enabled {
-            let server = self.server.clone().unwrap_or_default();
-            let port = self.port.clone().unwrap_or_else(|| "0".to_string());
-            vec![
-                CommandSpec::new("networksetup", [set_cmd, service, &server, &port]),
-                CommandSpec::new("networksetup", [state_cmd, service, "on"]),
-            ]
-        } else {
-            vec![CommandSpec::new(
-                "networksetup",
-                [state_cmd, service, "off"],
-            )]
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MacosNetworkSnapshot {
-    service_name: String,
-    dns_servers: Vec<String>,
-    service_order: Vec<String>,
-    web_proxy: MacosProxySnapshot,
-    secure_web_proxy: MacosProxySnapshot,
-    ipv4: MacosIpv4Snapshot,
-    ipv6: MacosIpv6Snapshot,
-}
-
-#[cfg(target_os = "macos")]
-impl MacosNetworkSnapshot {
-    fn restore_command_specs(&self) -> Vec<CommandSpec> {
-        let mut specs = Vec::new();
-
-        let mut dns_args = vec!["-setdnsservers".to_string(), self.service_name.clone()];
-        if self.dns_servers.is_empty() {
-            dns_args.push("empty".to_string());
-        } else {
-            dns_args.extend(self.dns_servers.clone());
-        }
-        specs.push(CommandSpec::new("networksetup", dns_args));
-
-        match &self.ipv4 {
-            MacosIpv4Snapshot::Dhcp => {
-                specs.push(CommandSpec::new(
-                    "networksetup",
-                    ["-setdhcp", self.service_name.as_str()],
-                ));
-            }
-            MacosIpv4Snapshot::Manual { ip, subnet, router } => {
-                specs.push(CommandSpec::new(
-                    "networksetup",
-                    [
-                        "-setmanual",
-                        self.service_name.as_str(),
-                        ip.as_str(),
-                        subnet.as_str(),
-                        router.as_str(),
-                    ],
-                ));
-            }
-            MacosIpv4Snapshot::Unknown => {}
-        }
-
-        match &self.ipv6 {
-            MacosIpv6Snapshot::Automatic => {
-                specs.push(CommandSpec::new(
-                    "networksetup",
-                    ["-setv6automatic", self.service_name.as_str()],
-                ));
-            }
-            MacosIpv6Snapshot::LinkLocal => {
-                specs.push(CommandSpec::new(
-                    "networksetup",
-                    ["-setv6linklocal", self.service_name.as_str()],
-                ));
-            }
-            MacosIpv6Snapshot::Off => {
-                specs.push(CommandSpec::new(
-                    "networksetup",
-                    ["-setv6off", self.service_name.as_str()],
-                ));
-            }
-            MacosIpv6Snapshot::Manual {
-                address,
-                prefix,
-                router,
-            } => {
-                specs.push(CommandSpec::new(
-                    "networksetup",
-                    [
-                        "-setv6manual",
-                        self.service_name.as_str(),
-                        address.as_str(),
-                        prefix.as_str(),
-                        router.as_str(),
-                    ],
-                ));
-            }
-            MacosIpv6Snapshot::Unknown => {}
-        }
-
-        specs.extend(self.web_proxy.restore_specs(&self.service_name));
-        specs.extend(self.secure_web_proxy.restore_specs(&self.service_name));
-
-        if !self.service_order.is_empty() {
-            let mut order_args = vec!["-ordernetworkservices".to_string()];
-            order_args.extend(self.service_order.clone());
-            specs.push(CommandSpec::new("networksetup", order_args));
-        }
-
-        specs
-    }
-}
-
-#[cfg(target_os = "macos")]
-async fn run_networksetup(args: &[&str]) -> Option<String> {
-    let mut cmd = tokio::process::Command::new("networksetup");
-    cmd.args(args);
-    let output = run_cmd(cmd, TIMEOUT_MEDIUM).await.ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-#[cfg(target_os = "macos")]
-async fn capture_macos_network_snapshot(service_name: &str) -> MacosNetworkSnapshot {
-    let ip_info = run_networksetup(&["-getinfo", service_name]).await;
-    let dns_servers = run_networksetup(&["-getdnsservers", service_name])
-        .await
-        .map(|text| parse_macos_dns_servers(&text))
-        .unwrap_or_default();
-    let service_order = run_networksetup(&["-listnetworkserviceorder"])
-        .await
-        .map(|text| parse_macos_service_order(&text))
-        .unwrap_or_default();
-    let web_proxy = run_networksetup(&["-getwebproxy", service_name])
-        .await
-        .map(|text| parse_macos_proxy("web", &text))
-        .unwrap_or_else(|| MacosProxySnapshot::disabled("web"));
-    let secure_web_proxy = run_networksetup(&["-getsecurewebproxy", service_name])
-        .await
-        .map(|text| parse_macos_proxy("secureweb", &text))
-        .unwrap_or_else(|| MacosProxySnapshot::disabled("secureweb"));
-    let ipv4 = ip_info
-        .as_deref()
-        .map(parse_macos_ipv4)
-        .unwrap_or(MacosIpv4Snapshot::Unknown);
-    let ipv6 = ip_info
-        .as_deref()
-        .map(parse_macos_ipv6)
-        .unwrap_or(MacosIpv6Snapshot::Unknown);
-
-    MacosNetworkSnapshot {
-        service_name: service_name.to_string(),
-        dns_servers,
-        service_order,
-        web_proxy,
-        secure_web_proxy,
-        ipv4,
-        ipv6,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn parse_macos_dns_servers(text: &str) -> Vec<String> {
-    if text.contains("There aren't any DNS Servers") {
-        return Vec::new();
-    }
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn parse_macos_service_order(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if !trimmed.starts_with('(') {
-                return None;
-            }
-            let (_, name) = trimmed.split_once(") ")?;
-            Some(name.trim().trim_start_matches("*").trim().to_string())
-        })
-        .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn parse_macos_proxy(kind: &'static str, text: &str) -> MacosProxySnapshot {
-    let mut enabled = false;
-    let mut server = None;
-    let mut port = None;
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("Enabled:") {
-            enabled = value.trim() == "Yes";
-        } else if let Some(value) = trimmed.strip_prefix("Server:") {
-            let value = value.trim();
-            if !value.is_empty() {
-                server = Some(value.to_string());
-            }
-        } else if let Some(value) = trimmed.strip_prefix("Port:") {
-            let value = value.trim();
-            if !value.is_empty() && value != "0" {
-                port = Some(value.to_string());
-            }
-        }
-    }
-
-    MacosProxySnapshot {
-        kind,
-        enabled,
-        server,
-        port,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn parse_macos_ipv4(text: &str) -> MacosIpv4Snapshot {
-    if text.contains("DHCP Configuration") {
-        return MacosIpv4Snapshot::Dhcp;
-    }
-
-    if text.contains("Manual Configuration") {
-        let mut ip = String::new();
-        let mut subnet = String::new();
-        let mut router = String::new();
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if let Some(value) = trimmed.strip_prefix("IP address:") {
-                ip = value.trim().to_string();
-            } else if let Some(value) = trimmed.strip_prefix("Subnet mask:") {
-                subnet = value.trim().to_string();
-            } else if let Some(value) = trimmed.strip_prefix("Router:") {
-                router = value.trim().to_string();
-            }
-        }
-        if !ip.is_empty() && !subnet.is_empty() && !router.is_empty() {
-            return MacosIpv4Snapshot::Manual { ip, subnet, router };
-        }
-    }
-
-    MacosIpv4Snapshot::Unknown
-}
-
-#[cfg(target_os = "macos")]
-fn parse_macos_ipv6(text: &str) -> MacosIpv6Snapshot {
-    let mut mode = None;
-    let mut address = String::new();
-    let mut prefix = String::new();
-    let mut router = String::new();
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("IPv6:") {
-            let value = value.trim().to_lowercase();
-            mode = Some(value);
-        } else if let Some(value) = trimmed.strip_prefix("IPv6 IP address:") {
-            address = value.trim().to_string();
-        } else if let Some(value) = trimmed.strip_prefix("IPv6 Prefix Length:") {
-            prefix = value.trim().to_string();
-        } else if let Some(value) = trimmed.strip_prefix("IPv6 Router:") {
-            router = value.trim().to_string();
-        }
-    }
-
-    match mode.as_deref() {
-        Some(value) if value.contains("automatic") => MacosIpv6Snapshot::Automatic,
-        Some(value) if value.contains("link-local") => MacosIpv6Snapshot::LinkLocal,
-        Some(value) if value.contains("off") => MacosIpv6Snapshot::Off,
-        Some(value) if value.contains("manual") => {
-            if !address.is_empty() && !prefix.is_empty() && !router.is_empty() {
-                MacosIpv6Snapshot::Manual {
-                    address,
-                    prefix,
-                    router,
-                }
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with('(') && !line.starts_with("(Hardware Port:") {
+            let Some((marker, raw_name)) = line.split_once(") ") else {
+                pending = None;
+                continue;
+            };
+            let marker_disabled = marker == "(*";
+            let raw_name = raw_name.trim();
+            let name_disabled = raw_name.starts_with('*');
+            let name = raw_name.trim_start_matches('*').trim();
+            if name.is_empty() {
+                pending = None;
             } else {
-                MacosIpv6Snapshot::Unknown
+                pending = Some((name.to_string(), !(marker_disabled || name_disabled)));
             }
+            continue;
         }
-        _ => MacosIpv6Snapshot::Unknown,
+
+        let Some(details) = line
+            .strip_prefix("(Hardware Port: ")
+            .and_then(|line| line.strip_suffix(')'))
+        else {
+            continue;
+        };
+        let Some((hardware_port, device)) = details.split_once(", Device: ") else {
+            pending = None;
+            continue;
+        };
+        let Some((name, enabled)) = pending.take() else {
+            continue;
+        };
+        let device = device.trim();
+        if !device.is_empty() {
+            services.push(MacosNetworkService {
+                name,
+                hardware_port: hardware_port.trim().to_string(),
+                device: device.to_string(),
+                enabled,
+            });
+        }
+    }
+
+    services
+}
+
+#[cfg(target_os = "macos")]
+async fn run_networksetup_checked(args: &[&str]) -> Result<String, String> {
+    let mut command = crate::platform::system_command("networksetup");
+    command.args(args);
+    let output = run_cmd(command, TIMEOUT_MEDIUM).await?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let reported_error = stdout
+        .lines()
+        .chain(stderr.lines())
+        .find(|line| line.trim_start().starts_with("** Error:"));
+    if output.status.success() && reported_error.is_none() {
+        return Ok(stdout);
+    }
+    let detail = reported_error
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty())
+        .or_else(|| (!stderr.is_empty()).then_some(stderr.as_str()));
+    Err(match detail {
+        Some(detail) => format!("networksetup {} failed: {}", args.join(" "), detail),
+        None => format!("networksetup {} failed", args.join(" ")),
+    })
+}
+
+#[cfg(target_os = "macos")]
+async fn list_macos_network_services() -> Result<Vec<MacosNetworkService>, String> {
+    let text = run_networksetup_checked(&["-listnetworkserviceorder"]).await?;
+    let services = parse_macos_network_service_order(&text);
+    if services.is_empty() {
+        Err("networksetup returned no physical network services".to_string())
+    } else {
+        Ok(services)
     }
 }
 
 #[cfg(target_os = "macos")]
-async fn restore_macos_network_snapshot(snapshot: &MacosNetworkSnapshot) -> Vec<String> {
-    let mut restored = Vec::new();
-
-    for spec in snapshot.restore_command_specs() {
-        let mut cmd = tokio::process::Command::new(spec.program);
-        cmd.args(&spec.args);
-        if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
-            if output.status.success() {
-                restored.push(format!("{} {}", spec.program, spec.args.join(" ")));
-            }
-        }
-    }
-
-    restored
+fn is_macos_physical_uplink_device(iface: &str) -> bool {
+    let Some(index) = iface.strip_prefix("en") else {
+        return false;
+    };
+    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[cfg(target_os = "macos")]
-async fn stage3_macos(config: &Config, saved_ssid: &Option<String>) -> Result<Vec<String>, String> {
-    let mut completed = Vec::new();
+async fn macos_service_for_device(iface: &str) -> Result<MacosNetworkService, String> {
+    if !is_macos_physical_uplink_device(iface) {
+        return Err(format!(
+            "Refused macOS network mutation for non-physical interface {}. Only BSD enN uplinks are eligible; loopback, AWDL/LLW, bridges, VLANs, and tunnels are never cycled.",
+            iface
+        ));
+    }
+    let matches: Vec<MacosNetworkService> = list_macos_network_services()
+        .await?
+        .into_iter()
+        .filter(|service| service.device == iface)
+        .collect();
 
-    // Detect default interface and its network service name
+    match matches.as_slice() {
+        [service] => Ok(service.clone()),
+        [] => Err(format!(
+            "No physical macOS network service maps to interface {}. Virtual/tunnel interfaces are never deep-reset.",
+            iface
+        )),
+        _ => Err(format!(
+            "Multiple macOS network services map to interface {}; refusing an ambiguous reset",
+            iface
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn macos_service_enabled(service: &str) -> Result<bool, String> {
+    let output = run_networksetup_checked(&["-getnetworkserviceenabled", service]).await?;
+    match output.trim() {
+        "Enabled" => Ok(true),
+        "Disabled" => Ok(false),
+        other => Err(format!(
+            "Could not determine whether macOS network service \"{}\" is enabled (networksetup returned {:?})",
+            service, other
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn set_macos_service_enabled(service: &str, enabled: bool) -> Result<(), String> {
+    let state = if enabled { "on" } else { "off" };
+    let mut command = crate::platform::system_command("networksetup");
+    command.args(["-setnetworkserviceenabled", service, state]);
+    let output = run_macos_mutation(command, TIMEOUT_MEDIUM).await?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reported_error = stdout
+        .lines()
+        .chain(stderr.lines())
+        .find(|line| line.trim_start().starts_with("** Error:"));
+    if output.status.success() && reported_error.is_none() {
+        Ok(())
+    } else {
+        let detail = reported_error
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+            .or_else(|| {
+                let stderr = stderr.trim();
+                (!stderr.is_empty()).then_some(stderr)
+            });
+        Err(match detail {
+            Some(detail) => format!("networksetup -setnetworkserviceenabled failed: {}", detail),
+            None => "networksetup -setnetworkserviceenabled failed".to_string(),
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_macos_service_state(service: &str, expected: bool) -> Result<(), String> {
+    for _ in 0..5 {
+        if macos_service_enabled(service).await? == expected {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    Err(format!(
+        "macOS network service \"{}\" did not become {}",
+        service,
+        if expected { "enabled" } else { "disabled" }
+    ))
+}
+
+#[cfg(target_os = "macos")]
+async fn macos_default_route_interface() -> Result<String, String> {
+    let mut command = crate::platform::system_command("route");
+    command.args(["-n", "get", "default"]);
+    let output = run_cmd(command, TIMEOUT_QUICK).await?;
+    if !output.status.success() {
+        return Err("macOS has no readable default route".to_string());
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("interface:").map(str::trim))
+        .filter(|interface| !interface.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "macOS has no default-route interface".to_string())
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_macos_route_and_reachability(expected_iface: &str) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut last_route = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(route) = macos_default_route_interface().await {
+            last_route = Some(route.clone());
+            if route == expected_iface && super::connectivity::check_connectivity().await {
+                return Ok(route);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    Err(match last_route {
+        Some(route) if route != expected_iface => format!(
+            "The network service is enabled, but the expected physical default route {} did not recover (current route: {})",
+            expected_iface, route
+        ),
+        Some(route) => format!(
+            "The network service is enabled and expected default route {} exists, but internet reachability did not recover",
+            route
+        ),
+        None => "The network service is enabled, but no default route recovered".to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+async fn resolve_macos_cycle_restore_after_recovery(
+    restore: &super::session::RestoreRegistry,
+    token: super::session::RestoreToken,
+    recovery: Result<String, String>,
+) -> Result<String, String> {
+    match recovery {
+        Ok(route) => {
+            restore.mark_resolved(token).await;
+            Ok(route)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Idempotent restore used by the interrupt registry. It never deletes or
+/// recreates a service: it only re-enables the known service and restores the
+/// exact DNS/search-domain values captured before the cycle.
+#[cfg(target_os = "macos")]
+pub(crate) async fn restore_macos_service_state(
+    iface: &str,
+    service: &str,
+    dns_snapshot: &super::dns::MacosDnsSnapshot,
+) -> Result<(), String> {
+    set_macos_service_enabled(service, true).await?;
+    wait_for_macos_service_state(service, true).await?;
+    super::dns::restore_macos_dns_snapshot(dns_snapshot).await?;
+    wait_for_macos_route_and_reachability(iface)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+trait MacosServiceCycleOps {
+    async fn set_service_enabled(&self, service: &str, enabled: bool) -> Result<(), String>;
+    async fn wait_for_service_state(&self, service: &str, expected: bool) -> Result<(), String>;
+    async fn capture_dns(&self, service: &str) -> Result<super::dns::MacosDnsSnapshot, String>;
+    async fn restore_dns(&self, snapshot: &super::dns::MacosDnsSnapshot) -> Result<(), String>;
+    async fn wait_for_route_and_reachability(&self, iface: &str) -> Result<String, String>;
+    async fn delay(&self, duration: std::time::Duration);
+}
+
+#[cfg(target_os = "macos")]
+struct SystemMacosServiceCycleOps;
+
+#[cfg(target_os = "macos")]
+impl MacosServiceCycleOps for SystemMacosServiceCycleOps {
+    async fn set_service_enabled(&self, service: &str, enabled: bool) -> Result<(), String> {
+        set_macos_service_enabled(service, enabled).await
+    }
+
+    async fn wait_for_service_state(&self, service: &str, expected: bool) -> Result<(), String> {
+        wait_for_macos_service_state(service, expected).await
+    }
+
+    async fn capture_dns(&self, service: &str) -> Result<super::dns::MacosDnsSnapshot, String> {
+        super::dns::capture_macos_dns_snapshot(service).await
+    }
+
+    async fn restore_dns(&self, snapshot: &super::dns::MacosDnsSnapshot) -> Result<(), String> {
+        super::dns::restore_macos_dns_snapshot(snapshot).await
+    }
+
+    async fn wait_for_route_and_reachability(&self, iface: &str) -> Result<String, String> {
+        wait_for_macos_route_and_reachability(iface).await
+    }
+
+    async fn delay(&self, duration: std::time::Duration) {
+        tokio::time::sleep(duration).await;
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn execute_macos_service_cycle_transitions(
+    ops: &impl MacosServiceCycleOps,
+    restore: &super::session::RestoreRegistry,
+    iface: &str,
+    service: &MacosNetworkService,
+    dns_snapshot: std::sync::Arc<super::dns::MacosDnsSnapshot>,
+) -> Result<Vec<String>, String> {
+    use super::session::RestoreOp;
+    let token = restore
+        .register(RestoreOp::ReEnableMacosService {
+            iface: iface.to_string(),
+            service: service.name.clone(),
+            dns_snapshot: std::sync::Arc::clone(&dns_snapshot),
+        })
+        .await;
+
+    let spinner = create_spinner(&format!(
+        "Safely cycling network service \"{}\"...",
+        service.name
+    ));
+    let disable_result = ops.set_service_enabled(&service.name, false).await;
+    spinner.finish_and_clear();
+
+    if let Err(error) = disable_result {
+        return Err(format!(
+            "Refused to continue after the service-disable command failed: {}. nd300 will verify/re-enable it while exiting.",
+            error
+        ));
+    }
+
+    ops.wait_for_service_state(&service.name, false).await?;
+
+    ops.delay(std::time::Duration::from_secs(3)).await;
+
+    if let Err(first_error) = ops.set_service_enabled(&service.name, true).await {
+        ops.delay(std::time::Duration::from_secs(2)).await;
+        if let Err(retry_error) = ops.set_service_enabled(&service.name, true).await {
+            return Err(format!(
+                "Network service \"{}\" is still disabled after two re-enable attempts ({}; retry: {}). nd300 will retry during cleanup. Manual command: sudo networksetup -setnetworkserviceenabled \"{}\" on",
+                service.name, first_error, retry_error, service.name
+            ));
+        }
+    }
+    ops.wait_for_service_state(&service.name, true).await?;
+
+    let current_dns = ops.capture_dns(&service.name).await?;
+    if current_dns != *dns_snapshot {
+        if let Err(error) = ops.restore_dns(&dns_snapshot).await {
+            return Err(format!(
+                "The service cycle changed DNS/search domains and exact restoration failed: {}. nd300 will retry during cleanup.",
+                error
+            ));
+        }
+        return Err(
+            "The service cycle unexpectedly changed DNS/search domains; the exact prior values were restored and the reset was stopped."
+                .to_string(),
+        );
+    }
+
+    // Keep the idempotent restore pending until enabled state, exact resolver
+    // state, the expected physical default route, and internet reachability
+    // have all been verified. A route/reachability failure therefore still
+    // goes through the LIFO cleanup drain.
+    let recovery = ops.wait_for_route_and_reachability(iface).await;
+    let route = resolve_macos_cycle_restore_after_recovery(restore, token, recovery).await?;
+    Ok(vec![
+        format!(
+            "Safely cycled service \"{}\" ({}, {})",
+            service.name, service.hardware_port, iface
+        ),
+        format!("Verified default route {} and internet reachability", route),
+    ])
+}
+
+#[cfg(target_os = "macos")]
+async fn execute_macos_service_cycle(
+    restore: &super::session::RestoreRegistry,
+) -> Result<Vec<String>, String> {
     let iface = adapters::detect_default_interface()
         .await
-        .ok_or_else(|| "Could not detect default interface".to_string())?;
+        .ok_or_else(|| "Could not detect the default interface".to_string())?;
+    let service = macos_service_for_device(&iface).await?;
+    classify_macos_hardware_port(&service.hardware_port).ok_or_else(|| {
+        format!(
+            "Refused to cycle {} because hardware port {:?} could not be classified safely as Wi-Fi or Ethernet",
+            iface, service.hardware_port
+        )
+    })?;
 
-    let service_name = detect_macos_service(&iface)
-        .await
-        .ok_or_else(|| format!("Could not find network service for {}", iface))?;
-    let snapshot = capture_macos_network_snapshot(&service_name).await;
-
-    // 1. Remove network service
-    {
-        let spinner = create_spinner(&format!("Removing service \"{}\"...", service_name));
-        let mut cmd = tokio::process::Command::new("networksetup");
-        cmd.args(["-removenetworkservice", &service_name]);
-        let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
-        spinner.finish_and_clear();
-        match r {
-            Ok(output) if output.status.success() => {
-                completed.push(format!("Removed service: {}", service_name));
-            }
-            _ => return Err(format!("Failed to remove service: {}", service_name)),
-        }
+    if !service.enabled || !macos_service_enabled(&service.name).await? {
+        return Err(format!(
+            "macOS network service \"{}\" is disabled; nd300 will not alter an intentionally disabled service",
+            service.name
+        ));
     }
 
-    // 2. Recreate
-    {
-        let spinner = create_spinner(&format!("Recreating service \"{}\"...", service_name));
-        let mut cmd = tokio::process::Command::new("networksetup");
-        cmd.args(["-createnetworkservice", &service_name, &iface]);
-        let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
-        spinner.finish_and_clear();
-        match r {
-            Ok(output) if output.status.success() => {
-                completed.push(format!("Recreated service: {}", service_name));
-            }
-            _ => return Err(format!("Failed to recreate service: {}", service_name)),
-        }
-    }
-
-    // 3. Restore the service's previous settings. This avoids converting a
-    // DHCP/default-DNS service into a hard-coded public-DNS service.
-    {
-        let restored = restore_macos_network_snapshot(&snapshot).await;
-        if !restored.is_empty() {
-            completed.push("Restored previous macOS network service settings".to_string());
-        }
-    }
-
-    // 4. Wi-Fi reconnection
-    if let Some(ssid) = saved_ssid {
-        // Try to get password from Keychain
-        let password = get_keychain_password(ssid).await;
-        match password {
-            Some(pass) => {
-                let mut cmd = tokio::process::Command::new("networksetup");
-                cmd.args(["-setairportnetwork", &iface, ssid, &pass]);
-                if let Ok(output) = run_cmd(cmd, TIMEOUT_MEDIUM).await {
-                    if output.status.success() {
-                        completed.push(format!("Reconnected to {}", ssid));
-                    }
-                }
-            }
-            None => {
-                if is_interactive(config) {
-                    println!(
-                        "  {}",
-                        crate::render::color::dim(
-                            &format!(
-                                "Could not retrieve password for \"{}\". Reconnect via Wi-Fi menu.",
-                                ssid
-                            ),
-                            config,
-                        ),
-                    );
-                }
-            }
-        }
-    }
-
-    // 5. Flush DNS
-    {
-        let mut cmd = tokio::process::Command::new("dscacheutil");
-        cmd.arg("-flushcache");
-        let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
-    }
-    {
-        let mut cmd = tokio::process::Command::new("killall");
-        cmd.args(["-HUP", "mDNSResponder"]);
-        let _ = run_cmd(cmd, TIMEOUT_QUICK).await;
-    }
-
-    Ok(completed)
+    // The exact resolver snapshot is a precondition, not best effort. No
+    // mutation or restore registration occurs if either DNS read fails.
+    let dns_snapshot =
+        std::sync::Arc::new(super::dns::capture_macos_dns_snapshot(&service.name).await?);
+    execute_macos_service_cycle_transitions(
+        &SystemMacosServiceCycleOps,
+        restore,
+        &iface,
+        &service,
+        dns_snapshot,
+    )
+    .await
 }
 
+#[cfg(target_os = "macos")]
+async fn stage3_macos(
+    _config: &Config,
+    _saved_ssid: &Option<String>,
+    restore: &super::session::RestoreRegistry,
+) -> Result<Vec<String>, String> {
+    // The implementation below is deliberately shipped fail-closed until it
+    // has passed a disposable macOS service/VM mutation test. The active
+    // developer Mac must never be used to validate a high-risk reset.
+    if !MACOS_SERVICE_CYCLE_VALIDATED {
+        return Err(
+            "macOS deep reset is safely unavailable in this build: the former service-deletion reset was removed after it could damage Wi-Fi configuration. Use the lower-risk adapter restart, or re-add/repair the service in System Settings with a backup. The replacement service-cycle remains gated until disposable-Mac validation."
+                .to_string(),
+        );
+    }
+
+    execute_macos_service_cycle(restore).await
+}
+
+/// Resolve a BSD device such as `en0` to its actual, user-renamable macOS
+/// network service. Hardware-port display names are intentionally not returned.
 #[cfg(target_os = "macos")]
 pub async fn detect_macos_service(iface: &str) -> Option<String> {
-    let mut cmd = tokio::process::Command::new("networksetup");
-    cmd.args(["-listallhardwareports"]);
-    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
-        let text = String::from_utf8_lossy(&output.stdout);
-        let mut current_name = String::new();
-        for line in text.lines() {
-            if let Some(name) = line.strip_prefix("Hardware Port: ") {
-                current_name = name.trim().to_string();
-            } else if let Some(dev) = line.strip_prefix("Device: ") {
-                if dev.trim() == iface {
-                    return Some(current_name);
-                }
-            }
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "macos")]
-async fn get_keychain_password(ssid: &str) -> Option<String> {
-    let mut cmd = tokio::process::Command::new("security");
-    cmd.args(["find-generic-password", "-wa", ssid]);
-    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
-        if output.status.success() {
-            let pass = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !pass.is_empty() {
-                return Some(pass);
-            }
-        }
-    }
-    None
+    macos_service_for_device(iface)
+        .await
+        .ok()
+        .map(|service| service.name)
 }
 
 #[cfg(all(test, target_os = "macos"))]
-mod macos_snapshot_tests {
+mod macos_service_cycle_tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    const LIVE_CYCLE_ACK_VAR: &str = "ND300_LIVE_MACOS_SERVICE_CYCLE_ACK";
+    const LIVE_CYCLE_ACK: &str =
+        "I_UNDERSTAND_ND300_WILL_BRIEFLY_DISABLE_MY_ACTIVE_MACOS_NETWORK_SERVICE";
+    const LIVE_WATCHDOG_PID_VAR: &str = "ND300_LIVE_MACOS_SERVICE_CYCLE_WATCHDOG_PID";
+    const LIVE_EXPECTED_INTERFACE_VAR: &str = "ND300_LIVE_MACOS_SERVICE_CYCLE_EXPECTED_INTERFACE";
+    const LIVE_EXPECTED_SERVICE_VAR: &str = "ND300_LIVE_MACOS_SERVICE_CYCLE_EXPECTED_SERVICE";
+
+    const MODERN_MACOS: &str = r#"
+An asterisk (*) denotes that a network service is disabled.
+(1) USB 10/100/1000 LAN
+(Hardware Port: USB 10/100/1000 LAN, Device: en5)
+
+(2) Studio Wi-Fi
+(Hardware Port: Wi-Fi, Device: en0)
+
+(*) Disabled Bridge
+(Hardware Port: Thunderbolt Bridge, Device: bridge0)
+
+(4) Tailscale
+(Hardware Port: io.tailscale.ipn.macos, Device: )
+"#;
 
     #[test]
-    fn automatic_dns_restores_empty_dns_marker() {
-        let snapshot = MacosNetworkSnapshot {
-            service_name: "Wi-Fi".to_string(),
-            dns_servers: Vec::new(),
-            service_order: vec!["Wi-Fi".to_string(), "Thunderbolt Bridge".to_string()],
-            web_proxy: MacosProxySnapshot::disabled("web"),
-            secure_web_proxy: MacosProxySnapshot::disabled("secureweb"),
-            ipv4: MacosIpv4Snapshot::Dhcp,
-            ipv6: MacosIpv6Snapshot::Automatic,
+    fn service_order_maps_device_to_actual_renamed_service() {
+        let services = parse_macos_network_service_order(MODERN_MACOS);
+        let wifi = services
+            .iter()
+            .find(|service| service.device == "en0")
+            .unwrap();
+        assert_eq!(wifi.name, "Studio Wi-Fi");
+        assert_eq!(wifi.hardware_port, "Wi-Fi");
+        assert!(wifi.enabled);
+
+        let bridge = services
+            .iter()
+            .find(|service| service.device == "bridge0")
+            .unwrap();
+        assert!(!bridge.enabled);
+        assert!(
+            services.iter().all(|service| !service.device.is_empty()),
+            "virtual services without a physical device must not be reset candidates"
+        );
+        assert!(is_macos_physical_uplink_device("en0"));
+        assert!(is_macos_physical_uplink_device("en15"));
+        for virtual_iface in ["lo0", "awdl0", "llw0", "bridge0", "vlan0", "utun3"] {
+            assert!(
+                !is_macos_physical_uplink_device(virtual_iface),
+                "{virtual_iface} must never be a service-cycle candidate"
+            );
+        }
+        assert_eq!(classify_macos_hardware_port("Wi-Fi"), Some(true));
+        assert_eq!(classify_macos_hardware_port("AirPort"), Some(true));
+        assert_eq!(
+            classify_macos_hardware_port("USB 10/100/1000 LAN"),
+            Some(false)
+        );
+        assert_eq!(
+            classify_macos_hardware_port("Thunderbolt Ethernet Slot 1"),
+            Some(false)
+        );
+        assert_eq!(classify_macos_hardware_port("Mystery Port"), None);
+    }
+
+    #[test]
+    fn adapter_recovery_parsers_require_positive_operational_evidence() {
+        assert_eq!(
+            parse_macos_airport_power("Wi-Fi Power (en0): On\n"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_macos_airport_power("Wi-Fi Power (en0): Off\n"),
+            Some(false)
+        );
+        assert_eq!(parse_macos_airport_power("unknown\n"), None);
+
+        assert!(parse_macos_ifconfig_operational(
+            "en0: flags=8863<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n\tinet 10.0.0.2 netmask 0xffffff00\n\tstatus: active\n"
+        ));
+        assert!(!parse_macos_ifconfig_operational(
+            "en0: flags=8862<BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n\tstatus: inactive\n"
+        ));
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum InjectedFault {
+        None,
+        DisableCommand,
+        DisabledStateVerification,
+        FirstEnableCommand,
+        BothEnableCommands,
+        EnabledStateVerification,
+        PostCycleDnsRead,
+        DnsChangedButRestored,
+        DnsRestore,
+        RouteOrReachability,
+    }
+
+    struct FaultInjectingCycleOps {
+        fault: InjectedFault,
+        restore: super::super::session::RestoreRegistry,
+        original_dns: super::super::dns::MacosDnsSnapshot,
+        changed_dns: super::super::dns::MacosDnsSnapshot,
+        enable_attempts: AtomicUsize,
+        registered_before_disable: AtomicBool,
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    impl FaultInjectingCycleOps {
+        fn record(&self, call: &'static str) {
+            self.calls.lock().unwrap().push(call);
+        }
+    }
+
+    impl MacosServiceCycleOps for FaultInjectingCycleOps {
+        async fn set_service_enabled(&self, _service: &str, enabled: bool) -> Result<(), String> {
+            if enabled {
+                self.record("enable");
+                let attempt = self.enable_attempts.fetch_add(1, Ordering::SeqCst);
+                if self.fault == InjectedFault::BothEnableCommands
+                    || (self.fault == InjectedFault::FirstEnableCommand && attempt == 0)
+                {
+                    return Err("injected enable failure".to_string());
+                }
+            } else {
+                self.record("disable");
+                self.registered_before_disable
+                    .store(self.restore.pending_count().await == 1, Ordering::SeqCst);
+                if self.fault == InjectedFault::DisableCommand {
+                    return Err("injected disable failure".to_string());
+                }
+            }
+            Ok(())
+        }
+
+        async fn wait_for_service_state(
+            &self,
+            _service: &str,
+            expected: bool,
+        ) -> Result<(), String> {
+            if expected {
+                self.record("wait-enabled");
+                if self.fault == InjectedFault::EnabledStateVerification {
+                    return Err("injected enabled-state verification failure".to_string());
+                }
+            } else {
+                self.record("wait-disabled");
+                if self.fault == InjectedFault::DisabledStateVerification {
+                    return Err("injected disabled-state verification failure".to_string());
+                }
+            }
+            Ok(())
+        }
+
+        async fn capture_dns(
+            &self,
+            _service: &str,
+        ) -> Result<super::super::dns::MacosDnsSnapshot, String> {
+            self.record("capture-dns");
+            if self.fault == InjectedFault::PostCycleDnsRead {
+                return Err("injected post-cycle DNS read failure".to_string());
+            }
+            if matches!(
+                self.fault,
+                InjectedFault::DnsChangedButRestored | InjectedFault::DnsRestore
+            ) {
+                Ok(self.changed_dns.clone())
+            } else {
+                Ok(self.original_dns.clone())
+            }
+        }
+
+        async fn restore_dns(
+            &self,
+            _snapshot: &super::super::dns::MacosDnsSnapshot,
+        ) -> Result<(), String> {
+            self.record("restore-dns");
+            if self.fault == InjectedFault::DnsRestore {
+                Err("injected DNS restore failure".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn wait_for_route_and_reachability(&self, _iface: &str) -> Result<String, String> {
+            self.record("route");
+            if self.fault == InjectedFault::RouteOrReachability {
+                Err("injected route/reachability failure".to_string())
+            } else {
+                Ok("en0".to_string())
+            }
+        }
+
+        async fn delay(&self, _duration: std::time::Duration) {
+            self.record("delay");
+        }
+    }
+
+    async fn run_injected_cycle(
+        fault: InjectedFault,
+    ) -> (Result<Vec<String>, String>, usize, bool, Vec<&'static str>) {
+        let restore = super::super::session::RestoreRegistry::new();
+        let original_dns = super::super::dns::MacosDnsSnapshot::for_test(
+            "Studio Wi-Fi",
+            &["1.1.1.1", "1.0.0.1"],
+            &["example.test"],
+        );
+        let ops = FaultInjectingCycleOps {
+            fault,
+            restore: restore.clone(),
+            changed_dns: super::super::dns::MacosDnsSnapshot::for_test(
+                "Studio Wi-Fi",
+                &["8.8.8.8"],
+                &[],
+            ),
+            original_dns: original_dns.clone(),
+            enable_attempts: AtomicUsize::new(0),
+            registered_before_disable: AtomicBool::new(false),
+            calls: Mutex::new(Vec::new()),
+        };
+        let service = MacosNetworkService {
+            name: "Studio Wi-Fi".to_string(),
+            hardware_port: "Wi-Fi".to_string(),
+            device: "en0".to_string(),
+            enabled: true,
         };
 
-        let specs = snapshot.restore_command_specs();
-        assert!(specs.iter().any(|spec| {
-            spec.program == "networksetup" && spec.args == vec!["-setdnsservers", "Wi-Fi", "empty"]
-        }));
-        assert!(specs.iter().any(|spec| {
-            spec.program == "networksetup"
-                && spec.args == vec!["-ordernetworkservices", "Wi-Fi", "Thunderbolt Bridge"]
-        }));
-        assert!(specs.iter().any(|spec| {
-            spec.program == "networksetup" && spec.args == vec!["-setdhcp", "Wi-Fi"]
-        }));
-        assert!(specs.iter().any(|spec| {
-            spec.program == "networksetup" && spec.args == vec!["-setv6automatic", "Wi-Fi"]
-        }));
+        let result = execute_macos_service_cycle_transitions(
+            &ops,
+            &restore,
+            "en0",
+            &service,
+            Arc::new(original_dns),
+        )
+        .await;
+        let pending = restore.pending_count().await;
+        let registered = ops.registered_before_disable.load(Ordering::SeqCst);
+        let calls = ops.calls.into_inner().unwrap();
+        (result, pending, registered, calls)
     }
 
-    #[test]
-    fn manual_dns_and_proxy_restore_commands_preserve_values() {
-        let snapshot = MacosNetworkSnapshot {
-            service_name: "Wi-Fi".to_string(),
-            dns_servers: vec!["10.0.0.2".to_string(), "10.0.0.3".to_string()],
-            service_order: Vec::new(),
-            web_proxy: MacosProxySnapshot {
-                kind: "web",
-                enabled: true,
-                server: Some("proxy.example.test".to_string()),
-                port: Some("8080".to_string()),
-            },
-            secure_web_proxy: MacosProxySnapshot::disabled("secureweb"),
-            ipv4: MacosIpv4Snapshot::Manual {
-                ip: "10.0.0.42".to_string(),
-                subnet: "255.255.255.0".to_string(),
-                router: "10.0.0.1".to_string(),
-            },
-            ipv6: MacosIpv6Snapshot::Off,
-        };
+    #[tokio::test]
+    async fn every_service_cycle_transition_fails_closed_with_restore_pending() {
+        let cases = [
+            (InjectedFault::DisableCommand, "disable"),
+            (InjectedFault::DisabledStateVerification, "wait-disabled"),
+            (InjectedFault::BothEnableCommands, "enable"),
+            (InjectedFault::EnabledStateVerification, "wait-enabled"),
+            (InjectedFault::PostCycleDnsRead, "capture-dns"),
+            (InjectedFault::DnsChangedButRestored, "restore-dns"),
+            (InjectedFault::DnsRestore, "restore-dns"),
+            (InjectedFault::RouteOrReachability, "route"),
+        ];
 
-        let specs = snapshot.restore_command_specs();
-        assert!(specs.iter().any(|spec| {
-            spec.program == "networksetup"
-                && spec.args == vec!["-setdnsservers", "Wi-Fi", "10.0.0.2", "10.0.0.3"]
-        }));
-        assert!(specs.iter().any(|spec| {
-            spec.program == "networksetup"
-                && spec.args == vec!["-setwebproxy", "Wi-Fi", "proxy.example.test", "8080"]
-        }));
-        assert!(specs.iter().any(|spec| {
-            spec.program == "networksetup"
-                && spec.args
-                    == vec![
-                        "-setmanual",
-                        "Wi-Fi",
-                        "10.0.0.42",
-                        "255.255.255.0",
-                        "10.0.0.1",
-                    ]
-        }));
-        assert!(specs.iter().any(|spec| {
-            spec.program == "networksetup" && spec.args == vec!["-setv6off", "Wi-Fi"]
-        }));
+        for (fault, expected_call) in cases {
+            let (result, pending, registered, calls) = run_injected_cycle(fault).await;
+            assert!(result.is_err(), "{fault:?} unexpectedly succeeded");
+            assert!(
+                registered,
+                "{fault:?} reached mutation before registering its inverse"
+            );
+            assert_eq!(pending, 1, "{fault:?} incorrectly resolved its restore");
+            assert!(
+                calls.contains(&expected_call),
+                "{fault:?} did not reach expected transition {expected_call}: {calls:?}"
+            );
+        }
     }
 
-    #[test]
-    fn service_order_strips_disabled_marker() {
-        let parsed = parse_macos_service_order(
-            "
-(1) Wi-Fi
-(2) *Thunderbolt Bridge
-",
+    #[tokio::test]
+    async fn first_enable_failure_retries_and_only_full_success_resolves_restore() {
+        let (retry_result, retry_pending, retry_registered, retry_calls) =
+            run_injected_cycle(InjectedFault::FirstEnableCommand).await;
+        assert!(retry_result.is_ok());
+        assert!(retry_registered);
+        assert_eq!(retry_pending, 0);
+        assert_eq!(
+            retry_calls.iter().filter(|call| **call == "enable").count(),
+            2
         );
 
-        assert_eq!(parsed, vec!["Wi-Fi", "Thunderbolt Bridge"]);
+        let (success, pending, registered, calls) = run_injected_cycle(InjectedFault::None).await;
+        assert!(success.is_ok());
+        assert!(registered);
+        assert_eq!(pending, 0);
+        assert_eq!(calls.last(), Some(&"route"));
     }
 
-    #[test]
-    fn ipv6_manual_parse_restores_manual_mode() {
-        let parsed = parse_macos_ipv6(
-            "
-IPv6: Manual
-IPv6 IP address: 2001:db8::20
-IPv6 Prefix Length: 64
-IPv6 Router: 2001:db8::1
-",
+    #[tokio::test]
+    async fn gated_deep_reset_returns_before_registering_or_mutating() {
+        let restore = super::super::session::RestoreRegistry::new();
+        let result = stage3_macos(&Config::new(), &None, &restore).await;
+        assert!(result.unwrap_err().contains("safely unavailable"));
+        assert_eq!(restore.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn restore_token_resolves_only_after_full_recovery_verification() {
+        use super::super::session::RestoreOp;
+
+        let failed = super::super::session::RestoreRegistry::new();
+        let failed_token = failed
+            .register(RestoreOp::ReEnableInterface {
+                iface: "test-only".to_string(),
+            })
+            .await;
+        assert!(resolve_macos_cycle_restore_after_recovery(
+            &failed,
+            failed_token,
+            Err("wrong route".to_string()),
+        )
+        .await
+        .is_err());
+        assert_eq!(failed.pending_count().await, 1);
+
+        let recovered = super::super::session::RestoreRegistry::new();
+        let recovered_token = recovered
+            .register(RestoreOp::ReEnableInterface {
+                iface: "test-only".to_string(),
+            })
+            .await;
+        assert_eq!(
+            resolve_macos_cycle_restore_after_recovery(
+                &recovered,
+                recovered_token,
+                Ok("en0".to_string()),
+            )
+            .await
+            .unwrap(),
+            "en0"
         );
+        assert_eq!(recovered.pending_count().await, 0);
+    }
+
+    /// Destructive acceptance entrypoint for a deliberately supervised native
+    /// Mac run. This is test-only, ignored by default, and calls the exact
+    /// private production implementation below the release gate. It is not a
+    /// CLI escape hatch.
+    ///
+    /// The caller must run the already-built test binary as root under an
+    /// independent, offline-capable watchdog that can re-enable the captured
+    /// service if this process is killed or wedges. Both the exact
+    /// acknowledgement and the live watchdog PID are required to make an
+    /// accidental `cargo test -- --ignored` invocation fail before mutation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires explicit root acknowledgement and an independent offline watchdog"]
+    async fn live_exact_service_cycle_restores_all_captured_state() {
+        use futures_util::FutureExt;
 
         assert_eq!(
-            parsed,
-            MacosIpv6Snapshot::Manual {
-                address: "2001:db8::20".to_string(),
-                prefix: "64".to_string(),
-                router: "2001:db8::1".to_string(),
-            }
+            std::env::var(LIVE_CYCLE_ACK_VAR).as_deref(),
+            Ok(LIVE_CYCLE_ACK),
+            "refusing live service cycle: set {LIVE_CYCLE_ACK_VAR} to the documented exact acknowledgement"
         );
+        // SAFETY: geteuid has no preconditions and does not dereference
+        // pointers.
+        assert_eq!(
+            unsafe { libc::geteuid() },
+            0,
+            "refusing live service cycle: run the already-built test binary as root"
+        );
+
+        let watchdog_pid = std::env::var(LIVE_WATCHDOG_PID_VAR)
+            .ok()
+            .and_then(|value| value.parse::<libc::pid_t>().ok())
+            .filter(|pid| *pid > 1 && u32::try_from(*pid).ok() != Some(std::process::id()))
+            .expect(
+                "refusing live service cycle: provide the independent watchdog PID in \
+                 ND300_LIVE_MACOS_SERVICE_CYCLE_WATCHDOG_PID",
+            );
+        // Signal zero performs existence/permission validation without sending
+        // a signal. Root should be able to inspect the independent watchdog.
+        // SAFETY: kill with signal 0 has no pointer arguments and does not
+        // mutate the target process.
+        assert_eq!(
+            unsafe { libc::kill(watchdog_pid, 0) },
+            0,
+            "refusing live service cycle: watchdog PID {watchdog_pid} is not alive"
+        );
+
+        let iface = adapters::detect_default_interface()
+            .await
+            .expect("live acceptance requires a default interface");
+        let service = macos_service_for_device(&iface)
+            .await
+            .expect("live acceptance requires one unambiguous physical network service");
+        assert_eq!(
+            std::env::var(LIVE_EXPECTED_INTERFACE_VAR).as_deref(),
+            Ok(iface.as_str()),
+            "refusing live service cycle: expected interface acknowledgement does not match the mapped default interface"
+        );
+        assert_eq!(
+            std::env::var(LIVE_EXPECTED_SERVICE_VAR).as_deref(),
+            Ok(service.name.as_str()),
+            "refusing live service cycle: expected service acknowledgement does not match the mapped default service"
+        );
+        assert!(
+            service.enabled && macos_service_enabled(&service.name).await.unwrap_or(false),
+            "refusing live service cycle: selected service is intentionally disabled"
+        );
+        let before_dns = super::super::dns::capture_macos_dns_snapshot(&service.name)
+            .await
+            .expect("live acceptance could not capture exact DNS/search-domain state");
+
+        let restore = super::super::session::RestoreRegistry::new();
+        let cycle = std::panic::AssertUnwindSafe(execute_macos_service_cycle(&restore))
+            .catch_unwind()
+            .await;
+
+        // Always attempt cleanup before interpreting the cycle result, even if
+        // the production future panicked. This supplements rather than replaces
+        // the independent watchdog.
+        let cleanup_failures =
+            tokio::time::timeout(std::time::Duration::from_secs(90), restore.drain())
+                .await
+                .expect("live service-cycle cleanup exceeded 90 seconds");
+        assert!(
+            cleanup_failures.is_empty(),
+            "live service-cycle cleanup failed: {}",
+            cleanup_failures.join("; ")
+        );
+
+        assert!(
+            macos_service_enabled(&service.name)
+                .await
+                .expect("could not verify final service state"),
+            "live service-cycle left the selected service disabled"
+        );
+        let after_dns = super::super::dns::capture_macos_dns_snapshot(&service.name)
+            .await
+            .expect("could not verify final DNS/search-domain state");
+        assert_eq!(
+            after_dns, before_dns,
+            "live service-cycle did not preserve exact DNS/search-domain state"
+        );
+        wait_for_macos_route_and_reachability(&iface)
+            .await
+            .expect("live service-cycle did not recover its physical route and reachability");
+        assert_eq!(
+            restore.pending_count().await,
+            0,
+            "live service-cycle left unresolved cleanup operations"
+        );
+
+        match cycle {
+            Ok(Ok(steps)) => assert!(
+                !steps.is_empty(),
+                "live service-cycle returned no completed verification steps"
+            ),
+            Ok(Err(error)) => panic!("live production service-cycle failed safely: {error}"),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 }
 
@@ -1463,151 +1367,66 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
     let has_nm = has_network_manager().await;
 
     if has_nm {
-        let is_wifi = is_linux_wifi(&iface).await;
-        let wifi_credentials = if is_wifi {
-            if !is_interactive(config) {
-                return Err("Wi-Fi profile reset requires interactive mode".to_string());
-            }
+        return Err(
+            "Linux deep reset is safely unavailable while NetworkManager controls the active connection. The former profile deletion/recreation path could leave the profile permanently missing if the process was interrupted. Use the lower-risk adapter restart or DHCP renewal, or repair the profile in NetworkManager settings."
+                .to_string(),
+        );
+    }
 
-            let ssid_to_connect = if let Some(ssid) = saved_ssid {
-                ssid.clone()
-            } else {
-                let networks = wifi::scan_wifi_networks().await;
-                if !networks.is_empty() {
-                    println!("  Available networks:");
-                    for (i, net) in networks.iter().enumerate().take(10) {
-                        println!("    {}. {}", i + 1, net);
-                    }
-                }
-                prompt_string("  Enter SSID to connect to: ")
-            };
-            let passphrase = prompt_string("  Enter passphrase (leave blank for open network): ");
-            Some((ssid_to_connect, passphrase))
+    // dhcpcd fallback
+    let spinner = create_spinner("Resetting dhcpcd configuration...");
+    // Back up config
+    let mut cp_cmd = crate::platform::system_command("cp");
+    cp_cmd.args(["/etc/dhcpcd.conf", "/etc/dhcpcd.conf.bak"]);
+    let _ = run_cmd(cp_cmd, TIMEOUT_QUICK).await;
+    completed.push("Backed up /etc/dhcpcd.conf".to_string());
+
+    // Just restart dhcpcd to pick up changes
+    let mut restart_cmd = crate::platform::system_command("systemctl");
+    restart_cmd.args(["restart", "dhcpcd"]);
+    let _ = super::cmd::run_owned_mutation(restart_cmd, TIMEOUT_MEDIUM).await;
+    spinner.finish_and_clear();
+    completed.push("Restarted dhcpcd".to_string());
+
+    // Wi-Fi via wpa_cli
+    let is_wifi = is_linux_wifi(&iface).await;
+    if is_wifi && is_interactive(config) {
+        let ssid_to_connect = if let Some(ssid) = saved_ssid {
+            ssid.clone()
         } else {
-            None
+            prompt_string("  Enter SSID to connect to: ")
         };
+        let passphrase = prompt_string("  Enter passphrase: ");
+        let wpa_conf = super::wpa_config::network_block(&ssid_to_connect, &passphrase)?;
 
-        // Delete active connection profile
-        if let Some(profile) = detect_nm_profile(&iface).await {
-            let spinner = create_spinner(&format!("Deleting profile \"{}\"...", profile));
-            let mut cmd = tokio::process::Command::new("nmcli");
-            cmd.args(["connection", "delete", &profile]);
-            let _ = run_cmd(cmd, TIMEOUT_MEDIUM).await;
-            spinner.finish_and_clear();
-            completed.push(format!("Deleted profile: {}", profile));
-        }
-
-        // Recreate
-        if is_wifi {
-            // Wi-Fi: scan and connect
-            let spinner = create_spinner("Scanning for Wi-Fi networks...");
-            let mut rescan_cmd = tokio::process::Command::new("nmcli");
-            rescan_cmd.args(["device", "wifi", "rescan"]);
-            let _ = run_cmd(rescan_cmd, TIMEOUT_QUICK).await;
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            spinner.finish_and_clear();
-
-            if let Some((ssid_to_connect, passphrase)) = wifi_credentials {
-                let spinner = create_spinner(&format!("Connecting to {}...", ssid_to_connect));
-                let mut cmd = tokio::process::Command::new("nmcli");
-                cmd.args(["device", "wifi", "connect", &ssid_to_connect]);
-                if !passphrase.is_empty() {
-                    cmd.args(["password", &passphrase]);
-                }
-                cmd.args(["ifname", &iface]);
-                let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
-                spinner.finish_and_clear();
-                match r {
-                    Ok(output) if output.status.success() => {
-                        completed.push(format!("Connected to {}", ssid_to_connect));
-                    }
-                    _ => {
-                        return Err(format!("Failed to connect to {}", ssid_to_connect));
-                    }
-                }
-            }
-        } else {
-            // Wired: auto-create
-            let spinner = create_spinner("Creating new ethernet profile...");
-            let con_name = format!("Auto {}", iface);
-            let mut cmd = tokio::process::Command::new("nmcli");
-            cmd.args([
-                "connection",
-                "add",
-                "type",
-                "ethernet",
-                "con-name",
-                &con_name,
-                "ifname",
-                &iface,
-            ]);
-            let r = run_cmd(cmd, TIMEOUT_MEDIUM).await;
-            spinner.finish_and_clear();
-            match r {
-                Ok(output) if output.status.success() => {
-                    completed.push(format!("Created profile: {}", con_name));
-                }
-                _ => return Err("Failed to create ethernet profile".to_string()),
-            }
-        }
-    } else {
-        // dhcpcd fallback
-        let spinner = create_spinner("Resetting dhcpcd configuration...");
-        // Back up config
-        let mut cp_cmd = tokio::process::Command::new("cp");
-        cp_cmd.args(["/etc/dhcpcd.conf", "/etc/dhcpcd.conf.bak"]);
-        let _ = run_cmd(cp_cmd, TIMEOUT_QUICK).await;
-        completed.push("Backed up /etc/dhcpcd.conf".to_string());
-
-        // Just restart dhcpcd to pick up changes
-        let mut restart_cmd = tokio::process::Command::new("systemctl");
-        restart_cmd.args(["restart", "dhcpcd"]);
-        let _ = run_cmd(restart_cmd, TIMEOUT_MEDIUM).await;
+        // Add network via wpa_cli
+        let spinner = create_spinner("Scanning for Wi-Fi networks...");
+        let mut scan_cmd = crate::platform::system_command("wpa_cli");
+        scan_cmd.args(["-i", &iface, "scan"]);
+        let _ = run_cmd(scan_cmd, TIMEOUT_QUICK).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         spinner.finish_and_clear();
-        completed.push("Restarted dhcpcd".to_string());
 
-        // Wi-Fi via wpa_cli
-        let is_wifi = is_linux_wifi(&iface).await;
-        if is_wifi && is_interactive(config) {
-            let ssid_to_connect = if let Some(ssid) = saved_ssid {
-                ssid.clone()
-            } else {
-                prompt_string("  Enter SSID to connect to: ")
-            };
-            let passphrase = prompt_string("  Enter passphrase: ");
-
-            // Add network via wpa_cli
-            let spinner = create_spinner("Scanning for Wi-Fi networks...");
-            let mut scan_cmd = tokio::process::Command::new("wpa_cli");
-            scan_cmd.args(["-i", &iface, "scan"]);
-            let _ = run_cmd(scan_cmd, TIMEOUT_QUICK).await;
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            spinner.finish_and_clear();
-
-            // Create wpa_supplicant entry
-            let escaped_ssid = escape_wpa_quoted_value(&ssid_to_connect);
-            let escaped_passphrase = escape_wpa_quoted_value(&passphrase);
-            let wpa_conf = format!(
-                "network={{\n  ssid=\"{}\"\n  psk=\"{}\"\n}}\n",
-                escaped_ssid, escaped_passphrase,
-            );
-            // Append to wpa_supplicant.conf
-            if let Ok(mut file) = tokio::fs::OpenOptions::new()
-                .append(true)
-                .open("/etc/wpa_supplicant/wpa_supplicant.conf")
-                .await
-            {
-                use tokio::io::AsyncWriteExt;
-                let _ = file.write_all(wpa_conf.as_bytes()).await;
-                let mut reconf_cmd = tokio::process::Command::new("wpa_cli");
-                reconf_cmd.args(["-i", &iface, "reconfigure"]);
-                let _ = run_cmd(reconf_cmd, TIMEOUT_QUICK).await;
-                completed.push(format!(
-                    "Connected to {} via wpa_supplicant",
-                    ssid_to_connect
-                ));
-            }
+        // Only the validated hexadecimal fields reach the privileged file.
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open("/etc/wpa_supplicant/wpa_supplicant.conf")
+            .await
+            .map_err(|e| format!("Could not open wpa_supplicant configuration: {e}"))?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(wpa_conf.as_bytes())
+            .await
+            .map_err(|e| format!("Could not write wpa_supplicant configuration: {e}"))?;
+        file.flush()
+            .await
+            .map_err(|e| format!("Could not flush wpa_supplicant configuration: {e}"))?;
+        let mut reconf_cmd = crate::platform::system_command("wpa_cli");
+        reconf_cmd.args(["-i", &iface, "reconfigure"]);
+        let result = super::cmd::run_owned_mutation(reconf_cmd, TIMEOUT_QUICK).await?;
+        if !result.status.success() || String::from_utf8_lossy(&result.stdout).trim() != "OK" {
+            return Err("wpa_supplicant did not accept the configuration reload".to_string());
         }
+        completed.push("Reloaded the Wi-Fi configuration via wpa_supplicant".to_string());
     }
 
     if completed.is_empty() {
@@ -1618,25 +1437,8 @@ async fn stage3_linux(config: &Config, saved_ssid: &Option<String>) -> Result<Ve
 }
 
 #[cfg(target_os = "linux")]
-fn escape_wpa_quoted_value(raw: &str) -> String {
-    let mut escaped = String::with_capacity(raw.len());
-    for ch in raw.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            c if c.is_control() => escaped.push_str(&format!("\\x{:02x}", c as u32)),
-            c => escaped.push(c),
-        }
-    }
-    escaped
-}
-
-#[cfg(target_os = "linux")]
 async fn has_network_manager() -> bool {
-    let mut cmd = tokio::process::Command::new("systemctl");
+    let mut cmd = crate::platform::system_command("systemctl");
     cmd.args(["is-active", "NetworkManager"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -1646,28 +1448,8 @@ async fn has_network_manager() -> bool {
 }
 
 #[cfg(target_os = "linux")]
-async fn detect_nm_profile(iface: &str) -> Option<String> {
-    let mut cmd = tokio::process::Command::new("nmcli");
-    cmd.args(["-g", "GENERAL.CONNECTION", "device", "show", iface]);
-    if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
-        if output.status.success() {
-            let name = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if !name.is_empty() && name != "--" {
-                return Some(name);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "linux")]
 async fn is_linux_wifi(iface: &str) -> bool {
-    let mut cmd = tokio::process::Command::new("iw");
+    let mut cmd = crate::platform::system_command("iw");
     cmd.args(["dev", iface, "info"]);
     if let Ok(output) = run_cmd(cmd, TIMEOUT_QUICK).await {
         return output.status.success();
@@ -1690,164 +1472,4 @@ pub async fn detect_service_name(iface: &str) -> String {
     {
         iface.to_string()
     }
-}
-
-/// Stage 2 DNS fallback: prompt user for DNS server choice, test reachability,
-/// set DNS, flush cache, wait 5s, re-verify.
-async fn handle_dns_fallback_prompted(
-    config: &Config,
-    iface: &str,
-    steps: &mut Vec<StepResult>,
-) -> bool {
-    let service_name = detect_service_name(iface).await;
-
-    // Prompt user for DNS choice
-    let mut provider = dns::prompt_dns_choice(config);
-
-    // Test reachability and adjust if needed
-    if provider != dns::DnsProvider::Automatic {
-        let spinner = create_spinner("Testing DNS server reachability...");
-        let (cf_ok, google_ok) = dns::test_dns_reachability().await;
-        spinner.finish_and_clear();
-        provider = dns::adjust_for_reachability(provider, cf_ok, google_ok, config);
-    }
-
-    // Set DNS servers
-    let spinner = create_spinner(&format!("Setting DNS to {}...", provider.label()));
-    let result = dns::set_dns_servers(iface, &service_name, provider).await;
-    spinner.finish_and_clear();
-
-    match &result {
-        Ok(msg) => {
-            if is_interactive(config) {
-                print_step_ok(msg, config);
-            }
-            steps.push(StepResult {
-                name: "dns_set",
-                success: true,
-                message: msg.clone(),
-            });
-        }
-        Err(msg) => {
-            if is_interactive(config) {
-                print_step_fail("Failed to set DNS servers", msg, config);
-            }
-            steps.push(StepResult {
-                name: "dns_set",
-                success: false,
-                message: msg.clone(),
-            });
-            return false;
-        }
-    }
-
-    // Flush DNS cache after changing servers
-    let _ = flush_dns_platform().await;
-
-    // Wait for DNS to propagate
-    let spinner = create_spinner("Waiting for DNS to propagate...");
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    spinner.finish_and_clear();
-
-    // Re-verify DNS
-    let spinner = create_spinner("Verifying DNS resolution...");
-    let dns_ok = dns::verify_dns().await;
-    spinner.finish_and_clear();
-
-    if dns_ok {
-        if is_interactive(config) {
-            print_step_ok("DNS resolution verified", config);
-        }
-    } else if is_interactive(config) {
-        print_step_fail(
-            "DNS still not resolving",
-            "May need manual configuration",
-            config,
-        );
-    }
-
-    dns_ok
-}
-
-/// Stage 3 DNS fallback: auto-apply Google DNS (no prompt), test reachability,
-/// set DNS, flush cache, wait 5s, re-verify.
-async fn handle_dns_fallback_auto(
-    config: &Config,
-    iface: &str,
-    steps: &mut Vec<StepResult>,
-) -> bool {
-    let service_name = detect_service_name(iface).await;
-
-    if is_interactive(config) {
-        println!(
-            "    {}",
-            color::dim(
-                "DNS not resolving — auto-applying Google DNS (8.8.8.8 + 8.8.4.4)",
-                config
-            ),
-        );
-    }
-
-    // Test reachability to pick best provider
-    let spinner = create_spinner("Testing DNS server reachability...");
-    let (cf_ok, google_ok) = dns::test_dns_reachability().await;
-    spinner.finish_and_clear();
-
-    let provider = dns::adjust_for_reachability(dns::DnsProvider::Google, cf_ok, google_ok, config);
-
-    // Set DNS servers
-    let spinner = create_spinner(&format!("Setting DNS to {}...", provider.label()));
-    let result = dns::set_dns_servers(iface, &service_name, provider).await;
-    spinner.finish_and_clear();
-
-    match &result {
-        Ok(msg) => {
-            if is_interactive(config) {
-                print_step_ok(msg, config);
-            }
-            steps.push(StepResult {
-                name: "dns_set",
-                success: true,
-                message: msg.clone(),
-            });
-        }
-        Err(msg) => {
-            if is_interactive(config) {
-                print_step_fail("Failed to set DNS servers", msg, config);
-            }
-            steps.push(StepResult {
-                name: "dns_set",
-                success: false,
-                message: msg.clone(),
-            });
-            return false;
-        }
-    }
-
-    // Flush DNS cache after changing servers
-    let _ = flush_dns_platform().await;
-
-    // Wait for DNS to propagate
-    let spinner = create_spinner("Waiting for DNS to propagate...");
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    spinner.finish_and_clear();
-
-    // Re-verify DNS
-    let spinner = create_spinner("Verifying DNS resolution...");
-    let dns_ok = dns::verify_dns().await;
-    spinner.finish_and_clear();
-
-    if dns_ok {
-        if is_interactive(config) {
-            print_step_ok("DNS resolution verified", config);
-        }
-    } else if is_interactive(config) {
-        print_step_fail(
-            "DNS still not resolving",
-            "May need manual configuration",
-            config,
-        );
-    }
-
-    dns_ok
 }

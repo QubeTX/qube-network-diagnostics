@@ -1,6 +1,9 @@
 //! Session state + plain-language reporter for the fix loop.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use tokio::sync::Mutex;
 
 use crate::config::Config;
 use crate::diagnostics::DiagnosticResults;
@@ -8,6 +11,7 @@ use crate::render::color;
 
 use super::action::{Action, ActionOutcome, DiagnosticKey, Risk};
 use super::triage::{Attempts, Effectiveness, HardBlock};
+use super::vpn::DisabledVpn;
 
 /// Hard wall-clock cap for a single `nd300 fix` run. Combined with the
 /// per-iteration count and per-action attempt caps, this guarantees the loop
@@ -37,6 +41,12 @@ pub enum FinalOutcome {
     UserDeclined(Vec<DiagnosticKey>),
     /// Pre-flight check failed (e.g. not elevated). No diagnostics ran.
     PreflightFailed(String),
+    /// The run was interrupted before it could finish — Ctrl-C, SIGTERM,
+    /// SIGHUP, a caught panic, or the outer drain timeout. The restore registry is drained on
+    /// this path so any half-applied network state is rolled back; the carried
+    /// keys are whatever failures were still outstanding when the interrupt
+    /// landed (best-effort, may be empty if the interrupt arrived early).
+    Interrupted(Vec<DiagnosticKey>),
 }
 
 impl FinalOutcome {
@@ -49,7 +59,222 @@ impl FinalOutcome {
             FinalOutcome::Timeout(_) => 2,
             FinalOutcome::UserDeclined(_) => 1,
             FinalOutcome::PreflightFailed(_) => 2,
+            // 130 = process terminated by SIGINT, the conventional Ctrl-C code.
+            FinalOutcome::Interrupted(_) => 130,
         }
+    }
+}
+
+// ── Restore registry ──────────────────────────────────────────────────────────
+
+/// Per-op timeout for a single restore operation during the drain. Restores
+/// run best-effort on a terminal path (normal end, Ctrl-C, panic, or the outer
+/// drain cap), so each one is individually bounded to keep the drain prompt.
+const RESTORE_OP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Scheduling/reporting headroom added after reserving one complete per-op
+/// timeout for every pending restore. This replaces the old fixed 90-second
+/// aggregate cap, which could prevent the fourth and later LIFO entries from
+/// receiving any attempt at all.
+const RESTORE_DRAIN_MARGIN: Duration = Duration::from_secs(5);
+
+/// An inverse operation that undoes a destructive change applied during the fix.
+///
+/// Destructive actions register the matching `RestoreOp` *before* mutating
+/// state and `mark_resolved` it once they have restored the state themselves
+/// on a normal path. Anything still unresolved when the run ends — whether it
+/// ended normally, via a supported signal, via a caught panic, or via the wall-clock cap —
+/// is replayed by [`RestoreRegistry::drain`].
+#[derive(Debug, Clone)]
+pub enum RestoreOp {
+    /// Bring a network interface back up (idempotent — safe if already up).
+    ReEnableInterface { iface: String },
+    /// Re-connect a consumer VPN that the fix disabled.
+    ReEnableVpn(Arc<DisabledVpn>),
+    /// Restore exact resolver state if a macOS DNS command is interrupted.
+    #[cfg(target_os = "macos")]
+    RestoreMacosDns(Arc<super::dns::MacosDnsSnapshot>),
+    /// Re-enable a macOS network service and restore exact DNS/search-domain
+    /// state. The hardened deep-reset path never deletes/recreates services.
+    #[cfg(target_os = "macos")]
+    ReEnableMacosService {
+        iface: String,
+        service: String,
+        dns_snapshot: Arc<super::dns::MacosDnsSnapshot>,
+    },
+}
+
+impl RestoreOp {
+    /// Short human-readable label for reports / manual-recovery guidance.
+    fn label(&self) -> String {
+        match self {
+            RestoreOp::ReEnableInterface { iface } => {
+                format!("re-enable network adapter {}", iface)
+            }
+            RestoreOp::ReEnableVpn(vpn) => format!("re-enable VPN {}", vpn.name),
+            #[cfg(target_os = "macos")]
+            RestoreOp::RestoreMacosDns(snapshot) => {
+                format!("restore DNS/search domains on {}", snapshot.service())
+            }
+            #[cfg(target_os = "macos")]
+            RestoreOp::ReEnableMacosService { service, .. } => {
+                format!("re-enable macOS network service {}", service)
+            }
+        }
+    }
+}
+
+/// Run a single restore operation. Returns `Ok(())` on success, `Err(reason)`
+/// on failure — the caller turns failures into manual-recovery guidance.
+async fn restore_op(op: &RestoreOp) -> Result<(), String> {
+    match op {
+        RestoreOp::ReEnableInterface { iface } => super::stages::restore_interface(iface).await,
+        RestoreOp::ReEnableVpn(vpn) => {
+            if super::vpn::reenable_vpn(vpn).await {
+                Ok(())
+            } else {
+                Err(format!(
+                    "could not positively verify VPN {} reconnected",
+                    vpn.name
+                ))
+            }
+        }
+        #[cfg(target_os = "macos")]
+        RestoreOp::RestoreMacosDns(snapshot) => {
+            super::dns::restore_macos_dns_snapshot(snapshot).await
+        }
+        #[cfg(target_os = "macos")]
+        RestoreOp::ReEnableMacosService {
+            iface,
+            service,
+            dns_snapshot,
+        } => super::stages::restore_macos_service_state(iface, service, dns_snapshot).await,
+    }
+}
+
+/// One entry in the restore registry: an inverse op plus whether the owning
+/// action already resolved it on a normal path.
+#[derive(Debug, Clone)]
+struct RegisteredOp {
+    op: RestoreOp,
+    resolved: bool,
+}
+
+/// Token identifying a registered restore op so the owning action can mark it
+/// resolved once it has restored the state itself.
+pub type RestoreToken = usize;
+
+/// Tracks the inverse of every destructive change the fix has applied, so any
+/// terminal path can roll back half-applied state.
+///
+/// Cheaply cloneable (it is an `Arc` around a single mutex), so the same
+/// registry can be shared into the loop future and the Ctrl-C / drain arm of
+/// the outer `select!`. The mutex is `tokio::sync::Mutex`, which is
+/// **non-poisoning** — a panic inside the loop (caught by `catch_unwind`) does
+/// not wedge the registry, so the post-panic drain still works.
+#[derive(Clone, Default)]
+pub struct RestoreRegistry {
+    inner: Arc<Mutex<Vec<RegisteredOp>>>,
+}
+
+impl RestoreRegistry {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Register an inverse op and return a token to resolve it later. Call this
+    /// *before* applying the matching destructive change.
+    pub async fn register(&self, op: RestoreOp) -> RestoreToken {
+        let mut guard = self.inner.lock().await;
+        guard.push(RegisteredOp {
+            op,
+            resolved: false,
+        });
+        guard.len() - 1
+    }
+
+    /// Mark a previously-registered op resolved — the owning action restored the
+    /// state itself, so the drain should skip it.
+    pub async fn mark_resolved(&self, token: RestoreToken) {
+        let mut guard = self.inner.lock().await;
+        if let Some(entry) = guard.get_mut(token) {
+            entry.resolved = true;
+        }
+    }
+
+    /// Aggregate timeout for a drain snapshot. Reserve a full bounded attempt
+    /// for every currently-pending inverse operation, plus small bookkeeping
+    /// headroom. The fix loop has stopped mutating state before it asks for
+    /// this value, so the following drain sees the same or fewer entries.
+    pub(crate) async fn required_drain_timeout(&self) -> Duration {
+        let pending = self
+            .inner
+            .lock()
+            .await
+            .iter()
+            .filter(|entry| !entry.resolved)
+            .count();
+        let pending = u64::try_from(pending).unwrap_or(u64::MAX);
+        let operation_budget = RESTORE_OP_TIMEOUT.as_secs().saturating_mul(pending);
+        Duration::from_secs(operation_budget.saturating_add(RESTORE_DRAIN_MARGIN.as_secs()))
+    }
+
+    /// Run every still-unresolved restore op, best-effort. Snapshots the
+    /// pending ops under the lock, releases the lock, then runs each with its
+    /// own timeout so a wedged restore can't stall the others. Returns a
+    /// human-readable failure string per op that could not be restored
+    /// (empty `Vec` = everything restored cleanly / nothing to do).
+    ///
+    /// Resolved ops are cleared from the registry as they succeed, so a second
+    /// drain (should one ever happen) is a no-op for already-restored state.
+    pub async fn drain(&self) -> Vec<String> {
+        // Snapshot pending ops + their indices under the lock, then release it
+        // so the restore subprocess calls don't hold the mutex.
+        let pending: Vec<(usize, RestoreOp)> = {
+            let guard = self.inner.lock().await;
+            guard
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, e)| !e.resolved)
+                .map(|(i, e)| (i, e.op.clone()))
+                .collect()
+        };
+
+        let mut failures = Vec::new();
+        for (idx, op) in pending {
+            let result = match tokio::time::timeout(RESTORE_OP_TIMEOUT, restore_op(&op)).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(format!("timed out after {}s", RESTORE_OP_TIMEOUT.as_secs())),
+            };
+            match result {
+                Ok(()) => {
+                    // Mark resolved so a re-drain won't repeat it.
+                    let mut guard = self.inner.lock().await;
+                    if let Some(entry) = guard.get_mut(idx) {
+                        entry.resolved = true;
+                    }
+                }
+                Err(reason) => {
+                    failures.push(format!("Could not {}: {}", op.label(), reason));
+                }
+            }
+        }
+        failures
+    }
+
+    /// Number of still-unresolved restore ops. Test-only inspection helper.
+    #[cfg(test)]
+    pub(crate) async fn pending_count(&self) -> usize {
+        self.inner
+            .lock()
+            .await
+            .iter()
+            .filter(|e| !e.resolved)
+            .count()
     }
 }
 
@@ -59,6 +284,10 @@ impl FinalOutcome {
 pub struct ActionRecord {
     pub action_id: super::action::ActionId,
     pub label: &'static str,
+    /// The failure categories this action declares it can address — used by
+    /// effectiveness attribution so an action is only credited for clearing
+    /// failures it actually targets.
+    pub targets: &'static [DiagnosticKey],
     pub outcome: ActionOutcome,
     pub duration: Duration,
     pub iteration: u8,
@@ -79,6 +308,13 @@ pub struct IterationSnapshot {
 pub struct Session {
     pub started_at: Instant,
     pub baseline: Option<DiagnosticResults>,
+    /// The second baseline pass used to confirm the failure set before the
+    /// first repair plan. Kept separate from `snapshots` so the report's
+    /// "final snapshot" and the JSON `iterations` count keep their meaning.
+    pub baseline_confirmation: Option<DiagnosticResults>,
+    /// Failures seen in exactly one of the two baseline passes — transient
+    /// flickers. Their later "recoveries" earn no effectiveness credit.
+    pub intermittent: std::collections::HashSet<DiagnosticKey>,
     pub snapshots: Vec<IterationSnapshot>,
     pub action_log: Vec<ActionRecord>,
     pub attempts: Attempts,
@@ -92,6 +328,8 @@ impl Session {
         Self {
             started_at: Instant::now(),
             baseline: None,
+            baseline_confirmation: None,
+            intermittent: std::collections::HashSet::new(),
             snapshots: Vec::new(),
             action_log: Vec::new(),
             attempts: Attempts::new(),
@@ -122,6 +360,17 @@ impl Session {
             .push(IterationSnapshot { iteration, results });
     }
 
+    /// Record the second baseline pass and the failures that flickered
+    /// between the two passes.
+    pub fn record_confirmation(
+        &mut self,
+        results: DiagnosticResults,
+        intermittent: std::collections::HashSet<DiagnosticKey>,
+    ) {
+        self.baseline_confirmation = Some(results);
+        self.intermittent = intermittent;
+    }
+
     pub fn record_action(
         &mut self,
         iteration: u8,
@@ -138,6 +387,7 @@ impl Session {
         self.action_log.push(ActionRecord {
             action_id: action.id,
             label: action.label,
+            targets: action.targets,
             outcome,
             duration,
             iteration,
@@ -146,8 +396,11 @@ impl Session {
         });
     }
 
-    /// After an iteration: compare prior failures to current ones; for each
-    /// action applied this iteration, mark which targets newly cleared.
+    /// After an iteration: compare prior failures to current ones; credit each
+    /// newly-cleared failure to the **most recent successful action this
+    /// iteration whose declared targets contain it**. Failures flagged
+    /// intermittent at baseline earn no credit — natural recoveries must not
+    /// bias future planning toward unrelated actions.
     pub fn update_effectiveness(
         &mut self,
         iteration: u8,
@@ -158,21 +411,18 @@ impl Session {
             .difference(current_failures)
             .copied()
             .collect();
-        if cleared.is_empty() {
-            return;
-        }
-        // Attribute clears to the last action in this iteration that targeted them.
-        for record in self.action_log.iter().rev() {
-            if record.iteration != iteration {
-                break;
-            }
-            if !record.outcome.ok {
+        for key in cleared {
+            if self.intermittent.contains(&key) {
                 continue;
             }
-            // Find the registry action so we can read its targets.
-            // (The label match is sufficient — ActionIds are unique.)
-            for k in cleared.iter() {
-                self.effectiveness.insert((record.action_id, *k), true);
+            if let Some(record) = self
+                .action_log
+                .iter()
+                .rev()
+                .take_while(|r| r.iteration == iteration)
+                .find(|r| r.outcome.ok && r.targets.contains(&key))
+            {
+                self.effectiveness.insert((record.action_id, key), true);
             }
         }
     }
@@ -231,6 +481,46 @@ impl<'a> Reporter<'a> {
                 color::yellow("→", self.config),
                 failure_count,
                 if failure_count == 1 { "" } else { "s" },
+            );
+        }
+    }
+
+    /// Announce the second baseline pass that double-checks the failure set.
+    pub fn confirmation_pass(&self) {
+        println!(
+            "  {} {}",
+            color::dim("→", self.config),
+            color::dim(
+                "Double-checking the failures with a second diagnostic pass...",
+                self.config,
+            ),
+        );
+    }
+
+    /// Report how the confirmation pass shook out.
+    pub fn confirmation_result(&self, confirmed: usize, transient: usize) {
+        if confirmed == 0 && transient > 0 {
+            println!(
+                "  {} {}",
+                color::green("✓", self.config),
+                color::green(
+                    "The failures did not reproduce on the second pass — they were transient.",
+                    self.config,
+                ),
+            );
+        } else if transient > 0 {
+            println!(
+                "  {} {} confirmed, {} transient (will not be acted on)",
+                color::yellow("→", self.config),
+                confirmed,
+                transient,
+            );
+        } else {
+            println!(
+                "  {} {} failure{} confirmed on both passes",
+                color::yellow("→", self.config),
+                confirmed,
+                if confirmed == 1 { "" } else { "s" },
             );
         }
     }
@@ -487,6 +777,16 @@ impl<'a> Reporter<'a> {
                     color::red(reason, self.config),
                 );
             }
+            FinalOutcome::Interrupted(_) => {
+                println!(
+                    "  {} {}",
+                    color::yellow("⚠ Interrupted", self.config),
+                    color::yellow(
+                        "The fix was stopped before it finished. nd300 attempted to restore any network state it had changed — see below for anything that needs manual recovery.",
+                        self.config,
+                    ),
+                );
+            }
         }
 
         if let Some(path) = report_path {
@@ -604,4 +904,257 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
         lines.push(current);
     }
     lines
+}
+
+#[cfg(test)]
+mod restore_registry_tests {
+    use super::*;
+    use crate::actions::fix::vpn::{DisableMethod, DisabledVpn};
+
+    /// A restore op that fails fast and deterministically: a vendor CLI whose
+    /// binary does not exist, so `restore_op` returns a spawn error without
+    /// touching any real network state.
+    fn failing_vpn_op(name: &str) -> RestoreOp {
+        RestoreOp::ReEnableVpn(Arc::new(DisabledVpn {
+            name: name.to_string(),
+            method: DisableMethod::VendorCli(
+                "nd300-nonexistent-vpn-binary".to_string(),
+                vec!["connect".to_string()],
+            ),
+        }))
+    }
+
+    #[tokio::test]
+    async fn empty_registry_drains_to_no_failures() {
+        let reg = RestoreRegistry::new();
+        assert_eq!(reg.pending_count().await, 0);
+        assert!(reg.drain().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn register_then_resolve_clears_pending() {
+        let reg = RestoreRegistry::new();
+        let t1 = reg.register(failing_vpn_op("VpnA")).await;
+        let _t2 = reg.register(failing_vpn_op("VpnB")).await;
+        assert_eq!(reg.pending_count().await, 2);
+
+        reg.mark_resolved(t1).await;
+        assert_eq!(reg.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn drain_skips_resolved_and_reports_unresolved_failures() {
+        let reg = RestoreRegistry::new();
+        let resolved = reg.register(failing_vpn_op("ResolvedVpn")).await;
+        let _pending = reg.register(failing_vpn_op("PendingVpn")).await;
+
+        // The first op is restored by its owning action — mark it resolved so
+        // the drain must skip it entirely.
+        reg.mark_resolved(resolved).await;
+
+        let failures = reg.drain().await;
+
+        // Exactly one failure, for the still-unresolved op, and it must name
+        // that VPN (proving the resolved one was skipped, not attempted).
+        assert_eq!(failures.len(), 1, "failures: {:?}", failures);
+        assert!(
+            failures[0].contains("PendingVpn"),
+            "unexpected failure text: {}",
+            failures[0]
+        );
+        assert!(
+            !failures[0].contains("ResolvedVpn"),
+            "resolved op should not have been drained: {}",
+            failures[0]
+        );
+
+        // After a drain, even failed ops are not retried as "pending success",
+        // but the unresolved op stays unresolved (drain only marks resolved on
+        // success), so a second drain re-attempts it and fails the same way.
+        let second = reg.drain().await;
+        assert_eq!(second.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn drain_restores_in_lifo_order() {
+        let reg = RestoreRegistry::new();
+        reg.register(failing_vpn_op("FirstRegistered")).await;
+        reg.register(failing_vpn_op("LastRegistered")).await;
+
+        let failures = reg.drain().await;
+
+        assert_eq!(failures.len(), 2);
+        assert!(failures[0].contains("LastRegistered"), "{failures:?}");
+        assert!(failures[1].contains("FirstRegistered"), "{failures:?}");
+    }
+
+    #[tokio::test]
+    async fn aggregate_timeout_reserves_an_attempt_for_every_pending_restore() {
+        let reg = RestoreRegistry::new();
+        for index in 0..4 {
+            reg.register(failing_vpn_op(&format!("Vpn{index}"))).await;
+        }
+
+        assert_eq!(reg.required_drain_timeout().await, Duration::from_secs(125));
+    }
+
+    #[tokio::test]
+    async fn drain_attempts_more_than_three_pending_ops_in_lifo_order() {
+        let reg = RestoreRegistry::new();
+        for index in 0..5 {
+            reg.register(failing_vpn_op(&format!("Vpn{index}"))).await;
+        }
+
+        let failures = reg.drain().await;
+
+        assert_eq!(failures.len(), 5, "failures: {failures:?}");
+        for (position, expected_index) in (0..5).rev().enumerate() {
+            assert!(
+                failures[position].contains(&format!("Vpn{expected_index}")),
+                "unexpected LIFO result: {failures:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_exit_code_is_130() {
+        assert_eq!(FinalOutcome::Interrupted(Vec::new()).exit_code(), 130);
+    }
+}
+
+#[cfg(test)]
+mod effectiveness_tests {
+    use super::*;
+    use crate::actions::fix::action::ActionId;
+    use std::collections::HashSet;
+
+    fn record(
+        action_id: ActionId,
+        targets: &'static [DiagnosticKey],
+        ok: bool,
+        iteration: u8,
+    ) -> ActionRecord {
+        ActionRecord {
+            action_id,
+            label: "test action",
+            targets,
+            outcome: if ok {
+                ActionOutcome::ok("ok")
+            } else {
+                ActionOutcome::fail("fail")
+            },
+            duration: Duration::from_millis(1),
+            iteration,
+            user_declined: false,
+            skipped_no_interaction: false,
+        }
+    }
+
+    fn keys(ks: &[DiagnosticKey]) -> HashSet<DiagnosticKey> {
+        ks.iter().copied().collect()
+    }
+
+    /// Pins the fix for the original bug: a successful action that does NOT
+    /// target the cleared key must earn no credit for it.
+    #[test]
+    fn credit_requires_matching_targets() {
+        let mut s = Session::new();
+        s.action_log.push(record(
+            ActionId::FlushArp,
+            &[DiagnosticKey::Gateway],
+            true,
+            1,
+        ));
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+
+        s.update_effectiveness(1, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert_eq!(
+            s.effectiveness
+                .get(&(ActionId::FlushDns, DiagnosticKey::Dns)),
+            Some(&true)
+        );
+        assert!(
+            !s.effectiveness
+                .contains_key(&(ActionId::FlushArp, DiagnosticKey::Dns)),
+            "non-targeting action must not be credited"
+        );
+    }
+
+    #[test]
+    fn most_recent_targeting_action_wins() {
+        let mut s = Session::new();
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+        s.action_log.push(record(
+            ActionId::SetDnsAutomatic,
+            &[DiagnosticKey::Dns],
+            true,
+            1,
+        ));
+
+        s.update_effectiveness(1, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert!(s
+            .effectiveness
+            .contains_key(&(ActionId::SetDnsAutomatic, DiagnosticKey::Dns)));
+        assert!(
+            !s.effectiveness
+                .contains_key(&(ActionId::FlushDns, DiagnosticKey::Dns)),
+            "only the most recent targeting action is credited"
+        );
+    }
+
+    #[test]
+    fn failed_action_earns_no_credit() {
+        let mut s = Session::new();
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], false, 1));
+
+        s.update_effectiveness(1, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert!(s.effectiveness.is_empty());
+    }
+
+    #[test]
+    fn prior_iteration_records_never_credited() {
+        let mut s = Session::new();
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+
+        s.update_effectiveness(2, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert!(s.effectiveness.is_empty());
+    }
+
+    #[test]
+    fn nothing_cleared_changes_nothing() {
+        let mut s = Session::new();
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+
+        s.update_effectiveness(
+            1,
+            &keys(&[DiagnosticKey::Dns]),
+            &keys(&[DiagnosticKey::Dns]),
+        );
+
+        assert!(s.effectiveness.is_empty());
+    }
+
+    /// A failure flagged intermittent at baseline must not generate credit
+    /// when it "clears" — that's the natural recovery the confirmation pass
+    /// observed, not the action working.
+    #[test]
+    fn intermittent_key_earns_no_credit() {
+        let mut s = Session::new();
+        s.intermittent.insert(DiagnosticKey::Dns);
+        s.action_log
+            .push(record(ActionId::FlushDns, &[DiagnosticKey::Dns], true, 1));
+
+        s.update_effectiveness(1, &keys(&[DiagnosticKey::Dns]), &keys(&[]));
+
+        assert!(s.effectiveness.is_empty());
+    }
 }

@@ -59,7 +59,7 @@ pub async fn check() -> (DiagnosticResult, Option<PublicIpInfo>) {
     let geo = get_geolocation(&client, &ip).await;
 
     // Check NAT
-    let local_ips = get_local_ips();
+    let local_ips = get_local_ips().await;
     let behind_nat = !local_ips.contains(&ip);
 
     let info = PublicIpInfo {
@@ -149,13 +149,20 @@ async fn get_geolocation(client: &reqwest::Client, ip: &str) -> Option<GeoInfo> 
     })
 }
 
-fn get_local_ips() -> Vec<String> {
-    let networks = sysinfo::Networks::new_with_refreshed_list();
-    let mut ips = Vec::new();
-    for (_name, data) in &networks {
-        for net in data.ip_networks() {
-            ips.push(net.addr.to_string());
+async fn get_local_ips() -> Vec<String> {
+    // `sysinfo::Networks::new_with_refreshed_list` is a synchronous, blocking
+    // system enumeration; run it off the async runtime and return owned,
+    // Send-safe data. A JoinError falls back to an empty Vec (same as no IPs).
+    tokio::task::spawn_blocking(|| {
+        let networks = sysinfo::Networks::new_with_refreshed_list();
+        let mut ips = Vec::new();
+        for (_name, data) in &networks {
+            for net in data.ip_networks() {
+                ips.push(net.addr.to_string());
+            }
         }
-    }
-    ips
+        ips
+    })
+    .await
+    .unwrap_or_default()
 }

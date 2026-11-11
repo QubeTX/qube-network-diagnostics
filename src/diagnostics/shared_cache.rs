@@ -5,6 +5,10 @@ use std::collections::HashMap;
 /// module's `collect_with_cache()` to avoid duplicate subprocess calls.
 pub struct SharedCache {
     pub netstat: Option<NetstatCache>,
+    /// Machine-readable `lsof` TCP records used on macOS when Darwin's
+    /// fixed-width `netstat` output truncates long IPv6 endpoints. Always
+    /// `None` on other platforms.
+    pub macos_lsof_tcp: Option<Vec<String>>,
     pub ipconfig: Option<IpconfigCache>,
     pub sysinfo_networks: Option<sysinfo::Networks>,
     pub gateway_ip: Option<String>,
@@ -25,8 +29,9 @@ impl SharedCache {
     /// Run all pre-fetches concurrently. Each field is `None` on failure
     /// so consumers can fall back to their own subprocess call.
     pub async fn build_for_tech_mode() -> Self {
-        let (netstat, ipconfig, networks, gateway) = tokio::join!(
+        let (netstat, macos_lsof_tcp, ipconfig, networks, gateway) = tokio::join!(
             fetch_netstat(),
+            fetch_macos_lsof_tcp_lines(),
             fetch_ipconfig(),
             fetch_sysinfo_networks(),
             fetch_gateway(),
@@ -34,11 +39,37 @@ impl SharedCache {
 
         Self {
             netstat,
+            macos_lsof_tcp,
             ipconfig,
             sysinfo_networks: networks,
             gateway_ip: gateway,
         }
     }
+}
+
+/// Darwin 25/macOS 26 still truncates long IPv6 addresses in `netstat` even
+/// with `-W`. `lsof` field output is stable, machine-readable, and retains the
+/// complete bracketed endpoints. The shared diagnostic timeout kills and
+/// reaps `lsof` if the kernel query stalls.
+#[cfg(target_os = "macos")]
+pub(super) async fn fetch_macos_lsof_tcp_lines() -> Option<Vec<String>> {
+    let mut cmd = tokio::process::Command::new("/usr/sbin/lsof");
+    cmd.args(["-nP", "-iTCP", "-FpcPnT"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    (!lines.is_empty()).then_some(lines)
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn fetch_macos_lsof_tcp_lines() -> Option<Vec<String>> {
+    None
 }
 
 // ── Netstat ────────────────────────────────────────────────────────────────
@@ -47,11 +78,9 @@ impl SharedCache {
 async fn fetch_netstat() -> Option<NetstatCache> {
     use sysinfo::System;
 
-    let output = tokio::process::Command::new("netstat")
-        .args(["-ano"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = crate::platform::system_command("netstat");
+    cmd.args(["-ano"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -74,11 +103,12 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 
 #[cfg(target_os = "macos")]
 async fn fetch_netstat() -> Option<NetstatCache> {
-    let output = tokio::process::Command::new("netstat")
-        .args(["-anp", "tcp"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = crate::platform::system_command("netstat");
+    // `-W` is still useful for Darwin's other wide columns. Long IPv6
+    // endpoints remain fixed-width on macOS 26, so `connections` prefers the
+    // bounded lsof field cache above when it is available.
+    cmd.args(["-anW", "-p", "tcp"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -93,11 +123,9 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 async fn fetch_netstat() -> Option<NetstatCache> {
     // Linux modules use `ss` and `netstat -an`, not `netstat -ano`.
     // We still fetch `netstat -an` for connection_states.
-    let output = tokio::process::Command::new("netstat")
-        .args(["-an"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = crate::platform::system_command("netstat");
+    cmd.args(["-an"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -112,11 +140,9 @@ async fn fetch_netstat() -> Option<NetstatCache> {
 
 #[cfg(windows)]
 async fn fetch_ipconfig() -> Option<IpconfigCache> {
-    let output = tokio::process::Command::new("ipconfig")
-        .args(["/all"])
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = crate::platform::system_command("ipconfig");
+    cmd.args(["/all"]);
+    let output = super::util::run_with_timeout(cmd, super::util::QUICK).await?;
 
     let raw = String::from_utf8_lossy(&output.stdout).to_string();
     Some(IpconfigCache { raw })
@@ -131,13 +157,25 @@ async fn fetch_ipconfig() -> Option<IpconfigCache> {
 // ── Sysinfo Networks ──────────────────────────────────────────────────────
 
 async fn fetch_sysinfo_networks() -> Option<sysinfo::Networks> {
-    Some(sysinfo::Networks::new_with_refreshed_list())
+    // Blocking system enumeration — run it off the async runtime. `Networks`
+    // is Send, so the object itself crosses back (the cache contract needs the
+    // whole object). A JoinError falls back to None, identical to a fetch
+    // failure, so consumers use their own subprocess fallback.
+    tokio::task::spawn_blocking(|| Some(sysinfo::Networks::new_with_refreshed_list()))
+        .await
+        .unwrap_or(None)
 }
 
 // ── Gateway IP ─────────────────────────────────────────────────────────────
 
 async fn fetch_gateway() -> Option<String> {
-    default_net::get_default_gateway()
-        .ok()
-        .map(|gw| gw.ip_addr.to_string())
+    // Blocking syscall — run it off the async runtime. A JoinError falls back
+    // to None, identical to the Err path.
+    tokio::task::spawn_blocking(|| {
+        default_net::get_default_gateway()
+            .ok()
+            .map(|gw| gw.ip_addr.to_string())
+    })
+    .await
+    .unwrap_or(None)
 }

@@ -1,6 +1,20 @@
-use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::adaptive::adaptive_chunk_bytes;
+use super::{
+    statistics, BandwidthSamples, LatencyStats, Phase, ProviderAvailability, ProviderResult,
+    SpeedTestConfig, TestDuration,
+};
 use reqwest::Client;
 use std::time::{Duration, Instant};
+
+/// Cache-busting variant of a URL (appends a unique nonce query param).
+fn cache_bust(url: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}nocache={nanos}")
+}
 
 /// Netflix fast.com API endpoint.
 const FAST_API_URL: &str = "https://api.fast.com/netflix/speedtest/v2";
@@ -17,8 +31,27 @@ const AUTO_DOWNLOAD_SECS: u64 = 15;
 /// Default auto-mode upload duration (seconds).
 const AUTO_UPLOAD_SECS: u64 = 10;
 
-/// Upload chunk size (4 MB).
-const UPLOAD_CHUNK_SIZE: usize = 4_000_000;
+/// Adaptive upload sizing (see `adaptive::adaptive_chunk_bytes`).
+const TARGET_REQUEST_SECS: f64 = 2.0;
+const UPLOAD_MIN_BYTES: u64 = 256 * 1024;
+const UPLOAD_MAX_BYTES: u64 = 16_000_000;
+
+/// Consecutive POST failures before concluding the OCA doesn't accept
+/// uploads. After the first two failures one small-payload retry is attempted
+/// (some OCAs reject large POSTs but accept small ones).
+const UPLOAD_GIVE_UP_AFTER: u32 = 5;
+
+/// Minimum per-request timeout floor (see cloudflare.rs::remaining_budget).
+const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Time left until `deadline`, floored at `MIN_REQUEST_TIMEOUT`. Used as the
+/// per-request `.timeout()` so a stalled transfer can't outlive the phase
+/// (the 120s client timeout would otherwise dominate the deadline loop).
+fn remaining_budget(deadline: Instant) -> Duration {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .max(MIN_REQUEST_TIMEOUT)
+}
 
 /// Run the fast.com (Netflix) speed test: server discovery, download, optional upload.
 pub async fn run<F>(config: &SpeedTestConfig, progress: F) -> ProviderResult
@@ -100,6 +133,42 @@ where
         TestDuration::Auto => (AUTO_DOWNLOAD_SECS, AUTO_UPLOAD_SECS),
     };
 
+    // ── Dense idle-latency engine (before the download clock starts) ─
+    let mut ping_ms: Option<f64> = None;
+    let mut jitter_ms: Option<f64> = None;
+    let mut latency_stats: Option<LatencyStats> = None;
+    if let Some(first_url) = urls.first() {
+        let base_ping_url = format!("{}&bytes=1", first_url);
+        let n_probes = super::dense_probe_count(dl_secs as f64);
+        let mut rtts: Vec<f64> = Vec::with_capacity(n_probes as usize);
+        for i in 0..n_probes {
+            let ping_start = Instant::now();
+            if client
+                .head(cache_bust(&base_ping_url))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .is_ok()
+            {
+                rtts.push(ping_start.elapsed().as_secs_f64() * 1000.0);
+            }
+            if i + 1 < n_probes {
+                tokio::time::sleep(super::DENSE_PROBE_INTERVAL).await;
+            }
+        }
+        let measured: Vec<f64> = if rtts.len() > super::DENSE_PROBE_WARMUP {
+            rtts[super::DENSE_PROBE_WARMUP..].to_vec()
+        } else {
+            rtts.clone()
+        };
+        latency_stats = LatencyStats::from_rtts(&measured);
+        ping_ms = measured
+            .iter()
+            .copied()
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        jitter_ms = latency_stats.as_ref().map(|ls| ls.pdv);
+    }
+
     // ── Download phase ───────────────────────────────────────────────
     progress(Phase::FcDownload, 0.0);
 
@@ -109,29 +178,17 @@ where
     let mut dl_mbps_samples: Vec<f64> = Vec::new();
     let mut url_idx = 0;
 
-    // Measure latency with a small initial request (1 byte range)
-    let mut ping_ms: Option<f64> = None;
-    if let Some(first_url) = urls.first() {
-        // Use a tiny range request to measure connection RTT, not download time
-        let ping_url = format!("{}&bytes=1", first_url);
-        let ping_start = Instant::now();
-        if client
-            .head(&ping_url)
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .is_ok()
-        {
-            ping_ms = Some(ping_start.elapsed().as_secs_f64() * 1000.0);
-        }
-    }
-
     while Instant::now() < dl_deadline {
         let url = &urls[url_idx % urls.len()];
         url_idx += 1;
 
         let req_start = Instant::now();
-        match client.get(url).send().await {
+        match client
+            .get(url)
+            .timeout(remaining_budget(dl_deadline))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.bytes().await {
                     let req_bytes = body.len() as u64;
@@ -165,32 +222,49 @@ where
     // fast.com upload is less documented; attempt POST to the same URLs
     progress(Phase::FcUpload, 0.0);
 
-    let upload_payload = vec![0u8; UPLOAD_CHUNK_SIZE];
     let ul_deadline = Instant::now() + Duration::from_secs(ul_secs);
     let mut ul_bytes: u64 = 0;
     let ul_start = Instant::now();
     let mut ul_mbps_samples: Vec<f64> = Vec::new();
     url_idx = 0;
 
+    // Adaptive payload sizing; on early consecutive failures, retry once with
+    // the minimum payload before counting further failures — some OCAs reject
+    // large POSTs but accept small ones.
+    let mut ul_chunk_bytes: u64 = UPLOAD_MIN_BYTES.max(1_000_000);
+    let mut upload_payload = vec![0u8; ul_chunk_bytes as usize];
     let mut upload_failures = 0u32;
+    let mut tried_small_payload = false;
     while Instant::now() < ul_deadline {
         let url = &urls[url_idx % urls.len()];
         url_idx += 1;
 
+        if upload_payload.len() as u64 != ul_chunk_bytes {
+            upload_payload = vec![0u8; ul_chunk_bytes as usize];
+        }
+        let req_bytes = upload_payload.len() as u64;
         let req_start = Instant::now();
         match client
             .post(url)
             .body(upload_payload.clone())
-            .timeout(Duration::from_secs(30))
+            // Bound by the remaining phase budget (capped at the original 30s)
+            // so a stalled upload near the deadline can't run far past it.
+            .timeout(remaining_budget(ul_deadline).min(Duration::from_secs(30)))
             .send()
             .await
         {
             Ok(resp) if resp.status().is_success() => {
                 let req_duration = req_start.elapsed().as_secs_f64();
-                ul_bytes += UPLOAD_CHUNK_SIZE as u64;
+                ul_bytes += req_bytes;
                 if req_duration > 0.0 {
-                    ul_mbps_samples
-                        .push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
+                    let mbps = (req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0);
+                    ul_mbps_samples.push(mbps);
+                    ul_chunk_bytes = adaptive_chunk_bytes(
+                        mbps,
+                        TARGET_REQUEST_SECS,
+                        UPLOAD_MIN_BYTES,
+                        UPLOAD_MAX_BYTES,
+                    );
                 }
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let frac = (elapsed / ul_secs as f64).min(1.0);
@@ -199,8 +273,12 @@ where
             }
             _ => {
                 upload_failures += 1;
-                // If 3+ consecutive failures, upload not supported — stop trying
-                if upload_failures >= 3 {
+                if upload_failures >= 2 && !tried_small_payload {
+                    tried_small_payload = true;
+                    ul_chunk_bytes = UPLOAD_MIN_BYTES;
+                    continue;
+                }
+                if upload_failures >= UPLOAD_GIVE_UP_AFTER {
                     break;
                 }
             }
@@ -216,6 +294,21 @@ where
         Some(statistics::accurate_upload_bandwidth(&ul_mbps_samples))
     };
 
+    // Honest failure: discovery succeeded but neither direction produced a
+    // usable transfer sample. fast.com upload is best-effort (often unsupported),
+    // so this fires when the download also collected nothing. Report an explicit
+    // error so the speedqx table shows an error row (and aggregation excludes it).
+    let error = if dl_mbps_samples.is_empty() && ul_mbps_samples.is_empty() {
+        Some("no successful transfers".to_string())
+    } else {
+        None
+    };
+    let availability = if error.is_some() {
+        ProviderAvailability::Failed
+    } else {
+        ProviderAvailability::Ran
+    };
+
     Ok(ProviderResult {
         provider: "fast.com".to_string(),
         server: urls
@@ -224,7 +317,7 @@ where
             .unwrap_or_else(|| "unknown".to_string()),
         location,
         ping_ms,
-        jitter_ms: None, // fast.com doesn't provide jitter data
+        jitter_ms,
         download_mbps,
         upload_mbps,
         download_bytes: dl_bytes,
@@ -232,11 +325,14 @@ where
         download_duration_s: dl_elapsed,
         upload_duration_s: ul_elapsed,
         packet_loss_pct: None,
-        error: None,
+        error,
         bandwidth_samples: Some(BandwidthSamples {
             download: dl_mbps_samples,
             upload: ul_mbps_samples,
         }),
+        availability,
+        latency_stats,
+        loaded_latency: None,
     })
 }
 
@@ -328,5 +424,8 @@ fn error_result(msg: String) -> ProviderResult {
         packet_loss_pct: None,
         error: Some(msg),
         bandwidth_samples: None,
+        availability: ProviderAvailability::Failed,
+        latency_stats: None,
+        loaded_latency: None,
     }
 }

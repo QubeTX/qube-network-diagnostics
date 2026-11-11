@@ -152,6 +152,12 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
         if let Some(lat) = gw.latency_ms {
             b = b.row("Latency", &format!("{:.1}ms", lat));
         }
+        if gw.packets_sent > 0 {
+            b = b.row(
+                "Probes",
+                &format!("{}/{} replies", gw.packets_received, gw.packets_sent),
+            );
+        }
         output.push_str(&b.finish());
         output.push('\n');
     }
@@ -165,13 +171,26 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
             b = b.row("Server", &server.address);
         }
 
-        if let Some(ref test) = dns.resolution_test {
-            b = b.divider();
-            b = b.row("Test Domain", &test.domain);
-            b = b.row("Resolved", if test.resolved { "Yes" } else { "No" });
-            b = b.row("Time", &format!("{:.1}ms", test.resolution_time_ms));
-            for ip in &test.resolved_ips {
-                b = b.row("Resolved IP", ip);
+        if dns.resolution_tests.is_empty() {
+            // Pre-v3.4.0 shape: a single probe.
+            if let Some(ref test) = dns.resolution_test {
+                b = b.divider();
+                b = b.row("Test Domain", &test.domain);
+                b = b.row("Resolved", if test.resolved { "Yes" } else { "No" });
+                b = b.row("Time", &format!("{:.1}ms", test.resolution_time_ms));
+                for ip in &test.resolved_ips {
+                    b = b.row("Resolved IP", ip);
+                }
+            }
+        } else {
+            for test in &dns.resolution_tests {
+                b = b.divider();
+                b = b.row("Test Domain", &test.domain);
+                b = b.row("Resolved", if test.resolved { "Yes" } else { "No" });
+                b = b.row("Time", &format!("{:.1}ms", test.resolution_time_ms));
+                for ip in &test.resolved_ips {
+                    b = b.row("Resolved IP", ip);
+                }
             }
         }
         output.push_str(&b.finish());
@@ -248,21 +267,59 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
         if let Some(jitter) = speed.jitter_ms {
             b = b.row("Jitter", &format!("{:.1} ms", jitter));
         }
+        let dl_margin = speed
+            .confidence_intervals
+            .as_ref()
+            .and_then(|ci| ci.download.as_ref())
+            .map(|ci| format!(" ±{}", crate::speedtest::format_mbps(ci.margin)))
+            .unwrap_or_default();
+        let ul_margin = speed
+            .confidence_intervals
+            .as_ref()
+            .and_then(|ci| ci.upload.as_ref())
+            .map(|ci| format!(" ±{}", crate::speedtest::format_mbps(ci.margin)))
+            .unwrap_or_default();
         b = b.row(
             "Download",
             &format!(
-                "{} (avg)",
-                crate::speedtest::format_mbps(speed.download_mbps)
+                "{}{} (avg)",
+                crate::speedtest::format_mbps(speed.download_mbps),
+                dl_margin
             ),
         );
         b = b.row(
             "Upload",
-            &format!("{} (avg)", crate::speedtest::format_mbps(speed.upload_mbps)),
+            &format!(
+                "{}{} (avg)",
+                crate::speedtest::format_mbps(speed.upload_mbps),
+                ul_margin
+            ),
         );
         if let Some(loss) = speed.packet_loss_pct {
             b = b.row("Packet Loss", &format!("{:.0}%", loss));
         }
         b = b.row("Duration", &format!("{:.1}s", speed.duration_s));
+        if !speed.merge_exclusions.is_empty() {
+            let list = speed
+                .merge_exclusions
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{} {} ({} sample{})",
+                        e.provider,
+                        if e.direction == "download" {
+                            "DL"
+                        } else {
+                            "UL"
+                        },
+                        e.samples,
+                        if e.samples == 1 { "" } else { "s" },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            b = b.row("Excluded", &list);
+        }
 
         // Per-provider breakdown
         for provider in &speed.providers {
@@ -297,7 +354,11 @@ pub fn render(results: &DiagnosticResults, config: &Config) -> String {
             .divider();
 
         for port in ports {
-            let status = if port.open { "Open" } else { "Blocked" };
+            let status = match port.outcome {
+                crate::diagnostics::ports::PortOutcome::Open => "Open",
+                crate::diagnostics::ports::PortOutcome::Blocked => "Blocked",
+                crate::diagnostics::ports::PortOutcome::Unresolved => "Untested (DNS)",
+            };
             let lat = port
                 .latency_ms
                 .map(|l| format!(" ({:.0}ms)", l))
@@ -339,6 +400,20 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
             }
             if arp.len() > 30 {
                 b = b.row("", &format!("... and {} more", arp.len() - 30));
+            }
+            if let Some(ref health) = tech.arp_health {
+                b = b.divider();
+                b = b.row(
+                    "Gateway in ARP",
+                    if health.gateway_in_table { "Yes" } else { "No" },
+                );
+                if let Some(ref mac) = health.gateway_mac {
+                    b = b.row("Gateway MAC", mac);
+                }
+                for dup in &health.duplicate_ip_macs {
+                    b = b.row(&format!("Duplicate {}", dup.ip), &dup.macs.join(", "));
+                }
+                b = b.row("Assessment", &health.assessment);
             }
             output.push_str(&b.finish());
             output.push('\n');
@@ -542,6 +617,30 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
         if let Some(ref pac) = proxy.pac_url {
             b = b.row("PAC URL", pac);
         }
+        if let Some(reachable) = proxy.pac_reachable {
+            let size = proxy
+                .pac_size_bytes
+                .map(|s| format!(" ({} bytes)", s))
+                .unwrap_or_default();
+            b = b.row(
+                "PAC Reachable",
+                &if reachable {
+                    format!("Yes{}", size)
+                } else {
+                    "NO — configured PAC script is unreachable".to_string()
+                },
+            );
+        }
+        if let Some(wpad) = proxy.wpad_dns_detected {
+            b = b.row(
+                "WPAD DNS",
+                if wpad {
+                    "Detected — proxy auto-discovery is live on this network"
+                } else {
+                    "Not detected"
+                },
+            );
+        }
         if let Some(ref no) = proxy.no_proxy {
             b = b.row("No Proxy", no);
         }
@@ -627,6 +726,17 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
         };
         b = b.row("Connectivity", conn_str);
         b = b.row("Dual Stack", if ipv6.dual_stack { "Yes" } else { "No" });
+        if let Some(http_ok) = ipv6.v6_http_ok {
+            b = b.row("HTTPS over v6", if http_ok { "Working" } else { "FAILED" });
+        }
+        if let (Some(v4), Some(v6)) = (ipv6.v4_connect_ms, ipv6.v6_connect_ms) {
+            b = b.row("v4 vs v6 connect", &format!("{:.0}ms vs {:.0}ms", v4, v6));
+        }
+        if let Some(penalty) = ipv6.v6_penalty_ms {
+            if penalty > 0.0 {
+                b = b.row("v6 penalty", &format!("+{:.0}ms", penalty));
+            }
+        }
 
         for addr in ipv6.addresses.iter().take(10) {
             b = b.row(
@@ -648,6 +758,18 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
                 .divider();
             for mtu in mtus {
                 b = b.row(&mtu.interface, &mtu.mtu.to_string());
+            }
+            if let Some(ref pm) = tech.path_mtu {
+                b = b.divider();
+                b = b.row(
+                    &format!("Path MTU ({})", pm.target),
+                    &if pm.path_mtu > 0 {
+                        format!("{} ({} probes)", pm.path_mtu, pm.probes)
+                    } else {
+                        "unmeasurable".to_string()
+                    },
+                );
+                b = b.row("Assessment", &pm.assessment);
             }
             output.push_str(&b.finish());
             output.push('\n');
@@ -681,14 +803,47 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
         b = b.full_top_border().span_row("  BUFFERBLOAT TEST").divider();
         b = b.row("Grade", &bb.grade);
         b = b.row(
-            "Unloaded Latency",
-            &format!("{:.1}ms", bb.unloaded_latency_ms),
+            "Idle Latency",
+            &format!(
+                "{:.1}ms ({} probes)",
+                bb.unloaded_latency_ms, bb.samples_idle
+            ),
         );
         if let Some(loaded) = bb.loaded_latency_ms {
-            b = b.row("Loaded Latency", &format!("{:.1}ms", loaded));
+            let grade = bb
+                .download_grade
+                .as_deref()
+                .map(|g| format!(" — grade {}", g))
+                .unwrap_or_default();
+            b = b.row(
+                "Loaded (down)",
+                &format!(
+                    "{:.1}ms{}{}",
+                    loaded,
+                    bb.download_bloat_ms
+                        .map(|d| format!(" (+{:.1}ms)", d))
+                        .unwrap_or_default(),
+                    grade
+                ),
+            );
         }
-        if let Some(bloat) = bb.bloat_ms {
-            b = b.row("Bloat", &format!("+{:.1}ms", bloat));
+        if let Some(ul_loaded) = bb.upload_loaded_latency_ms {
+            let grade = bb
+                .upload_grade
+                .as_deref()
+                .map(|g| format!(" — grade {}", g))
+                .unwrap_or_default();
+            b = b.row(
+                "Loaded (up)",
+                &format!(
+                    "{:.1}ms{}{}",
+                    ul_loaded,
+                    bb.upload_bloat_ms
+                        .map(|d| format!(" (+{:.1}ms)", d))
+                        .unwrap_or_default(),
+                    grade
+                ),
+            );
         }
         b = b.row("Assessment", &bb.description);
         output.push_str(&b.finish());
@@ -739,6 +894,277 @@ fn render_technician_details(tech: &TechnicianResults, config: &Config) -> Strin
             output.push_str(&b.finish());
             output.push('\n');
         }
+    }
+
+    // Route Path (traceroute)
+    if let Some(ref path) = tech.route_path {
+        let mut b = ReportBuilder::new(label_width, data_width, chars);
+        b = b
+            .full_top_border()
+            .span_row("  ROUTE PATH (TRACEROUTE)")
+            .divider();
+        for hop in path.hops.iter().take(16) {
+            let value = if hop.timed_out {
+                "*".to_string()
+            } else {
+                format!(
+                    "{}{}",
+                    hop.ip.as_deref().unwrap_or("?"),
+                    hop.avg_ms
+                        .map(|ms| format!("  {:.1}ms", ms))
+                        .unwrap_or_default()
+                )
+            };
+            b = b.row(&format!("hop {}", hop.number), &value);
+        }
+        b = b.divider();
+        b = b.row("Reached", if path.reached { "Yes" } else { "No" });
+        if let Some(first) = path.first_hop_ms {
+            b = b.row("First Hop", &format!("{:.1}ms (your router)", first));
+        }
+        if let Some(boundary) = path.isp_boundary_hop {
+            b = b.row("ISP Boundary", &format!("hop {}", boundary));
+        }
+        if let Some(ref jump) = path.largest_jump {
+            b = b.row(
+                "Largest Jump",
+                &format!(
+                    "+{:.1}ms (hop {}→{}, {})",
+                    jump.delta_ms, jump.from_hop, jump.to_hop, jump.segment
+                ),
+            );
+        }
+        b = b.row("Assessment", &path.assessment);
+        output.push_str(&b.finish());
+        output.push('\n');
+    }
+
+    // Sustained Packet Loss
+    if let Some(ref losses) = tech.packet_loss {
+        let mut b = ReportBuilder::new(label_width, data_width, chars);
+        b = b
+            .full_top_border()
+            .span_row("  SUSTAINED PACKET LOSS")
+            .divider();
+        for (i, loss) in losses.iter().enumerate() {
+            if i > 0 {
+                b = b.divider();
+            }
+            b = b.row("Target", &format!("{} ({})", loss.host, loss.label));
+            b = b.row(
+                "Loss",
+                &format!(
+                    "{:.1}% ({}/{} received)",
+                    loss.loss_pct, loss.received, loss.sent
+                ),
+            );
+            if let (Some(min), Some(avg), Some(max)) = (loss.min_ms, loss.avg_ms, loss.max_ms) {
+                b = b.row(
+                    "Latency",
+                    &format!("min {:.1} / avg {:.1} / max {:.1}ms", min, avg, max),
+                );
+            }
+            if let Some(p95) = loss.p95_ms {
+                b = b.row("P95", &format!("{:.1}ms", p95));
+            }
+            if let Some(jitter) = loss.jitter_ms {
+                b = b.row("Jitter", &format!("{:.1}ms", jitter));
+            }
+            b = b.row("Assessment", &loss.assessment);
+        }
+        output.push_str(&b.finish());
+        output.push('\n');
+    }
+
+    // NAT Analysis
+    if let Some(ref nat) = tech.nat_analysis {
+        let mut b = ReportBuilder::new(label_width, data_width, chars);
+        b = b.full_top_border().span_row("  NAT ANALYSIS").divider();
+        if let Some(ref gw) = nat.gateway_ip {
+            b = b.row(
+                "Gateway",
+                &format!(
+                    "{} ({})",
+                    gw,
+                    if nat.gateway_is_private {
+                        "private"
+                    } else {
+                        "public"
+                    }
+                ),
+            );
+        }
+        if let Some(ref hop2) = nat.hop2_ip {
+            b = b.row(
+                "Second Hop",
+                &format!(
+                    "{} ({})",
+                    hop2,
+                    if nat.hop2_is_private {
+                        "private"
+                    } else {
+                        "public"
+                    }
+                ),
+            );
+        }
+        if let Some(ref pip) = nat.public_ip {
+            b = b.row("Public IP", pip);
+        }
+        b = b.row("NAT Layers", &format!("~{}", nat.nat_layers_estimate));
+        b = b.row("CGNAT", if nat.cgnat_detected { "DETECTED" } else { "No" });
+        b = b.row(
+            "Double NAT",
+            if nat.double_nat_suspected {
+                "Suspected"
+            } else {
+                "No"
+            },
+        );
+        b = b.row("Assessment", &nat.assessment);
+        output.push_str(&b.finish());
+        output.push('\n');
+    }
+
+    // Wi-Fi Link Quality
+    if let Some(ref links) = tech.wifi {
+        let mut b = ReportBuilder::new(label_width, data_width, chars);
+        b = b
+            .full_top_border()
+            .span_row("  WI-FI LINK QUALITY")
+            .divider();
+        for (i, link) in links.iter().enumerate() {
+            if i > 0 {
+                b = b.divider();
+            }
+            b = b.row("Interface", &link.interface);
+            if let Some(ref ssid) = link.ssid {
+                b = b.row("SSID", ssid);
+            }
+            if let Some(ref bssid) = link.bssid {
+                b = b.row("BSSID", bssid);
+            }
+            match (link.signal_pct, link.rssi_dbm) {
+                (Some(pct), _) => b = b.row("Signal", &format!("{}%", pct)),
+                (None, Some(rssi)) => b = b.row("Signal", &format!("{} dBm", rssi)),
+                _ => {}
+            }
+            if let (Some(ch), Some(ref band)) = (link.channel, link.band.as_ref()) {
+                b = b.row("Channel", &format!("{} ({})", ch, band));
+            } else if let Some(ref band) = link.band {
+                b = b.row("Band", band);
+            }
+            if let Some(ref phy) = link.phy_mode {
+                b = b.row("PHY Mode", phy);
+            }
+            if let Some(ref sec) = link.security {
+                b = b.row("Security", sec);
+            }
+            match (link.rx_rate_mbps, link.tx_rate_mbps) {
+                (Some(rx), Some(tx)) => {
+                    b = b.row("Link Rate", &format!("RX {:.0} / TX {:.0} Mbps", rx, tx))
+                }
+                (Some(rx), None) => b = b.row("Link Rate", &format!("RX {:.0} Mbps", rx)),
+                (None, Some(tx)) => b = b.row("Link Rate", &format!("TX {:.0} Mbps", tx)),
+                _ => {}
+            }
+            b = b.row("Assessment", &link.assessment);
+        }
+        output.push_str(&b.finish());
+        output.push('\n');
+    }
+
+    // DNS Resolver Benchmark
+    if let Some(ref bench) = tech.dns_benchmark {
+        let mut b = ReportBuilder::new(label_width, data_width, chars);
+        b = b
+            .full_top_border()
+            .span_row("  DNS RESOLVER BENCHMARK")
+            .divider();
+        for r in &bench.resolvers {
+            let timing = r
+                .avg_ms
+                .map(|ms| format!("{:.0}ms avg", ms))
+                .unwrap_or_else(|| "no replies".to_string());
+            b = b.row(
+                &r.name,
+                &format!("{} ({}/{} ok)", timing, r.queries_ok, r.queries_total),
+            );
+        }
+        b = b.divider();
+        if let Some(ref fastest) = bench.fastest {
+            b = b.row("Fastest", fastest);
+        }
+        if let Some(delta) = bench.system_vs_fastest_ms {
+            b = b.row("System vs Best", &format!("{:+.0}ms", delta));
+        }
+        if let Some(hijack) = bench.hijack_detected {
+            b = b.row("NXDOMAIN Hijack", if hijack { "DETECTED" } else { "No" });
+        }
+        if let Some(dnssec) = bench.dnssec_validating {
+            b = b.row(
+                "DNSSEC",
+                if dnssec {
+                    "Validating"
+                } else {
+                    "Not validating"
+                },
+            );
+        }
+        b = b.row("Assessment", &bench.assessment);
+        output.push_str(&b.finish());
+        output.push('\n');
+    }
+
+    // Captive Portal
+    if let Some(ref portal) = tech.captive_portal {
+        let mut b = ReportBuilder::new(label_width, data_width, chars);
+        b = b.full_top_border().span_row("  CAPTIVE PORTAL").divider();
+        b = b.row(
+            "Portal",
+            if portal.portal_detected {
+                "DETECTED"
+            } else {
+                "Not detected"
+            },
+        );
+        if let Some(status) = portal.http_status {
+            b = b.row("Probe Status", &format!("HTTP {}", status));
+        }
+        if let Some(ref loc) = portal.redirect_location {
+            b = b.row("Redirects To", loc);
+        }
+        b = b.row("Assessment", &portal.assessment);
+        output.push_str(&b.finish());
+        output.push('\n');
+    }
+
+    // Clock Sync (NTP)
+    if let Some(ref clock) = tech.clock_sync {
+        let mut b = ReportBuilder::new(label_width, data_width, chars);
+        b = b.full_top_border().span_row("  CLOCK SYNC (NTP)").divider();
+        if let Some(offset) = clock.offset_ms {
+            b = b.row("Clock Offset", &format!("{:+.0}ms", offset));
+        }
+        b = b.row(
+            "Source",
+            &format!(
+                "{} ({} server{} responded)",
+                clock.source,
+                clock.servers_responded,
+                if clock.servers_responded == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+        );
+        if clock.ntp_blocked {
+            b = b.row("NTP (UDP/123)", "Blocked or filtered");
+        }
+        b = b.row("Assessment", &clock.assessment);
+        output.push_str(&b.finish());
+        output.push('\n');
     }
 
     output

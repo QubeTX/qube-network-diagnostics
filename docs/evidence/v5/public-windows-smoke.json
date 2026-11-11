@@ -1,0 +1,29 @@
+{
+  "tag": "v4.0.1",
+  "sourceSha": "d76af2b2e282440e2e28c31c8b05d5d8833f458f",
+  "checkedAt": "2026-09-05T08:30:45.3687929Z",
+  "sourceAsset": "nd300-x86_64-pc-windows-msvc.zip",
+  "mode": "isolated extraction, no install or PATH change",
+  "binaries": [
+    {
+      "command": "nd300",
+      "version": "nd300 4.0.1",
+      "sha256": "1423035b716a084ff09927df36935fe04408bda20fab0da2ae455a2aa64c15b7",
+      "helpControlsVerified": [
+        "--deep",
+        "--max-bytes",
+        "--accept-mlab"
+      ]
+    },
+    {
+      "command": "speedqx",
+      "version": "speedqx 4.0.1",
+      "sha256": "9c7c9290c3480483c71206670cc855c4d3cfc2fe5022c16c705d89e98ac99b6f",
+      "helpControlsVerified": [
+        "--deep",
+        "--max-bytes",
+        "--accept-mlab"
+      ]
+    }
+  ]
+}

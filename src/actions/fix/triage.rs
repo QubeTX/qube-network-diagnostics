@@ -68,6 +68,13 @@ pub fn actionable_failures(results: &DiagnosticResults) -> HashSet<DiagnosticKey
     for (res, key) in pairs.iter() {
         match res.status {
             DiagnosticStatus::Fail => {
+                if res.timed_out {
+                    // Fabricated row: the check never finished before the
+                    // wall-clock cap. It is evidence of overall slowness, not
+                    // of this subsystem failing — repairing based on it would
+                    // be acting on a guess.
+                    continue;
+                }
                 if matches!(key, DiagnosticKey::Latency) {
                     // Public ICMP/UDP latency probes are commonly filtered
                     // even when HTTP/DNS/gateway connectivity is healthy.
@@ -116,6 +123,26 @@ pub fn group_by_root_cause(failures: &HashSet<DiagnosticKey>) -> HashSet<Diagnos
         .copied()
         .filter(|k| !parents_of(*k).iter().any(|p| failures.contains(p)))
         .collect()
+}
+
+/// Failures present in BOTH baseline passes — the evidence set the first
+/// repair plan is allowed to act on. A failure that shows up in only one pass
+/// is a transient blip, not something to repair.
+pub fn confirmed_failures(
+    first: &HashSet<DiagnosticKey>,
+    second: &HashSet<DiagnosticKey>,
+) -> HashSet<DiagnosticKey> {
+    first.intersection(second).copied().collect()
+}
+
+/// Failures seen in exactly one of the two baseline passes — flagged
+/// intermittent so later natural recoveries of these keys earn no
+/// effectiveness credit.
+pub fn intermittent_failures(
+    first: &HashSet<DiagnosticKey>,
+    second: &HashSet<DiagnosticKey>,
+) -> HashSet<DiagnosticKey> {
+    first.symmetric_difference(second).copied().collect()
 }
 
 /// Detect failure patterns where applying actions would only make things
@@ -328,6 +355,7 @@ mod tests {
             speed_details: None,
             port_details: None,
             technician: None,
+            timed_out: false,
         }
     }
 
@@ -599,5 +627,55 @@ mod tests {
         assert!(!requires_confirmation(renew, true));
         assert!(!requires_confirmation(restart, true));
         assert!(!requires_confirmation(vpn, true));
+    }
+
+    fn key_set(ks: &[DiagnosticKey]) -> HashSet<DiagnosticKey> {
+        ks.iter().copied().collect()
+    }
+
+    #[test]
+    fn confirmed_failures_is_intersection() {
+        use DiagnosticKey::*;
+        assert!(confirmed_failures(&key_set(&[]), &key_set(&[])).is_empty());
+        assert!(confirmed_failures(&key_set(&[Dns]), &key_set(&[Gateway])).is_empty());
+        assert_eq!(
+            confirmed_failures(&key_set(&[Dns, Gateway]), &key_set(&[Dns])),
+            key_set(&[Dns])
+        );
+        assert_eq!(
+            confirmed_failures(&key_set(&[Dns, Gateway]), &key_set(&[Dns, Gateway])),
+            key_set(&[Dns, Gateway])
+        );
+    }
+
+    #[test]
+    fn intermittent_failures_is_symmetric_difference() {
+        use DiagnosticKey::*;
+        assert!(intermittent_failures(&key_set(&[]), &key_set(&[])).is_empty());
+        assert_eq!(
+            intermittent_failures(&key_set(&[Dns]), &key_set(&[Gateway])),
+            key_set(&[Dns, Gateway])
+        );
+        assert_eq!(
+            intermittent_failures(&key_set(&[Dns, Gateway]), &key_set(&[Dns])),
+            key_set(&[Gateway])
+        );
+        assert!(
+            intermittent_failures(&key_set(&[Dns, Gateway]), &key_set(&[Dns, Gateway])).is_empty()
+        );
+    }
+
+    /// The fix loop force-skips the speed test in its diagnostic passes
+    /// BECAUSE no action targets Speed — a speed-only failure has nothing to
+    /// repair, and a ~40s+ sequential speed test per pass would burn the
+    /// wall-clock budget on probing instead of repairing. If an action ever
+    /// starts targeting Speed, the loop must stop skipping it; this test
+    /// makes that change impossible to miss.
+    #[test]
+    fn no_action_targets_speed() {
+        let registry = super::super::action::all_actions();
+        assert!(registry
+            .iter()
+            .all(|a| !a.targets.contains(&DiagnosticKey::Speed)));
     }
 }

@@ -1,0 +1,316 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Copyright (C) 2017 Christopher R. Field.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<!--
+  ND-300 Corporate Edition (perUser MSI).
+
+  Ships alongside `wix/main.wxs` (the Global / perMachine MSI). Built by
+  `.github/workflows/windows-installers.yml` after release.yml finishes
+  publishing the GitHub Release, then uploaded as
+  `nd300-x86_64-pc-windows-msvc-corporate.msi`.
+
+  ND-300 ships TWO binaries (nd300.exe + speedqx.exe), so this installer
+  packages BOTH (binary0 + binary1) — unlike a single-binary template.
+
+  Differences vs main.wxs (intentional — do not converge):
+    - InstallScope="perUser" on the Package element. Sufficient on WiX 3.11+
+        to install without UAC on machines where the user has no admin rights
+        but still has write access to %LocalAppData%. We do NOT declare
+        ALLUSERS="" explicitly — WiX 3.11 candle rejects ALLUSERS Value="" with
+        CNDL0006 ("empty string"). Per WiX docs, InstallScope="perUser" is
+        equivalent to ALLUSERS unset.
+    - UpgradeCode is a DIFFERENT GUID from the Global edition. Same UpgradeCode
+        across editions would confuse Windows Installer and break upgrades in
+        both directions. A user can have both editions installed simultaneously
+        (Add/Remove Programs shows two entries); PATH order decides which
+        `nd300` wins.
+    - Install location: %LocalAppData%\Programs\nd300\bin\ instead of
+        %ProgramFiles%\nd300\bin\.
+    - PATH entry: user PATH (HKCU\Environment\Path) instead of system PATH.
+    - Product Name: "nd300 (Corporate Edition)" — distinct ARP entry.
+
+  LOCKSTEP: if the install path or registry-marker value changes here, update
+  src/actions/update.rs::classify_install_path() /
+  read_install_source_marker() to match — those choose which installer
+  `nd300 update` fetches.
+-->
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='nd300 (Corporate Edition)'
+        UpgradeCode='B2490B7E-3CBE-47AC-8090-79BB3EB555E0'
+        Manufacturer='Emmett S'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Cross-platform network diagnostic tool (Corporate Edition, per-user install)'
+            Manufacturer='Emmett S'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perUser'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallExecute'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <!-- Windows Installer cannot major-upgrade across per-user/per-machine
+             contexts. The preflight takeover helper therefore refuses an
+             opposite-scope registered owner before InstallInitialize instead
+             of authoring a cross-context Upgrade row that cannot be honored. -->
+
+        <!-- The package retires a running canonical binary through MoveFiles before
+             InstallFiles. Keep Restart Manager from terminating the updater before
+             that transactional rename can release the canonical path. -->
+        <Property Id='MSIRESTARTMANAGERCONTROL' Value='Disable'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='nd300 (Corporate Edition) Installation'/>
+
+        <!-- ── Cross-method consolidation (v3.2.0+) — see wix/main.wxs ─────────
+             CLEANCARGO removes a shadowing older `cargo install` copy; on this
+             perUser MSI CLEANOTHEREDITION targets the Global perMachine copy in
+             Program Files. Both default to 1 (silent /passive self-update
+             consolidates; interactive checkboxes pre-checked). A perUser process
+             can't delete the perMachine copy, so migrate-cleanup reports
+             "needs admin" and exits 0 — the CA's Return='ignore' means the
+             install proceeds regardless. -->
+        <Property Id='CLEANCARGO' Value='1' Secure='yes'/>
+        <Property Id='CLEANOTHEREDITION' Value='1' Secure='yes'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='LocalAppDataFolder'>
+                <Directory Id='ProgramsFolder' Name='Programs'>
+                    <Directory Id='APPLICATIONFOLDER' Name='nd300'>
+                        <Directory Id='Bin' Name='bin'>
+                            <Component Id='Path' Guid='135C0F0E-9C35-431D-ACFE-3C83CAAFFE15' KeyPath='yes'>
+                                <!-- User PATH (HKCU\Environment\Path), not system PATH. -->
+                                <Environment
+                                    Id='PATH'
+                                    Name='PATH'
+                                    Value='[Bin]'
+                                    Permanent='no'
+                                    Part='last'
+                                    Action='set'
+                                    System='no'/>
+                            </Component>
+                            <Component Id='binary0' Guid='*'>
+                                <CopyFile
+                                    Id='RetireRunningNd300'
+                                    Delete='yes'
+                                    SourceDirectory='Bin'
+                                    SourceName='nd300.exe'
+                                    DestinationDirectory='Bin'
+                                    DestinationName='nd300.update-old-$(var.Version).exe'/>
+                                <File
+                                    Id='exe0'
+                                    Name='nd300.exe'
+                                    DiskId='1'
+                                    Source='$(var.CargoTargetBinDir)\nd300.exe'
+                                    KeyPath='yes'/>
+                            </Component>
+                            <Component Id='binary1' Guid='*'>
+                                <CopyFile
+                                    Id='RetireRunningSpeedqx'
+                                    Delete='yes'
+                                    SourceDirectory='Bin'
+                                    SourceName='speedqx.exe'
+                                    DestinationDirectory='Bin'
+                                    DestinationName='speedqx.update-old-$(var.Version).exe'/>
+                                <File
+                                    Id='exe1'
+                                    Name='speedqx.exe'
+                                    DiskId='1'
+                                    Source='$(var.CargoTargetBinDir)\speedqx.exe'
+                                    KeyPath='yes'/>
+                            </Component>
+                        </Directory>
+                    </Directory>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs the nd300 + speedqx binaries (Corporate Edition, per-user).'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='binary1'/>
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Add the install location of [ProductName] to your user PATH so the binaries are callable from any terminal.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Property Id='ARPHELPLINK' Value='https://github.com/QubeTX/qube-network-diagnostics'/>
+
+        <!-- ── Cross-method consolidation custom actions (v3.2.0+) ────────────
+             Deferred, impersonated, best-effort. FileKey='exe0' (the installed
+             nd300.exe) + ExeCommand, so no WixUtilExtension is needed (the
+             Corporate MSI is linked with only -ext WixUIExtension — see
+             .github/workflows/windows-installers.yml). Return='ignore' => cleanup
+             never fails the install. `NOT Installed` => install/upgrade only, not
+             uninstall/repair. CLEANCARGO/CLEANOTHEREDITION (default 1) gate it. -->
+        <CustomAction Id='CleanCargoCopy'
+            FileKey='exe0'
+            ExeCommand='migrate-cleanup --quiet --install-origin msi-corporate --cargo-copy'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='ignore'/>
+        <Binary Id='InstallTakeoverHelper'
+            SourceFile='$(var.CargoTargetBinDir)\nd300.exe'/>
+        <CustomAction Id='TakeOverRegisteredChannels'
+            BinaryKey='InstallTakeoverHelper'
+            ExeCommand='install-takeover --target msi-corporate --scope all'
+            Execute='immediate'
+            Return='check'/>
+        <CustomAction Id='CleanRetiredUpdate'
+            FileKey='exe0'
+            ExeCommand='migrate-cleanup --quiet --retired-update'
+            Execute='commit'
+            Impersonate='yes'
+            Return='ignore'/>
+        <CustomAction Id='WriteInstallSourceMarker'
+            FileKey='exe0'
+            ExeCommand='install-maintenance --action set-marker --origin msi-corporate'
+            Execute='commit'
+            Impersonate='yes'
+            Return='check'/>
+        <CustomAction Id='ClearInstallSourceMarker'
+            FileKey='exe0'
+            ExeCommand='install-maintenance --action clear-marker --origin msi-corporate'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='ignore'/>
+        <?ifdef ND300_ROLLBACK_TEST?>
+        <!-- Candidate-matrix-only fault injection; see wix/main.wxs. -->
+        <CustomAction Id='ForceRunningImageRollbackTest'
+            Directory='TARGETDIR'
+            ExeCommand='&quot;[SystemFolder]cmd.exe&quot; /d /c exit 86'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='check'/>
+        <?endif?>
+        <CustomAction Id='CleanOtherEdition'
+            FileKey='exe0'
+            ExeCommand='migrate-cleanup --quiet --install-origin msi-corporate --other-edition'
+            Execute='deferred'
+            Impersonate='yes'
+            Return='ignore'/>
+
+        <InstallExecuteSequence>
+            <Custom Action='TakeOverRegisteredChannels' Before='InstallInitialize'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <?ifdef ND300_ROLLBACK_TEST?>
+            <Custom Action='ForceRunningImageRollbackTest' After='InstallFiles'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <?endif?>
+            <Custom Action='CleanCargoCopy' Before='InstallFinalize'>
+                <![CDATA[NOT Installed AND CLEANCARGO="1"]]>
+            </Custom>
+            <Custom Action='CleanOtherEdition' After='CleanCargoCopy'>
+                <![CDATA[NOT Installed AND CLEANOTHEREDITION="1"]]>
+            </Custom>
+            <Custom Action='ClearInstallSourceMarker' Before='RemoveFiles'>
+                <![CDATA[REMOVE="ALL"]]>
+            </Custom>
+            <!-- Commit execution retains renamed images until InstallFinalize
+                 succeeds, while keeping the per-user cleanup unprivileged. -->
+            <Custom Action='CleanRetiredUpdate' Before='WriteInstallSourceMarker'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+            <Custom Action='WriteInstallSourceMarker' Before='CleanCargoCopy'>
+                <![CDATA[NOT Installed]]>
+            </Custom>
+        </InstallExecuteSequence>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+
+            <!-- Consolidation dialog (v3.2.0+) — see wix/main.wxs for the layout
+                 rationale. Inserted between WelcomeDlg and CustomizeDlg. -->
+            <Dialog Id='ConsolidateDlg' Width='370' Height='270' Title='[ProductName] Setup'>
+                <Control Id='Title' Type='Text' X='15' Y='6' Width='340' Height='15'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>{\WixUI_Font_Title}Consolidate installs</Text>
+                </Control>
+                <Control Id='Description' Type='Text' X='25' Y='23' Width='330' Height='30'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>nd300 keeps a single version on your PATH. Choose what to clean up so only one copy/edition remains.</Text>
+                </Control>
+                <Control Id='BannerLine' Type='Line' X='0' Y='44' Width='370' Height='0'/>
+
+                <Control Id='CleanCargoCheck' Type='CheckBox' X='25' Y='65' Width='320' Height='18'
+                    Property='CLEANCARGO' CheckBoxValue='1'
+                    Text='Remove an older Cargo-installed copy of nd300 (recommended)'/>
+                <Control Id='CleanCargoHint' Type='Text' X='40' Y='84' Width='305' Height='20'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>Deletes a shadowing nd300/speedqx in your .cargo\bin. Cargo and rustup are never touched.</Text>
+                </Control>
+
+                <Control Id='CleanOtherCheck' Type='CheckBox' X='25' Y='115' Width='320' Height='18'
+                    Property='CLEANOTHEREDITION' CheckBoxValue='1'
+                    Text='Remove the other edition if present (recommended)'/>
+                <Control Id='CleanOtherHint' Type='Text' X='40' Y='134' Width='305' Height='20'
+                    Transparent='yes' NoPrefix='yes'>
+                    <Text>Removes the Global (per-machine) edition so only one edition remains. Skipped automatically if it needs admin rights you do not have.</Text>
+                </Control>
+
+                <Control Id='BottomLine' Type='Line' X='0' Y='234' Width='370' Height='0'/>
+                <Control Id='Back' Type='PushButton' X='180' Y='243' Width='56' Height='17'
+                    Text='!(loc.WixUIBack)'>
+                    <Publish Event='NewDialog' Value='WelcomeDlg'>1</Publish>
+                </Control>
+                <Control Id='Next' Type='PushButton' X='236' Y='243' Width='56' Height='17'
+                    Default='yes' Text='!(loc.WixUINext)'>
+                    <Publish Event='NewDialog' Value='CustomizeDlg'>1</Publish>
+                </Control>
+                <Control Id='Cancel' Type='PushButton' X='304' Y='243' Width='56' Height='17'
+                    Cancel='yes' Text='!(loc.WixUICancel)'>
+                    <Publish Event='SpawnDialog' Value='CancelDlg'>1</Publish>
+                </Control>
+            </Dialog>
+
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='ConsolidateDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='ConsolidateDlg' Order='99'>1</Publish>
+
+        </UI>
+
+    </Product>
+
+</Wix>

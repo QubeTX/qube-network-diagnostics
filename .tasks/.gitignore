@@ -1,0 +1,11 @@
+secure/
+.board-server.json
+.board-nudge.json
+.board-server.log
+vendor/
+node_modules/
+package.json
+package-lock.json
+.package-lock.json
+.install-manifest.json
+*.tmp

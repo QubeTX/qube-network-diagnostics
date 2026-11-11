@@ -1,38 +1,120 @@
-use super::{statistics, BandwidthSamples, Phase, ProviderResult, SpeedTestConfig, TestDuration};
+use super::adaptive::adaptive_chunk_bytes;
+use super::{
+    statistics, BandwidthSamples, LatencyStats, Phase, ProviderAvailability, ProviderResult,
+    SpeedTestConfig, TestDuration,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
+/// Cache-busting variant of a URL (appends a unique nonce query param).
+fn cache_bust(url: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}nocache={nanos}")
+}
+
 const SERVER_LIST_URL: &str = "https://librespeed.org/backend-servers/servers.json";
 
-/// Maximum servers to probe for latency during selection.
-const MAX_SERVERS_TO_PROBE: usize = 5;
+/// Maximum servers to probe for latency during selection. Probes run
+/// concurrently with 5s timeouts, so breadth costs little wall time and a
+/// nearby server is far more likely to be in the candidate set.
+const MAX_SERVERS_TO_PROBE: usize = 30;
 
-/// Upload payload size (4 MB).
-const UPLOAD_CHUNK_SIZE: usize = 4_000_000;
+/// Each transfer request is sized to take roughly this long at the link's
+/// most recently measured throughput, keeping the per-request sample rate
+/// constant across link speeds (the old fixed 100 MB chunks yielded 0-2
+/// samples per 30s window on slower lines).
+const TARGET_REQUEST_SECS: f64 = 2.0;
 
-/// Download chunk size parameter (ckSize=100 ≈ 100MB).
-const DOWNLOAD_CHUNK_PARAM: u32 = 100;
+/// Download request bounds (ckSize is in MB units).
+const DOWNLOAD_MIN_BYTES: u64 = 1_000_000;
+const DOWNLOAD_MAX_BYTES: u64 = 100_000_000;
 
-/// Fallback servers if the server list fetch fails.
+/// Upload request bounds. 16 MB stays under common LibreSpeed POST limits.
+const UPLOAD_MIN_BYTES: u64 = 256 * 1024;
+const UPLOAD_MAX_BYTES: u64 = 16_000_000;
+
+/// Minimum per-request timeout floor (see cloudflare.rs::remaining_budget).
+const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Time left until `deadline`, floored at `MIN_REQUEST_TIMEOUT`. Used as the
+/// per-request `.timeout()` so a stalled transfer can't outlive the phase
+/// (the 120s client timeout would otherwise dominate the deadline loop).
+fn remaining_budget(deadline: Instant) -> Duration {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .max(MIN_REQUEST_TIMEOUT)
+}
+
+/// Fallback servers if the server list fetch fails. Geo-diverse so a user on
+/// any continent gets a plausible candidate (RTT-based selection picks the
+/// nearest); entries pinned from the live backend-servers list (2026-06),
+/// preferring the official librespeed.org backends and large long-lived
+/// operators.
 const FALLBACK_SERVERS: &[FallbackServer] = &[
     FallbackServer {
-        name: "LibreSpeed (Frankfurt)",
-        server: "https://librespeed.raiun.de",
+        name: "New York, US (Clouvider)",
+        server: "https://nyc.speedtest.clouvider.net/backend",
         dl_url: "garbage.php",
         ul_url: "empty.php",
         ping_url: "empty.php",
     },
     FallbackServer {
-        name: "LibreSpeed (US East)",
-        server: "https://nyc.speedtest.sbg.net.au",
+        name: "Los Angeles, US (Clouvider)",
+        server: "https://la.speedtest.clouvider.net/backend",
         dl_url: "garbage.php",
         ul_url: "empty.php",
         ping_url: "empty.php",
     },
     FallbackServer {
-        name: "LibreSpeed (Amsterdam)",
-        server: "https://ams.host.speedtest.net",
+        name: "Atlanta, US (Clouvider)",
+        server: "https://atl.speedtest.clouvider.net/backend",
+        dl_url: "garbage.php",
+        ul_url: "empty.php",
+        ping_url: "empty.php",
+    },
+    FallbackServer {
+        name: "Frankfurt, Germany (Clouvider)",
+        server: "https://fra.speedtest.clouvider.net/backend",
+        dl_url: "garbage.php",
+        ul_url: "empty.php",
+        ping_url: "empty.php",
+    },
+    FallbackServer {
+        name: "London, England (Clouvider)",
+        server: "https://lon.speedtest.clouvider.net/backend",
+        dl_url: "garbage.php",
+        ul_url: "empty.php",
+        ping_url: "empty.php",
+    },
+    FallbackServer {
+        name: "Bangalore, India (librespeed.org)",
+        server: "https://in1.backend.librespeed.org",
+        dl_url: "garbage.php",
+        ul_url: "empty.php",
+        ping_url: "empty.php",
+    },
+    FallbackServer {
+        name: "Singapore (DS Group)",
+        server: "https://speedtest.dsgroupmedia.com",
+        dl_url: "backend/garbage.php",
+        ul_url: "backend/empty.php",
+        ping_url: "backend/empty.php",
+    },
+    FallbackServer {
+        name: "Tokyo, Japan (A573)",
+        server: "https://librespeed.a573.net",
+        dl_url: "backend/garbage.php",
+        ul_url: "backend/empty.php",
+        ping_url: "backend/empty.php",
+    },
+    FallbackServer {
+        name: "Johannesburg, South Africa (librespeed.org)",
+        server: "https://za1.backend.librespeed.org",
         dl_url: "garbage.php",
         ul_url: "empty.php",
         ping_url: "empty.php",
@@ -108,46 +190,43 @@ where
         TestDuration::Auto => (15, 15),
     };
 
-    // ── Latency probes ───────────────────────────────────────────────
-    let probes = config.latency_probes.max(4);
-    let mut rtts: Vec<f64> = Vec::with_capacity(probes as usize);
+    // ── Dense idle-latency engine (METHODOLOGY.md §4) ────────────────
+    let n_probes = super::dense_probe_count(dl_secs as f64);
+    let base_ping_url = format!("{}/{}", selected.base_url, selected.ping_url);
+    let mut rtts: Vec<f64> = Vec::with_capacity(n_probes as usize);
     let mut failures: u32 = 0;
 
-    for i in 0..probes {
-        let ping_url = format!("{}/{}", selected.base_url, selected.ping_url);
+    for i in 0..n_probes {
         let start = Instant::now();
-        match client.head(&ping_url).send().await {
-            Ok(_) => {
-                rtts.push(start.elapsed().as_secs_f64() * 1000.0);
-            }
-            Err(_) => {
-                failures += 1;
-            }
+        match client
+            .head(cache_bust(&base_ping_url))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(_) => rtts.push(start.elapsed().as_secs_f64() * 1000.0),
+            Err(_) => failures += 1,
         }
-        let _ = i; // suppress unused warning
+        if i + 1 < n_probes {
+            tokio::time::sleep(super::DENSE_PROBE_INTERVAL).await;
+        }
     }
 
-    // Discard first 2 warmup probes
-    let warmup_skip = 2.min(rtts.len());
-    let trimmed: Vec<f64> = rtts[warmup_skip..].to_vec();
-
-    let ping_ms = if trimmed.is_empty() {
-        None
+    // Discard the first 3 warm-up probes; keep all if ≤ 3.
+    let measured: Vec<f64> = if rtts.len() > super::DENSE_PROBE_WARMUP {
+        rtts[super::DENSE_PROBE_WARMUP..].to_vec()
     } else {
-        trimmed
-            .iter()
-            .copied()
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        rtts.clone()
     };
+    let latency_stats = LatencyStats::from_rtts(&measured);
+    let ping_ms = measured
+        .iter()
+        .copied()
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let jitter_ms = latency_stats.as_ref().map(|ls| ls.pdv);
 
-    let jitter_ms = if trimmed.len() >= 2 {
-        Some(statistics::jitter_rfc3550(&trimmed))
-    } else {
-        None
-    };
-
-    let packet_loss_pct = if probes > 0 {
-        Some(failures as f64 / probes as f64 * 100.0)
+    let packet_loss_pct = if n_probes > 0 {
+        Some(failures as f64 / n_probes as f64 * 100.0)
     } else {
         None
     };
@@ -155,33 +234,53 @@ where
     // ── Download phase ───────────────────────────────────────────────
     progress(Phase::LsDownload, 0.0);
 
-    let dl_url = format!(
-        "{}/{}?ckSize={}",
-        selected.base_url, selected.dl_url, DOWNLOAD_CHUNK_PARAM
-    );
     let dl_deadline = Instant::now() + Duration::from_secs(dl_secs);
     let mut dl_bytes: u64 = 0;
     let dl_start = Instant::now();
     let mut dl_mbps_samples: Vec<f64> = Vec::new();
+    // Adaptive request sizing: seed small (warmup — the slow-start discard
+    // absorbs it), then size each request to ~TARGET_REQUEST_SECS at the
+    // throughput the previous request measured.
+    let mut dl_chunk_bytes: u64 = DOWNLOAD_MIN_BYTES;
 
     while Instant::now() < dl_deadline {
+        // ckSize is in MB units on LibreSpeed backends.
+        let ck_size = (dl_chunk_bytes / 1_000_000).max(1);
+        let dl_url = format!(
+            "{}/{}?ckSize={}",
+            selected.base_url, selected.dl_url, ck_size
+        );
         let req_start = Instant::now();
-        match client.get(&dl_url).send().await {
+        match client
+            .get(&dl_url)
+            .timeout(remaining_budget(dl_deadline))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.bytes().await {
                     let req_bytes = body.len() as u64;
                     let req_duration = req_start.elapsed().as_secs_f64();
                     dl_bytes += req_bytes;
                     if req_duration > 0.0 {
-                        dl_mbps_samples
-                            .push((req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0));
+                        let mbps = (req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0);
+                        dl_mbps_samples.push(mbps);
+                        dl_chunk_bytes = adaptive_chunk_bytes(
+                            mbps,
+                            TARGET_REQUEST_SECS,
+                            DOWNLOAD_MIN_BYTES,
+                            DOWNLOAD_MAX_BYTES,
+                        );
                     }
                     let elapsed = dl_start.elapsed().as_secs_f64();
                     let frac = (elapsed / dl_secs as f64).min(1.0);
                     progress(Phase::LsDownload, frac);
                 }
             }
-            Err(_) => {}
+            Err(_) => {
+                // Re-warm after an error: the link state is unknown.
+                dl_chunk_bytes = DOWNLOAD_MIN_BYTES;
+            }
             _ => {}
         }
     }
@@ -199,32 +298,48 @@ where
     progress(Phase::LsUpload, 0.0);
 
     let ul_url = format!("{}/{}", selected.base_url, selected.ul_url);
-    let upload_payload = vec![0u8; UPLOAD_CHUNK_SIZE];
     let ul_deadline = Instant::now() + Duration::from_secs(ul_secs);
     let mut ul_bytes: u64 = 0;
     let ul_start = Instant::now();
     let mut ul_mbps_samples: Vec<f64> = Vec::new();
+    // Adaptive payload sizing, same policy as download; the buffer is only
+    // rebuilt when the size actually changes.
+    let mut ul_chunk_bytes: u64 = UPLOAD_MIN_BYTES.max(1_000_000);
+    let mut upload_payload = vec![0u8; ul_chunk_bytes as usize];
 
     while Instant::now() < ul_deadline {
+        if upload_payload.len() as u64 != ul_chunk_bytes {
+            upload_payload = vec![0u8; ul_chunk_bytes as usize];
+        }
+        let req_bytes = upload_payload.len() as u64;
         let req_start = Instant::now();
         match client
             .post(&ul_url)
             .body(upload_payload.clone())
+            .timeout(remaining_budget(ul_deadline))
             .send()
             .await
         {
             Ok(resp) if resp.status().is_success() => {
                 let req_duration = req_start.elapsed().as_secs_f64();
-                ul_bytes += UPLOAD_CHUNK_SIZE as u64;
+                ul_bytes += req_bytes;
                 if req_duration > 0.0 {
-                    ul_mbps_samples
-                        .push((UPLOAD_CHUNK_SIZE as f64 * 8.0) / (req_duration * 1_000_000.0));
+                    let mbps = (req_bytes as f64 * 8.0) / (req_duration * 1_000_000.0);
+                    ul_mbps_samples.push(mbps);
+                    ul_chunk_bytes = adaptive_chunk_bytes(
+                        mbps,
+                        TARGET_REQUEST_SECS,
+                        UPLOAD_MIN_BYTES,
+                        UPLOAD_MAX_BYTES,
+                    );
                 }
                 let elapsed = ul_start.elapsed().as_secs_f64();
                 let frac = (elapsed / ul_secs as f64).min(1.0);
                 progress(Phase::LsUpload, frac);
             }
-            Err(_) => {}
+            Err(_) => {
+                ul_chunk_bytes = UPLOAD_MIN_BYTES;
+            }
             _ => {}
         }
     }
@@ -236,6 +351,20 @@ where
         None
     } else {
         Some(statistics::accurate_upload_bandwidth(&ul_mbps_samples))
+    };
+
+    // Honest failure: server selection succeeded but neither direction produced
+    // a usable transfer sample. Report an explicit error so the speedqx table
+    // shows an error row (and aggregation excludes this provider).
+    let error = if dl_mbps_samples.is_empty() && ul_mbps_samples.is_empty() {
+        Some("no successful transfers".to_string())
+    } else {
+        None
+    };
+    let availability = if error.is_some() {
+        ProviderAvailability::Failed
+    } else {
+        ProviderAvailability::Ran
     };
 
     Ok(ProviderResult {
@@ -251,11 +380,14 @@ where
         download_duration_s: dl_elapsed,
         upload_duration_s: ul_elapsed,
         packet_loss_pct,
-        error: None,
+        error,
         bandwidth_samples: Some(BandwidthSamples {
             download: dl_mbps_samples,
             upload: ul_mbps_samples,
         }),
+        availability,
+        latency_stats,
+        loaded_latency: None,
     })
 }
 
@@ -370,5 +502,8 @@ fn error_result(msg: String) -> ProviderResult {
         packet_loss_pct: None,
         error: Some(msg),
         bandwidth_samples: None,
+        availability: ProviderAvailability::Failed,
+        latency_stats: None,
+        loaded_latency: None,
     }
 }

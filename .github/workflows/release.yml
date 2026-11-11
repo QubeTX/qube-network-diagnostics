@@ -12,180 +12,159 @@
 #
 # Note that the GitHub Release will be created with a generated
 # title/body based on your changelogs.
+#
+# ── Deploy model (consistent with TR-300) ────────────────────────────────────
+# Tag-triggered. To cut a release: bump Cargo.toml version, merge to main
+# (CI runs → crates-publish.yml publishes the crate), then push a `vX.Y.Z` tag
+# (this workflow builds the 6 cargo-dist targets + Global MSI + shell/PS
+# installers and creates the GitHub Release; it then calls
+# windows-installers.yml with the same tag-push context to add the Corporate MSI
+# + the two Inno EXEs + sidecars, then macos-installer.yml adds the universal
+# signed/notarized direct PKG plus legacy-compatible DMG and sidecars for the exact
+# 32-asset release). The crate is
+# published by crates-publish.yml (NOT here) to avoid double-publishing.
 
 name: Release
 permissions:
-  "contents": "write"
+  "contents": "read"
 
-# This task will run whenever you push a git tag that looks like a version
-# like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
-# Various formats will be parsed into a VERSION and an optional PACKAGE_NAME, where
-# PACKAGE_NAME must be the name of a Cargo package in your workspace, and VERSION
-# must be a Cargo-style SemVer Version (must have at least major.minor.patch).
-#
-# If PACKAGE_NAME is specified, then the announcement will be for that
-# package (erroring out if it doesn't have the given version or isn't dist-able).
-#
-# If PACKAGE_NAME isn't specified, then the announcement will be for all
-# (dist-able) packages in the workspace with that version (this mode is
-# intended for workspaces with only one dist-able package, or with all dist-able
-# packages versioned/released in lockstep).
-#
-# If you push multiple tags at once, separate instances of this workflow will
-# spin up, creating an independent announcement for each one. However, GitHub
-# will hard limit this to 3 tags per commit, as it will assume more tags is a
-# mistake.
-#
-# If there's a prerelease-style suffix to the version, then the release(s)
-# will be marked as a prerelease.
+# Pull requests exercise cargo-dist planning only. Publishing accepts only an
+# exact stable `vMAJOR.MINOR.PATCH` tag; the plan job validates the tag again,
+# proves that its commit is on origin/main and has successful exact-SHA CI, and
+# requires that the matching crate version is already visible on crates.io
+# before any Apple signing secret can enter a downstream job.
 on:
   pull_request:
   push:
-    branches:
-      - main
     tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
 jobs:
-  source-check:
+  # Run 'dist plan' (or host) to determine what tasks we need to do
+  plan:
     runs-on: "ubuntu-22.04"
+    timeout-minutes: 75
+    permissions:
+      actions: read
+      contents: read
     outputs:
-      package_name: ${{ steps.meta.outputs.package_name }}
-      version: ${{ steps.meta.outputs.version }}
-      tag: ${{ steps.meta.outputs.tag }}
-      tag_flag: ${{ steps.meta.outputs.tag_flag }}
-      publishing: ${{ steps.meta.outputs.publishing }}
-      should_deploy: ${{ steps.meta.outputs.should_deploy }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      val: ${{ steps.plan.outputs.manifest }}
+      tag: ${{ github.event_name == 'push' && github.ref_name || '' }}
+      tag-flag: ${{ github.event_name == 'push' && format('--tag={0}', github.ref_name) || '' }}
+      publishing: ${{ github.event_name == 'push' }}
+      release-sha: ${{ steps.release_source.outputs.sha }}
+      version: ${{ steps.release_source.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           persist-credentials: false
           submodules: recursive
-      - id: meta
-        name: Resolve release metadata
+      - id: release_source
+        name: Validate tag, source, CI, and crates.io release gate
+        if: github.event_name == 'push'
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          package_name=$(sed -n 's/^name = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
-          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          tag=$GITHUB_REF_NAME
+          if [[ $GITHUB_REF_TYPE != tag || ! $tag =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Release tags must exactly match vMAJOR.MINOR.PATCH without leading zeroes: ${tag}" >&2
+            exit 1
+          fi
+          version=${tag#v}
 
-          publishing=false
-          should_deploy=false
-          tag=""
-          tag_flag=""
-
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            :
-          elif [ "$REF_TYPE" = "tag" ]; then
-            publishing=true
-            should_deploy=true
-            tag="$REF_NAME"
-            tag_flag="--tag=$tag"
-          else
-            tag="v$version"
-            tag_flag="--tag=$tag"
-
-            crate_status=$(curl -sS -o /tmp/crate-version.json -w "%{http_code}" "https://crates.io/api/v1/crates/${package_name}/${version}")
-            case "$crate_status" in
-              200) crate_exists=true ;;
-              404) crate_exists=false ;;
-              *)
-                echo "::error::Unexpected crates.io status ${crate_status} while checking ${package_name} ${version}"
-                cat /tmp/crate-version.json
-                exit 1
-                ;;
-            esac
-
-            release_exists=false
-            if gh release view "$tag" >/dev/null 2>&1; then
-              release_exists=true
-            fi
-
-            tag_exists=false
-            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-              tag_exists=true
-            fi
-
-            if [ "$crate_exists" = true ] && [ "$release_exists" = true ]; then
-              echo "Crate ${package_name} ${version} and GitHub release ${tag} already exist; this main push will verify but skip deploy."
-            elif [ "$crate_exists" = true ] || [ "$release_exists" = true ] || [ "$tag_exists" = true ]; then
-              echo "::error::Partial release state for ${tag}: crate_exists=${crate_exists}, release_exists=${release_exists}, tag_exists=${tag_exists}. Bump the patch version or repair the partial release manually."
-              exit 1
-            else
-              publishing=true
-              should_deploy=true
-            fi
+          release_sha=$(git rev-list -n 1 "$GITHUB_REF")
+          checkout_sha=$(git rev-parse HEAD)
+          if [[ $checkout_sha != "$release_sha" || $release_sha != "$GITHUB_SHA" ]]; then
+            echo "::error::Checked-out commit, tag commit, and workflow SHA do not match" >&2
+            exit 1
           fi
 
-          {
-            echo "package_name=$package_name"
-            echo "version=$version"
-            echo "tag=$tag"
-            echo "tag_flag=$tag_flag"
-            echo "publishing=$publishing"
-            echo "should_deploy=$should_deploy"
-          } >> "$GITHUB_OUTPUT"
-      - name: Check formatting
-        run: cargo fmt --check
-      - name: Run tests
-        run: cargo test --locked
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Verify crates.io package
-        run: cargo publish --dry-run --locked
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$release_sha" refs/remotes/origin/main; then
+            echo "::error::Tag ${tag} points to ${release_sha}, which is not reachable from origin/main" >&2
+            exit 1
+          fi
 
-  # Run 'dist plan' (or host) to determine what tasks we need to do
-  plan:
-    needs:
-      - source-check
-    if: ${{ github.event_name == 'pull_request' || needs.source-check.outputs.should_deploy == 'true' }}
-    runs-on: "ubuntu-22.04"
-    outputs:
-      val: ${{ steps.plan.outputs.manifest }}
-      tag: ${{ needs.source-check.outputs.tag }}
-      tag-flag: ${{ needs.source-check.outputs.tag_flag }}
-      publishing: ${{ needs.source-check.outputs.publishing }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - name: Install dist
-        # we specify bash to get pipefail; it guards against the `curl` command
-        # failing. otherwise `sh` won't catch that `curl` returned non-0
+          cargo metadata --locked --no-deps --format-version 1 \
+            > "$RUNNER_TEMP/cargo-metadata.json"
+          package_count=$(jq '[.packages[] | select(.name == "nd300")] | length' \
+            "$RUNNER_TEMP/cargo-metadata.json")
+          package_version=$(jq -r '.packages[] | select(.name == "nd300") | .version' \
+            "$RUNNER_TEMP/cargo-metadata.json")
+          if [[ $package_count != 1 || $package_version != "$version" ]]; then
+            echo "::error::Tag ${tag} does not exactly match the nd300 Cargo version (${package_version:-missing})" >&2
+            exit 1
+          fi
+
+          gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+            -f branch=main \
+            -f event=push \
+            -f head_sha="$release_sha" \
+            -f status=success \
+            -f per_page=100 \
+            > "$RUNNER_TEMP/exact-sha-ci.json"
+          if ! RELEASE_SHA=$release_sha jq -e '
+            [.workflow_runs[] | select(
+              .head_sha == env.RELEASE_SHA and
+              .head_branch == "main" and
+              .event == "push" and
+              .status == "completed" and
+              .conclusion == "success"
+            )] | length > 0
+          ' "$RUNNER_TEMP/exact-sha-ci.json" > /dev/null; then
+            echo "::error::No successful main-push CI run exists for exact release SHA ${release_sha}" >&2
+            exit 1
+          fi
+
+          crate_status=$(curl --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 60 \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 3 \
+            --output "$RUNNER_TEMP/crates-version.json" \
+            --write-out '%{http_code}' \
+            --header 'User-Agent: QubeTX/qube-network-diagnostics release gate (https://github.com/QubeTX/qube-network-diagnostics)' \
+            "https://crates.io/api/v1/crates/nd300/${version}")
+          if [[ $crate_status != 200 ]] || ! jq -e --arg version "$version" \
+            '.version.num == $version' "$RUNNER_TEMP/crates-version.json" > /dev/null; then
+            echo "::error::nd300 ${version} is not yet confirmed on crates.io; release signing will not start" >&2
+            exit 1
+          fi
+
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Validated ${tag}: Cargo/crates.io ${version}, origin/main ancestry, and exact-SHA CI."
+      - name: Require exact-source post-merge Apple qualification
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.release_source.outputs.sha }}
+        run: python3 scripts/wait-apple-qualification.py "$RELEASE_SHA"
+      - name: Install verified cargo-dist v0.31.0
         shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh"
-      - name: Cache dist
-        uses: actions/upload-artifact@v6
-        with:
-          name: cargo-dist-cache
-          path: ~/.cargo/bin/dist
-      # sure would be cool if github gave us proper conditionals...
-      # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
-      # functionality based on whether this is a pull_request, and whether it's from a fork.
-      # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
-      # but also really annoying to build CI around when it needs secrets to work right.)
-      - id: plan
-        shell: bash
+        run: bash scripts/install-cargo-dist.sh
+      - name: Create publishing plan
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ needs.source-check.outputs.publishing }}" = "true" ]; then
-            dist host --steps=create "${{ needs.source-check.outputs.tag_flag }}" --output-format=json > plan-dist-manifest.json
-          else
-            dist plan --output-format=json > plan-dist-manifest.json
-          fi
+          dist host --steps=create --tag="${{ github.ref_name }}" \
+            --output-format=json > plan-dist-manifest.json
+      - name: Create secret-free pull-request plan
+        if: github.event_name == 'pull_request'
+        run: |
+          dist plan --output-format=json > plan-dist-manifest.json
+      - id: plan
+        name: Record cargo-dist plan
+        run: |
+          test -s plan-dist-manifest.json
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -198,10 +177,13 @@ jobs:
   # Build and packages all the platform-specific things
   build-local-artifacts:
     name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
+    # This matrix includes Apple archive signing. Environment policy permits
+    # release tags only after repository rules and the secret-free plan gate.
+    environment: apple-signing
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
-    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
+    if: ${{ needs.plan.outputs.publishing == 'true' && fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null }}
     strategy:
       fail-fast: false
       # Target platforms/runners are computed by dist in create-release.
@@ -209,7 +191,6 @@ jobs:
       #
       # - runner: the github runner
       # - dist-args: cli flags to pass to dist
-      # - install-dist: expression to run to install dist on the runner
       #
       # Typically there will be:
       # - 1 "global" task that builds universal installers
@@ -218,7 +199,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container && matrix.container.image || null }}
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
     steps:
       - name: enable windows longpaths
@@ -228,15 +208,19 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Install Rust non-interactively if not already installed
+      - name: Require preprovisioned Rust in container builds
         if: ${{ matrix.container }}
+        shell: bash
         run: |
-          if ! command -v cargo > /dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          fi
-      - name: Install dist
-        run: ${{ matrix.install_dist.run }}
+          # Current targets use native hosted runners. A future container must
+          # provision rustup itself; never bootstrap it via a remote shell script.
+          command -v cargo
+          command -v rustup
+          rustup toolchain install 1.97.0 --profile minimal --no-self-update
+          rustup default 1.97.0
+      - name: Install verified cargo-dist v0.31.0
+        shell: bash
+        run: bash scripts/install-cargo-dist.sh
       # Get the dist-manifest
       - name: Fetch local artifacts
         uses: actions/download-artifact@v7
@@ -252,6 +236,33 @@ jobs:
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
+      # Apple artifacts are fail-closed: missing credentials, an identity/team
+      # mismatch, a signature trust failure, or a non-Accepted notary result
+      # stops this matrix job before cargo-dist can select upload files.
+      - name: Sign and notarize macOS artifacts
+        if: ${{ needs.plan.outputs.publishing == 'true' && contains(join(matrix.targets, ','), 'apple-darwin') }}
+        timeout-minutes: 30
+        shell: bash
+        env:
+          APPLE_TARGETS: ${{ join(matrix.targets, ' ') }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          read -r -a apple_targets <<< "$APPLE_TARGETS"
+          for target in "${apple_targets[@]}"; do
+            scripts/sign-notarize-macos.sh "$target" dist-manifest.json target/distrib
+            scripts/validate-macos-release.sh \
+              "target/distrib/nd300-${target}.tar.xz" \
+              "$target" \
+              "${RELEASE_TAG#v}" \
+              --require-trust
+          done
       - id: cargo-dist
         name: Post-build
         # We force bash here just because github makes it really hard to get values up
@@ -260,9 +271,11 @@ jobs:
         shell: bash
         run: |
           # Parse out what we just built and upload it to scratch storage
-          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "paths<<EOF"
+            dist print-upload-files-from-manifest --manifest dist-manifest.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
       - name: "Upload artifacts"
@@ -280,19 +293,15 @@ jobs:
       - build-local-artifacts
     runs-on: "ubuntu-22.04"
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Install cached dist
-        uses: actions/download-artifact@v7
-        with:
-          name: cargo-dist-cache
-          path: ~/.cargo/bin/
-      - run: chmod +x ~/.cargo/bin/dist
+      - name: Install verified cargo-dist v0.31.0
+        shell: bash
+        run: bash scripts/install-cargo-dist.sh
       # Get all the local artifacts for the global tasks to use (for e.g. checksums)
       - name: Fetch local artifacts
         uses: actions/download-artifact@v7
@@ -307,9 +316,11 @@ jobs:
           echo "dist ran successfully"
 
           # Parse out what we just built and upload it to scratch storage
-          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "paths<<EOF"
+            jq --raw-output ".upload_files[]" dist-manifest.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
       - name: "Upload artifacts"
@@ -325,10 +336,15 @@ jobs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    # Publishing requires every planned local and global artifact job to have
+    # completed successfully. A skipped build is not release-ready.
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && needs.build-global-artifacts.result == 'success' && needs.build-local-artifacts.result == 'success' }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.host.outputs.manifest }}
@@ -337,12 +353,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Install cached dist
-        uses: actions/download-artifact@v7
-        with:
-          name: cargo-dist-cache
-          path: ~/.cargo/bin/
-      - run: chmod +x ~/.cargo/bin/dist
+      - name: Install verified cargo-dist v0.31.0
+        shell: bash
+        run: bash scripts/install-cargo-dist.sh
       # Fetch artifacts from scratch-storage
       - name: Fetch artifacts
         uses: actions/download-artifact@v7
@@ -374,79 +387,202 @@ jobs:
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
+      - name: Harden Windows PowerShell installer for in-place updates
+        shell: pwsh
+        run: |
+          ./scripts/harden-cargo-dist-windows-installer.ps1 `
+            -Path artifacts/nd300-installer.ps1 `
+            -ExpectedVersion '${{ needs.plan.outputs.version }}'
       - name: Add legacy installer aliases
         shell: bash
         run: |
-          set -euo pipefail
+          # The homepage wrapper (install-nd300.sh / install-nd300.ps1) and older
+          # installs reference nd-300-installer.{sh,ps1}; keep these aliases of the
+          # canonical cargo-dist nd300-installer.{sh,ps1} so they keep resolving.
           if [ -f artifacts/nd300-installer.sh ]; then
             cp artifacts/nd300-installer.sh artifacts/nd-300-installer.sh
           fi
           if [ -f artifacts/nd300-installer.ps1 ]; then
             cp artifacts/nd300-installer.ps1 artifacts/nd-300-installer.ps1
           fi
+      - name: Verify local base artifact set before publication
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/expected-assets.txt" <<'EOF'
+          dist-manifest.json
+          nd-300-installer.ps1
+          nd-300-installer.sh
+          nd300-aarch64-apple-darwin.tar.xz
+          nd300-aarch64-apple-darwin.tar.xz.sha256
+          nd300-aarch64-unknown-linux-gnu.tar.xz
+          nd300-aarch64-unknown-linux-gnu.tar.xz.sha256
+          nd300-installer.ps1
+          nd300-installer.sh
+          nd300-x86_64-apple-darwin.tar.xz
+          nd300-x86_64-apple-darwin.tar.xz.sha256
+          nd300-x86_64-pc-windows-msvc.msi
+          nd300-x86_64-pc-windows-msvc.msi.sha256
+          nd300-x86_64-pc-windows-msvc.zip
+          nd300-x86_64-pc-windows-msvc.zip.sha256
+          nd300-x86_64-unknown-linux-gnu.tar.xz
+          nd300-x86_64-unknown-linux-gnu.tar.xz.sha256
+          nd300-x86_64-unknown-linux-musl.tar.xz
+          nd300-x86_64-unknown-linux-musl.tar.xz.sha256
+          sha256.sum
+          source.tar.gz
+          source.tar.gz.sha256
+          EOF
+          sort -o "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/expected-assets.txt"
+          find artifacts -maxdepth 1 -type f -exec basename {} \; \
+            | sort > "$RUNNER_TEMP/local-assets.txt"
+          if ! diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/local-assets.txt"; then
+            echo "Refusing to publish an incomplete or unexpected base artifact set" >&2
+            exit 1
+          fi
+          echo "Verified all 22 local base assets before publication."
+      # Attest only after macOS signing/notarization and alias generation so
+      # provenance binds the exact bytes that are about to be published.
+      - name: Attest final cargo-dist artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/*
       - name: Create GitHub Release
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
-          RELEASE_COMMIT: "${{ github.sha }}"
+          RELEASE_COMMIT: "${{ needs.plan.outputs.release-sha }}"
         run: |
           # Write and read notes from a file to avoid quoting breaking things
-          echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
+          printf '%s\n' "$ANNOUNCEMENT_BODY" > "$RUNNER_TEMP/notes.txt"
+          release_args=(
+            --target "$RELEASE_COMMIT"
+            --title "$ANNOUNCEMENT_TITLE"
+            --notes-file "$RUNNER_TEMP/notes.txt"
+          )
+          if [[ -n $PRERELEASE_FLAG ]]; then
+            release_args+=("$PRERELEASE_FLAG")
+          fi
+          gh release create "${{ needs.plan.outputs.tag }}" "${release_args[@]}" artifacts/*
+      - name: Verify base release asset set
+        shell: bash
+        run: |
+          gh release view "${{ needs.plan.outputs.tag }}" \
+            --json assets \
+            --jq '.assets[].name' \
+            | sort > "$RUNNER_TEMP/actual-assets.txt"
+          if ! diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"; then
+            echo "Base cargo-dist release asset set is incomplete or unexpected" >&2
+            exit 1
+          fi
+          echo "Verified all 22 base release assets before Windows add-ons."
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
-
-  publish-crate:
+  # Re-download the exact public release archives anonymously on native Apple
+  # Silicon and Intel runners. This catches upload/repack/CDN mistakes and asks
+  # Gatekeeper to assess the distributed bytes, not only the pre-upload copy.
+  verify-published-macos:
+    name: verify-published-macos (${{ matrix.target }})
     needs:
-      - source-check
       - plan
-      - build-local-artifacts
-      - build-global-artifacts
       - host
-    if: ${{ always() && needs.source-check.outputs.should_deploy == 'true' && needs.host.result == 'success' }}
-    runs-on: "ubuntu-22.04"
-    env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.plan.outputs.release-sha }}
           persist-credentials: false
-          submodules: recursive
-      - name: Publish crate to crates.io
+      - name: Download and validate public signed archive
         shell: bash
         env:
-          PACKAGE_NAME: ${{ needs.source-check.outputs.package_name }}
-          PACKAGE_VERSION: ${{ needs.source-check.outputs.version }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
-            echo "::error::CARGO_REGISTRY_TOKEN is not configured."
-            exit 1
-          fi
+          archive="nd300-${RELEASE_TARGET}.tar.xz"
+          base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          mkdir -p "$RUNNER_TEMP/public-release"
+          for asset in "$archive" "${archive}.sha256"; do
+            curl --proto '=https' --tlsv1.2 \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              --connect-timeout 15 \
+              --max-time 300 \
+              --retry 8 \
+              --retry-all-errors \
+              --retry-delay 5 \
+              --output "$RUNNER_TEMP/public-release/$asset" \
+              "${base_url}/${asset}"
+          done
+          scripts/validate-macos-release.sh \
+            "$RUNNER_TEMP/public-release/$archive" \
+            "$RELEASE_TARGET" \
+            "$RELEASE_VERSION" \
+            --require-trust
 
-          status=$(curl -sS -o /tmp/crate-version.json -w "%{http_code}" "https://crates.io/api/v1/crates/${PACKAGE_NAME}/${PACKAGE_VERSION}")
-          case "$status" in
-            200)
-              echo "${PACKAGE_NAME} ${PACKAGE_VERSION} is already published on crates.io; skipping."
-              ;;
-            404)
-              cargo publish --locked
-              ;;
-            *)
-              echo "::error::Unexpected crates.io status ${status} while checking ${PACKAGE_NAME} ${PACKAGE_VERSION}"
-              cat /tmp/crate-version.json
-              exit 1
-              ;;
-          esac
+  # Build, attest, upload, and verify the six Windows add-on assets inside the
+  # tag-push caller context. This keeps the OIDC source digest bound to the
+  # release SHA even if main advances while the release is running.
+  windows-installers:
+    name: Windows installer add-ons
+    needs:
+      - plan
+      - host
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/windows-installers.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+      source_sha: ${{ needs.plan.outputs.release-sha }}
+
+  # Build the universal Apple Installer channel only after the complete
+  # 28-asset Windows gate is verified. The reusable call retains the tag-push
+  # OIDC context, so all four additional attestations bind to the same exact SHA.
+  macos-installer:
+    name: macOS universal direct PKG and compatibility DMG
+    needs:
+      - plan
+      - windows-installers
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && needs.windows-installers.result == 'success' }}
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/macos-installer.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+      source_sha: ${{ needs.plan.outputs.release-sha }}
+      version: ${{ needs.plan.outputs.version }}
 
   announce:
     needs:
       - plan
       - host
+      - verify-published-macos
+      - windows-installers
+      - macos-installer
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' }}
+    if: ${{ always() && needs.host.result == 'success' && needs.verify-published-macos.result == 'success' && needs.windows-installers.result == 'success' && needs.macos-installer.result == 'success' }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
