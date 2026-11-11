@@ -6,6 +6,12 @@ For the technical version with versions, file paths, and PR links, see [CHANGELO
 
 ---
 
+## November 11, 2026 — Reduce repeated release work
+
+**Behind the scenes**
+
+- Build Windows installers from the verified release programs already produced, and reuse the installed security-checking tool between runs. Keep the integrity checks, installer tests, and checks for newly reported security problems.
+
 ## November 11, 2026 — Restore complete Mac release delivery
 
 **Fixed**

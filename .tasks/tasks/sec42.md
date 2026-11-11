@@ -27,13 +27,13 @@ Functional bar: current vulnerabilities are either demonstrably obsolete or fixe
 - [x] Every PR has a documented current-source relevance disposition
 - [x] Regression tests, security review and cross-platform review pass
 - [x] Required local and exact-head CI/release preparation checks pass for the recovery correction
-- [ ] Exact published 4.0.2 SHA passes main CI, crate publication and signed Mac qualification
-- [ ] Existing immutable release passes all platforms, exactly 32 assets, checksums, attestations and native trust/bridges
-- [ ] Homepage fallback is deployed and verified
+- [x] Exact published 4.0.2 SHA passes main CI, crate publication and signed Mac qualification
+- [x] Existing immutable release passes all platforms, exactly 32 assets, checksums, attestations and native trust/bridges
+- [x] Homepage fallback is deployed and verified
 - [x] Original PRs are merged or explicitly superseded with evidence
 
 ## Status
-The operator resumed testing and deployment after the release-path audit. Recover existing v4.0.2 without another product version: withdraw the unpublished 4.0.3 preparation, retain the seven-name credential interface correction, and first run a manual protected-main caller through the real reusable preflight with no publication. Then dispatch v4.0.2's existing standalone repair against exact qualified source `ceb10bf6e5818a36200c8292c78c3202160de864`, add only its four absent Mac assets, verify all 32, promote latest and complete both native compatibility bridges. Current latest is the complete 4.0.1; automatic crate publishing remains temporarily disabled until safe resumption. Homepage PR #23 is being realigned to 4.0.2. Record exact recovery receipts in `docs/release-evidence-v4.0.2.md`; the original failed release run must remain honestly identified.
+The 4.0.2 CLI release is complete and latest: 32 verified public assets, unchanged original28, all exact-source/tag attestations, both native package lifecycles and both old-updater compatibility bridges. Original root run42972625036 remains failed; successful repair42982227834 attempt3 supplies separate Mac evidence. Real reusable preflight42981719549 passed; main d7c0d50 CI/signing passed and re-enabled publisher42982360234 skipped the already-published crate. Homepage PR23 merged56b2c56; production deployment dpl_EjEk4wmkDGz9ftMRfZkU5E2ZNkrM is READY at that SHA and Chrome verified live4.0.2, directPKG selection and zero console warnings/errors. All release gates are complete. Detailed receipts: docs/release-evidence-v4.0.2.md.
 
 ## Activity
 - 2026-11-10 — started current-source investigation and authorized deployment scope; confirmed #42 remains vulnerable on main and rejected original incompatible escaping strategy (agent: codex)
@@ -48,3 +48,5 @@ The operator resumed testing and deployment after the release-path audit. Recove
 - 2026-11-11 — 4.0.3 local gates and all five exact-candidate workflows passed; merged PR #47 at 1364ccc and started exact-main qualification. Preserved complete 4.0.1 latest downloads during the correction (agent: codex)
 - 2026-11-11 — operator explicitly paused publication and requested investigation before further version churn. Stopped main CI/automatic crate publication and non-publishing qualification; confirmed no 4.0.3 tag or crate. Auditing existing immutable-tag repair route and prepublication coverage gaps; latest remains 4.0.1 (agent: codex)
 - 2026-11-11 — operator resumed testing and deployment in execution mode. Withdrawing unused 4.0.3 version bump and implementing publishing-free reusable preflight before same-version 4.0.2 repair; no retagging or existing-asset overwrite (agent: codex)
+- 2026-11-11 — real reusable preflight and same-version repair passed; verified all32 public digests/source-ref attestations and unchanged28, both native lifecycles/bridges; preserved failed root record and documented Apple transport-only retries. Homepage merged; production verification pending (agent: codex)
+- 2026-11-11 — homepage production READY at56b2c56 and live browser verification passed; completed security release and delivery work. Separate CI efficiency task cieff retains its own verification gates (agent: codex)

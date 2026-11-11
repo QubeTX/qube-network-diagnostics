@@ -142,6 +142,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test-installer-tool-integrity.ps1
+      - name: Test exact-release Windows binary preparation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-windows-release-binaries.ps1
       - name: Test cargo-dist download integrity
         shell: bash
         run: bash scripts/test-cargo-dist-install.sh
@@ -248,12 +252,25 @@ jobs:
   audit:
     name: Security audit
     runs-on: ubuntu-latest
+    env:
+      CARGO_AUDIT_VERSION: '0.23.0'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.0
-      - name: Install cargo-audit
-        run: cargo install --locked cargo-audit
-      - run: cargo audit
+      - name: Restore exact cargo-audit executable
+        id: cargo_audit_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nd300-cargo-audit/bin/cargo-audit
+          key: cargo-audit-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_AUDIT_VERSION }}-rust-1.97.0
+      - name: Install and verify pinned cargo-audit
+        shell: bash
+        env:
+          EXACT_CACHE_HIT: ${{ steps.cargo_audit_cache.outputs.cache-hit }}
+        run: bash scripts/ensure-cargo-audit.sh "$CARGO_AUDIT_VERSION" "$RUNNER_TEMP/nd300-cargo-audit" "$EXACT_CACHE_HIT"
+      - name: Audit with freshly fetched advisory data
+        shell: bash
+        run: '"$RUNNER_TEMP/nd300-cargo-audit/bin/cargo-audit" audit'
 
   dist-plan:
     name: cargo-dist plan
@@ -279,6 +296,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: shellcheck -x scripts/*.sh
+      - name: Test cargo-audit executable caching
+        shell: bash
+        run: bash scripts/test-cargo-audit-cache.sh
       - name: Test macOS release metadata parser
         shell: bash
         run: bash scripts/test-macos-release-parsers.sh

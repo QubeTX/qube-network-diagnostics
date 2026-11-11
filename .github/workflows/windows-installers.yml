@@ -47,6 +47,16 @@ on:
         description: "Release tag to attach installers to (e.g. v3.1.0)"
         required: true
         type: string
+      validate_only:
+        description: "Read-only packaging proof using existing release bytes; never publishes"
+        required: false
+        default: false
+        type: boolean
+      source_sha:
+        description: "Exact existing release tag commit (required for read-only validation)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -63,17 +73,18 @@ jobs:
     # same SHA as an explicit validated input. Manual dispatch is separately
     # bound by the immutable-tag resolver before any source is checked out.
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' &&
-       startsWith(github.ref, 'refs/tags/v') &&
-       inputs.source_sha == github.sha)
+      !inputs.validate_only &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == format('refs/tags/{0}', inputs.tag)) ||
+       (github.event_name == 'push' &&
+        startsWith(github.ref, 'refs/tags/v') &&
+        inputs.source_sha == github.sha))
 
     env:
       ND300_TARGET_REPO: ${{ github.repository }}
       ND300_TRIGGER_TAG: ${{ inputs.tag }}
       # Manual repair must be dispatched with `--ref <tag>` so the workflow's
       # own OIDC/source SHA and the checked-out release source remain identical.
-      ND300_TRIGGER_SHA: ${{ inputs.source_sha || github.sha }}
+      ND300_TRIGGER_SHA: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.source_sha }}
 
     steps:
       - name: Enable Windows long paths
@@ -198,132 +209,21 @@ jobs:
             Add-Content -Path $env:GITHUB_OUTPUT -Value "skip=false"
           }
 
-      # rust-toolchain.toml (if present) or dtolnay/rust-toolchain@stable gives
-      # cargo-wix + Inno Setup a Rust version that matches the repo.
-      - name: Set up Rust toolchain
-        if: steps.preflight.outputs.skip != 'true'
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - name: Verify checked-out Cargo version
+      - name: Acquire and verify exact release Windows binaries
         if: steps.preflight.outputs.skip != 'true'
         shell: pwsh
-        run: |
-          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw "Could not read Cargo metadata" }
-          $packages = @($metadata.packages | Where-Object { $_.name -eq "nd300" })
-          if ($packages.Count -ne 1 -or $packages[0].version -ne "${{ steps.tag.outputs.version }}") {
-            throw "Release tag and checked-out nd300 Cargo version do not match"
-          }
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_SHA: ${{ steps.trusted_tag.outputs.sha }}
+        run: ./scripts/prepare-windows-release-binaries.ps1 -Repository $env:ND300_TARGET_REPO -Tag $env:RELEASE_TAG -SourceSha $env:RELEASE_SHA
 
-      - name: Build nd300.exe + speedqx.exe (release)
+      - name: Build all Windows installer add-ons from verified release binaries
         if: steps.preflight.outputs.skip != 'true'
         shell: pwsh
-        run: cargo build --release --locked
-
-      - name: Build Corporate MSI via bare candle + light
-        if: steps.preflight.outputs.skip != 'true'
-        shell: pwsh
-        run: |
-          # The Corporate MSI is built with WiX 3 candle/light directly (NOT
-          # through cargo-wix). cargo-wix compiles every .wxs in `wix/` and links
-          # them into ONE MSI; putting corporate.wxs alongside main.wxs hits
-          # LGHT0089/0091/0092 "Multiple entry sections" + "Duplicate symbol"
-          # errors. corporate.wxs lives in wix-corporate/ (a separate directory)
-          # precisely so cargo-wix's default scan of wix/ produces only the Global
-          # MSI cleanly.
-          #
-          # WiX 3.x is preinstalled on windows-2022 runners; $env:WIX points at
-          # the install root ($env:WIX\bin\candle.exe + light.exe).
-          #
-          # -sice:ICE38 / ICE64 / ICE91 suppress per-user MSI convention
-          # violations from light (Components in user-profile dirs wanting HKCU
-          # RegistryValue KeyPaths, Directories wanting RemoveFile/RemoveFolder).
-          # For our small install they're cosmetic — install/uninstall both work;
-          # the only consequence is an empty bin\ folder left after uninstall.
-          $candle = "$env:WIX\bin\candle.exe"
-          $light  = "$env:WIX\bin\light.exe"
-          if (-not (Test-Path $candle)) { throw "candle.exe not found at $candle" }
-          if (-not (Test-Path $light))  { throw "light.exe not found at $light" }
-
-          New-Item -ItemType Directory -Force -Path target\wix | Out-Null
-
-          # Quote -d... args. Without quotes, PowerShell parses `-dVersion=3.1.0`
-          # as `-dVersion=3` followed by `.1.0` (the dots break tokenization), so
-          # candle sees `.1.0` as a source filename and errors CNDL0103. Quoting
-          # forces the whole assignment to be one string literal.
-          & $candle -arch x64 `
-            "-dVersion=${{ steps.tag.outputs.version }}" `
-            "-dCargoTargetBinDir=target\release" `
-            -out target\wix\corporate.wixobj `
-            wix-corporate\corporate.wxs
-          if ($LASTEXITCODE -ne 0) { throw "candle failed with exit $LASTEXITCODE" }
-
-          & $light -sice:ICE38 -sice:ICE64 -sice:ICE91 `
-            -ext WixUIExtension `
-            -out target\wix\nd300-x86_64-pc-windows-msvc-corporate.msi `
-            target\wix\corporate.wixobj
-          if ($LASTEXITCODE -ne 0) { throw "light failed with exit $LASTEXITCODE" }
-
-          if (-not (Test-Path "target\wix\nd300-x86_64-pc-windows-msvc-corporate.msi")) {
-            throw "Corporate MSI build failed — output file missing"
-          }
-          Write-Host "Corporate MSI built"
-
-      # Chocolatey is preinstalled on windows-2022 runners. Installs Inno Setup 6
-      # to C:\Program Files (x86)\Inno Setup 6\.
-      - name: Install Inno Setup 6
-        if: steps.preflight.outputs.skip != 'true'
-        shell: pwsh
-        run: |
-          choco install innosetup -y --no-progress --no-color
-          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\iscc.exe")) {
-            throw "Inno Setup install failed — iscc.exe missing"
-          }
-          Write-Host "Inno Setup 6 installed"
-
-      - name: Build Global EXE installer
-        if: steps.preflight.outputs.skip != 'true'
-        shell: pwsh
-        run: |
-          # /DMyAppVersion overrides the #define in inno/global.iss so the version
-          # embedded in the EXE matches the release tag. Quote the /D... define to
-          # survive PowerShell's dot-aware tokenizer (same reason candle args are
-          # quoted above).
-          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DMyAppVersion=${{ steps.tag.outputs.version }}" inno\global.iss
-          if (-not (Test-Path "inno\Output\nd300-x86_64-pc-windows-msvc-setup.exe")) {
-            throw "Global EXE installer build failed — output missing"
-          }
-          Write-Host "Global EXE installer built"
-
-      - name: Build Corporate EXE installer
-        if: steps.preflight.outputs.skip != 'true'
-        shell: pwsh
-        run: |
-          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DMyAppVersion=${{ steps.tag.outputs.version }}" inno\corporate.iss
-          if (-not (Test-Path "inno\Output\nd300-x86_64-pc-windows-msvc-corporate-setup.exe")) {
-            throw "Corporate EXE installer build failed — output missing"
-          }
-          Write-Host "Corporate EXE installer built"
-
-      - name: Compute SHA256 sidecars
-        if: steps.preflight.outputs.skip != 'true'
-        shell: pwsh
-        run: |
-          $files = @(
-            "target\wix\nd300-x86_64-pc-windows-msvc-corporate.msi",
-            "inno\Output\nd300-x86_64-pc-windows-msvc-setup.exe",
-            "inno\Output\nd300-x86_64-pc-windows-msvc-corporate-setup.exe"
-          )
-          foreach ($f in $files) {
-            $hash = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
-            $name = Split-Path $f -Leaf
-            # cargo-dist sidecar format: lowercase-hex SHA256, space, asterisk,
-            # filename. No trailing newline. Parsed by
-            # src/actions/update.rs::parse_sha256_sidecar.
-            $line = "$hash *$name"
-            [System.IO.File]::WriteAllText("$f.sha256", $line)
-            Write-Host "  $name  ->  $hash"
-          }
+        env:
+          RELEASE_VERSION: ${{ steps.tag.outputs.version }}
+        run: ./scripts/build-windows-addon-installers.ps1 -Version $env:RELEASE_VERSION
 
       - name: Attest Windows installer add-ons
         if: steps.preflight.outputs.skip != 'true'
@@ -438,3 +338,44 @@ jobs:
             throw "Missing or invalid exact-source attestations: $($names -join ', ')"
           }
           Write-Host "Verified exact-source GitHub attestations for all 28 release assets."
+
+  validate-packaging:
+    name: Read-only exact-release Windows packaging proof
+    if: github.event_name == 'workflow_dispatch' && inputs.validate_only
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_SHA: ${{ inputs.source_sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout candidate packaging tooling
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Checkout exact existing release installer sources
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: release-source
+          persist-credentials: false
+      - name: Acquire and verify the existing release pair
+        shell: pwsh
+        run: ./scripts/prepare-windows-release-binaries.ps1 -Repository $env:GITHUB_REPOSITORY -Tag $env:RELEASE_TAG -SourceSha $env:RELEASE_SHA -RepoRoot (Join-Path $env:GITHUB_WORKSPACE 'release-source')
+      - name: Build installer add-ons without Rust compilation or publication
+        shell: pwsh
+        run: ./scripts/build-windows-addon-installers.ps1 -Version ($env:RELEASE_TAG.Substring(1)) -RepoRoot (Join-Path $env:GITHUB_WORKSPACE 'release-source')
+      - name: Preserve read-only packaging evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-packaging-proof-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            release-source/target/windows-release-input.json
+            release-source/target/wix/*.msi
+            release-source/target/wix/*.sha256
+            release-source/inno/Output/*.exe
+            release-source/inno/Output/*.sha256
