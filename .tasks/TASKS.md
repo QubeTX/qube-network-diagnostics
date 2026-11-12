@@ -14,7 +14,7 @@
 
 ## Active
 
-- [ ] **Skip expensive checks for documentation-only changes** - prove complete diffs, preserve full code/release gates, and validate the hosted fast path (owner codex) #docci
+- [ ] **Skip expensive checks for documentation-only changes** - implementation merged with full code/release gates; verify exact-main qualification and hosted docs fast path (owner codex) #docci
   - [x] Implement and test classification, required checks and release evidence boundaries
   - [ ] Pass independent review and full implementation CI, then merge
   - [ ] Verify documentation-only PR/main execution and record completion evidence
