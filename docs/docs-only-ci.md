@@ -97,9 +97,49 @@ validation also caught GitHub's transitive skipped-job behavior before merge;
 the full marker now uses an explicit cancellation-aware condition with positive
 classification and required-gate results, and the fresh run above proved it.
 
-Exact-merge main CI [43153071950](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153071950),
-signed Mac qualification [43153071864](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153071864),
+Exact-merge main CI [43153071950](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153071950)
 and parity [43153071927](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153071927)
-are being verified separately. The documentation-only PR/main receipts remain
-open until observed; a green implementation PR alone does not prove the skip
-path. This workflow change does not create a product version or release tag.
+passed. The production verifier accepted that exact main SHA as `mode=full`.
+Publisher [43153761584](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153761584)
+verified that evidence, then skipped the already-published 4.0.2 crate.
+Signed Mac qualification [43153071864](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153071864)
+passed all nine candidate qualification jobs: both identity preflights, both
+native builds, both signed/notarized archives, the universal PKG/DMG, and both
+native installer lifecycles. The unchanged production
+`wait-apple-qualification.py` helper accepted this exact implementation SHA.
+
+### Observed documentation-only delivery
+
+[PR #52](https://github.com/QubeTX/qube-network-diagnostics/pull/52) changed only
+three Markdown files. Its head was `749af0a98920a5317addee52c9ad76edb453732a`;
+its main merge was `198d452ff3c0f2c6e03359b00c363f1669fe7f73`.
+
+| Workflow | PR receipt and elapsed time | Main receipt and elapsed time |
+|---|---|---|
+| CI | [43153394417](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153394417), 16 s | [43153885520](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153885520), 18 s |
+| Mac scope check, all native jobs skipped | [43153394385](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153394385), 7 s | [43153885437](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153885437), 11 s |
+| Parity scope check, replay skipped | [43153394507](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153394507), 8 s | [43153885553](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153885553), 8 s |
+| Release scope check, planning skipped | [43153394487](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153394487), 8 s | Not triggered on a main push |
+| Publisher evidence check, publishing job skipped | Not eligible for PRs | [43153924031](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153924031), 11 s |
+
+Both CI runs succeeded with exactly the classifier, policy fixtures,
+ShellCheck, documentation checks and `CI required`. Every expensive CI job and
+`Full CI` was skipped. The Mac, parity and PR release workflows ran only their
+classifier. No Windows origin matrix ran for either documentation event.
+
+The main publisher returned `mode=docs`, `full=false`, tied to CI run
+`43153885520`, attempt 1, and the exact merge SHA. Its entire publishing job was
+skipped with no steps, so Rust setup and registry-secret access did not run.
+Calling the production verifier on the same SHA with `--allow-docs` succeeded;
+calling it without that flag refused the source with
+`Documentation-only CI cannot qualify a release`. No tag was created to test
+this refusal.
+
+For comparison, the preceding documentation commit `c6044c1` ran full CI in
+[237 seconds](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/42987331785)
+and full signed Mac qualification in
+[579 seconds](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/42987331783).
+These are observed workflow-creation-to-last-job-completion times, not a
+guarantee for future runner queues. The PR and main results prove actual skips,
+not just successful fixture tests. This workflow change creates no product
+version or release tag.
