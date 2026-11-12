@@ -75,6 +75,31 @@ more than 300 changed files. Other fixtures cover strict required-check results,
 paginated exact-run evidence, failed/cancelled/missing markers, retries and the
 existing Apple source/qualification policy.
 
-Hosted implementation and documentation-only delivery receipts will be recorded
-here after those checks actually run. This workflow change does not create a
-new product version or release tag.
+### Hosted implementation
+
+[PR #51](https://github.com/QubeTX/qube-network-diagnostics/pull/51) merged as
+`dbc784b3b51702928603d8041f045a78bbd6a0fc`. Its final head,
+`9566695971db61e09723761d88a53e341e430b72`, passed the full path:
+
+| Gate | Successful run |
+|---|---|
+| Full cross-platform CI, including `CI required` and `Full CI` | [43151456264](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43151456264) |
+| Windows installer build and all 12 lifecycle/transition/refusal rows | [43151456322](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43151456322) |
+| Native Intel and Apple Silicon candidates | [43151456336](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43151456336) |
+| Complete recorded-trace parity | [43151456602](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43151456602) |
+| Release planning | [43151456423](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43151456423) |
+
+The `classify_jobs` marker interpreter read the real final PR job metadata and
+returned `full`. Full release verification separately requires a successful
+latest main-push run; PR metadata alone cannot authorize publishing.
+Independent review and all 65 local policy/boundary fixtures passed. Hosted
+validation also caught GitHub's transitive skipped-job behavior before merge;
+the full marker now uses an explicit cancellation-aware condition with positive
+classification and required-gate results, and the fresh run above proved it.
+
+Exact-merge main CI [43153071950](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153071950),
+signed Mac qualification [43153071864](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153071864),
+and parity [43153071927](https://github.com/QubeTX/qube-network-diagnostics/actions/runs/43153071927)
+are being verified separately. The documentation-only PR/main receipts remain
+open until observed; a green implementation PR alone does not prove the skip
+path. This workflow change does not create a product version or release tag.
