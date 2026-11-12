@@ -85,7 +85,10 @@ jobs:
   full-ci:
     name: Full CI
     needs: [changes, required]
-    if: ${{ needs.changes.outputs.docs_only == 'false' }}
+    # Override implicit success(): the required gate has an intentionally
+    # skipped documentation ancestor on every full run. Still require both
+    # direct prerequisites to succeed, and never emit a marker after cancel.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.required.result == 'success' && needs.changes.outputs.docs_only == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - run: echo 'The complete code and release validation path passed for this source.'

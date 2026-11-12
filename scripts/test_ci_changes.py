@@ -283,7 +283,12 @@ class RequiredGateTests(unittest.TestCase):
             self.assertEqual(jobs[name]["if"], "${{ needs.changes.outputs.docs_only == 'false' }}")
         self.assertEqual(set(jobs["full-ci"]["needs"]), {"changes", "required"})
         self.assertEqual(jobs["full-ci"]["name"], "Full CI")
-        self.assertEqual(jobs["full-ci"]["if"], "${{ needs.changes.outputs.docs_only == 'false' }}")
+        # Hosted run 43150407308 exposed transitive skipped-job propagation:
+        # a successful required gate alone does not override implicit success().
+        # The explicit status function must coexist with positive direct gates.
+        self.assertEqual(jobs["full-ci"]["if"],
+                         "${{ !cancelled() && needs.changes.result == 'success' && "
+                         "needs.required.result == 'success' && needs.changes.outputs.docs_only == 'false' }}")
         self.assertEqual(jobs["documentation"]["name"], "Documentation checks")
         self.assertNotIn("if", jobs["apple-policy"])
         self.assertNotIn("if", jobs["shellcheck"])

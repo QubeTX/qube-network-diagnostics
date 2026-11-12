@@ -22,8 +22,9 @@ Functional: ordinary docs-only PR/main changes skip expensive Rust/parity/native
 - [ ] Real documentation-only PR/main runs skip expensive jobs, keep CI required green, and leave publication disabled; receipts recorded
 
 ## Status
-Implemented in codex/docs-only-ci at baseline c6044c193c3c1055741e7292cb6be2960dacb4bd. All 65 Python fixtures, all-workflow Actionlint and independent security/CI review passed. The verifier also refused a real pre-marker CI run instead of mistaking its aggregate success for full proof. Next: full hosted implementation PR/main checks, then a real docs-only PR/main proving skipped expensive jobs, green required checks and publisher no-op. No product/version changes.
+Implemented in codex/docs-only-ci at baseline c6044c193c3c1055741e7292cb6be2960dacb4bd. All 65 Python fixtures, all-workflow Actionlint and independent security/CI review passed. Hosted CI 43150407308 passed required checks but exposed an implicit-status propagation issue in the Full CI marker; its condition is corrected and fresh hosted proof is pending. The verifier also refused a real pre-marker CI run instead of mistaking aggregate success for full proof. Next: exact-head/main full implementation checks, then a real docs-only PR/main proving skipped expensive jobs, green required checks and publisher no-op. No product/version changes.
 
 ## Activity
+- 2026-11-11 — full hosted CI 43150407308 passed its required checks but exposed implicit success propagation skipping the Full CI marker; corrected the condition to require successful classification and required gates with an explicit cancellation-aware status function; fresh hosted validation remains required before merge (agent: codex)
 - 2026-11-11 — operator authorized documentation-only CI optimization and delivery; established narrow allowlist, complete-diff and exact-release-proof requirements (agent: codex)
 - 2026-11-11 — implemented shared classification, strict required/full markers, native/parity gates and exact-run publication evidence; independent review and 65 focused fixtures passed, including explicit shallow-history rejection; hosted gates remain open (agent: codex)
