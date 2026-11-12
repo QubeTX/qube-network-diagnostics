@@ -14,17 +14,16 @@
 
 ## Active
 
-- [ ] **Skip expensive checks for documentation-only changes** - implementation merged with full code/release gates; verify exact-main qualification and hosted docs fast path (owner codex) #docci
-  - [x] Implement and test classification, required checks and release evidence boundaries
-  - [ ] Pass independent review and full implementation CI, then merge
-  - [ ] Verify documentation-only PR/main execution and record completion evidence
-
 - [ ] **Compare live SpeedQX with Ookla and assess measurement accuracy** - alternating browser trials, inspect both measurement contracts, retain limits and correct demonstrated flaws (owner codex) #sqcmp
   - [ ] Record predeclared alternating live comparisons on the same connection
   - [x] Evaluate primary-source methods and SpeedQX implementation against an explicit measurement target
   - [x] Record evidence and justified conclusions without claiming unproven comparative accuracy
 
 ## Done
+- [x] **Skip expensive checks for documentation-only changes** - full implementation qualification and docs-only PR/main skips verified; exact-source publication boundaries preserved (owner codex) (done 2026-11-11) #docci
+  - [x] Implement and test classification, required checks and release evidence boundaries
+  - [x] Pass independent review and full implementation CI, then merge
+  - [x] Verify documentation-only PR/main execution and record completion evidence
 - [x] **Remove redundant release compilation** - verified Windows archive reuse and pinned audit caching merged; hosted packaging and fresh-advisory cache proof passed (owner codex) (done 2026-11-11) #cieff
   - [x] Verify the same-source Windows archive acquisition and all installer outputs without publishing
   - [x] Prove cached audit tooling still runs a fresh advisory check
