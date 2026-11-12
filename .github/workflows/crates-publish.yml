@@ -27,14 +27,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish nd300
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository
+  context:
+    name: Verify exact triggering CI evidence
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      full: ${{ steps.evidence.outputs.full }}
+      source-sha: ${{ steps.evidence.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Require full CI or positively verified documentation checks
+        id: evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          CI_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          python3 scripts/verify-ci-evidence.py "$CI_SOURCE_SHA" \
+            --run-id "$CI_RUN_ID" --attempt "$CI_ATTEMPT" \
+            --allow-docs --github-output "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish nd300
+    needs: context
+    if: needs.context.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt, clippy

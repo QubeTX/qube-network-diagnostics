@@ -162,6 +162,25 @@ Mac release credentials are `apple-signing` environment secrets `APPLE_CERTIFICA
 
 Apple signing credentials must exist only in the `apple-signing` environment, with selected branch `main` and tag `v*` policies, no reviewers, and no wait timer. Repository rules restrict main updates to administrator PR merges with `CI required`, restrict release-tag creation to administrators, and forbid ref rewrites/deletion. A secret-free context job validates the event, exact checkout, main ancestry, package version, and release identity before signing. Reusable signing jobs declare their own environment. The tag caller must explicitly forward the seven named Apple secrets to matching required `workflow_call.secrets` declarations, even though the values exist only in the environment; omission resolves them empty on GitHub. Never restore repository-secret copies or broad secret inheritance. Main qualification signs both native archives and the universal PKG/DMG, then tests both native lifecycles. The release plan requires successful qualification for its exact SHA and waits up to 60 minutes for an in-progress run. Manual identity preflight uses main; repair dispatches use matching tags containing this hardened workflow. Before publication, manually run `apple-signing-preflight.yml` on main to exercise the actual reusable secret handoff without packaging or publishing. Require both native preflights to succeed and every publication job to remain skipped. Tags that already contain a protected standalone repair dispatch can recover absent installer assets from the original qualified source; never overwrite existing assets or claim a failed original run became green. Older tags without that hardened repair path cannot consume environment-only credentials.
 
+### Documentation-only validation
+
+Ordinary PR/main changes use `.github/workflows/change-scope.yml` and
+`scripts/classify-ci-changes.py` to inspect complete Git ranges. Only regular
+Markdown under the documented allowlist may skip expensive Rust/parity/native
+installer jobs. README content edits qualify; its removal/rename, release
+changelogs, root methodology, LICENSE/man files, unknown paths, mixed changes,
+mode/type changes and unproven history remain full. Tags and explicit dispatches
+always retain full behavior. Do not replace this with workflow-level path
+ignores that leave required checks pending.
+
+`CI required` validates either the exact full result set or intentional docs-only
+skips; policy/fixture and ShellCheck jobs always run. `Full CI` succeeds only on
+the full path. The publisher and release plan use `verify-ci-evidence.py` to bind
+positive markers to the exact latest main-push run/source/attempt. Docs-only
+success causes a publisher no-op before Rust or credential access and cannot
+qualify a tag. Keep the nine-job exact-SHA Apple qualification strict, with no
+ancestor substitution. See `docs/docs-only-ci.md` for policy and evidence.
+
 ### Standard release workflow (run when shipping) — tag-push, consistent with TR-300
 
 Triggers in user prompts: "release", "ship it", "deploy", "tag the release", "push it out", "make this live", "cut a release", "go for it" (after change discussion).

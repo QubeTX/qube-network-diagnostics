@@ -4,6 +4,13 @@ on:
   pull_request:
     paths:
       - '.github/workflows/windows-origin-matrix.yml'
+      - '.github/workflows/change-scope.yml'
+      - 'scripts/classify-ci-changes.py'
+      - 'scripts/check-ci-results.py'
+      - 'scripts/test_ci_changes.py'
+      - 'scripts/test_workflow_scope.py'
+      - 'scripts/verify-ci-evidence.py'
+      - 'scripts/test_ci_evidence.py'
       - 'scripts/windows-origin-matrix.ps1'
       - 'scripts/harden-cargo-dist-windows-installer.ps1'
       - 'scripts/test-harden-cargo-dist-windows-installer.ps1'

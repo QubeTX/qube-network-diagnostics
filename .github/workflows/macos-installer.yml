@@ -55,8 +55,14 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Change scope
+    uses: ./.github/workflows/change-scope.yml
+
   signing-context:
     name: Validate Apple signing source
+    needs: changes
+    if: ${{ needs.changes.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 65
     permissions:
