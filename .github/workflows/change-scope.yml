@@ -1,0 +1,26 @@
+name: Change scope
+
+on:
+  workflow_call:
+    outputs:
+      docs_only:
+        description: 'True only for a proven complete documentation-only change set'
+        value: ${{ jobs.changes.outputs.docs_only }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        name: Inspect the complete event change set
+        run: python3 scripts/classify-ci-changes.py

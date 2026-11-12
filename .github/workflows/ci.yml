@@ -40,38 +40,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Change scope
+    uses: ./.github/workflows/change-scope.yml
+
   apple-policy:
     name: Apple signing policy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
-      - name: Test authorized signing sources and release compatibility
+      - name: Test change scope, CI evidence, signing sources and release compatibility
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 -m unittest discover -s scripts -p test_apple_signing.py -v
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+  documentation:
+    name: Documentation checks
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify changed Markdown is text in the proven documentation-only diff
+        run: python3 scripts/classify-ci-changes.py --check-docs
 
   required:
     name: CI required
-    needs: [fmt, clippy, test, build, linux-targets, audit, dist-plan, shellcheck, apple-policy]
+    needs: [changes, documentation, fmt, clippy, test, build, linux-targets, audit, dist-plan, shellcheck, apple-policy]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Require every CI gate to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json, os, sys
-          failures = {name: job['result'] for name, job in json.loads(os.environ['RESULTS']).items() if job['result'] != 'success'}
-          if failures:
-              print(f"Required CI failed or skipped: {failures}", file=sys.stderr)
-              sys.exit(1)
-          print("Every required CI gate passed.")
-          PY
+        run: python3 scripts/check-ci-results.py
+
+  full-ci:
+    name: Full CI
+    needs: [changes, required]
+    # Override implicit success(): the required gate has an intentionally
+    # skipped documentation ancestor on every full run. Still require both
+    # direct prerequisites to succeed, and never emit a marker after cancel.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.required.result == 'success' && needs.changes.outputs.docs_only == 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'The complete code and release validation path passed for this source.'
 
   fmt:
     name: Format
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +107,8 @@ jobs:
 
   clippy:
     name: Clippy (${{ matrix.name }})
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only == 'false' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -105,6 +132,8 @@ jobs:
 
   test:
     name: Test (${{ matrix.name }})
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only == 'false' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -152,6 +181,8 @@ jobs:
 
   build:
     name: Release Build (${{ matrix.name }})
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only == 'false' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -206,6 +237,8 @@ jobs:
 
   linux-targets:
     name: Release Target Compile (${{ matrix.name }})
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only == 'false' }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -251,6 +284,8 @@ jobs:
 
   audit:
     name: Security audit
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only == 'false' }}
     runs-on: ubuntu-latest
     env:
       CARGO_AUDIT_VERSION: '0.23.0'
@@ -274,6 +309,8 @@ jobs:
 
   dist-plan:
     name: cargo-dist plan
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

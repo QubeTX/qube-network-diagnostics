@@ -142,6 +142,23 @@ class ContextTests(unittest.TestCase):
 
 
 class QualificationTests(unittest.TestCase):
+    def test_exactly_nine_native_jobs_must_supply_positive_qualification(self):
+        expected = {
+            "Installer identity preflight (Apple Silicon)",
+            "Installer identity preflight (Intel)",
+            "Candidate native binaries (Apple Silicon)",
+            "Candidate native binaries (Intel)",
+            "Candidate signed archive (Apple Silicon)",
+            "Candidate signed archive (Intel)",
+            "Candidate signed and notarized PKG and compatibility DMG",
+            "Candidate lifecycle (Apple Silicon)",
+            "Candidate lifecycle (Intel)",
+        }
+        self.assertEqual(qualification["REQUIRED_JOBS"], expected)
+        self.assertFalse(qualification["jobs_passed"]([
+            {"name": name, "conclusion": "skipped"} for name in expected
+        ]))
+
     def run_data(self, **overrides):
         return {"id": 123, "head_sha": SHA, "head_branch": "main", "event": "push",
                 "path": ".github/workflows/macos-installer.yml", "head_repository": {"full_name": REPO},
@@ -299,7 +316,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_preflight_mode_cannot_build_publish_or_run_lifecycles(self):
         jobs = workflow("macos-installer.yml")["jobs"]
-        self.assertEqual(set(jobs), {"signing-context", "credential-preflight", "build", "validate",
+        self.assertEqual(set(jobs), {"changes", "signing-context", "credential-preflight", "build", "validate",
                                     "candidate-thin", "candidate-archive", "candidate-package",
                                     "candidate-validate", "publish", "legacy-bridge"})
         self.assertEqual(jobs["build"]["if"], "${{ needs.signing-context.outputs.mode == 'release' }}")
@@ -320,7 +337,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("workflow_run", mac["on"])
         self.assertNotIn("pull_request_target", mac["on"])
         jobs = mac["jobs"]
-        for name in ["signing-context", "candidate-thin", "candidate-validate", "validate"]:
+        for name in ["changes", "signing-context", "candidate-thin", "candidate-validate", "validate"]:
             self.assertNotIn("environment", jobs[name])
             self.assertNotIn("secrets.APPLE_", json.dumps(jobs[name]))
         for name in ["credential-preflight", "build", "candidate-archive", "candidate-package"]:

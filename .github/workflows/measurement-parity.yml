@@ -6,7 +6,13 @@ on:
 permissions:
   contents: read
 jobs:
+  changes:
+    name: Change scope
+    uses: ./.github/workflows/change-scope.yml
+
   recorded-traces:
+    needs: changes
+    if: ${{ needs.changes.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

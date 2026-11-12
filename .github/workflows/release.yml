@@ -40,8 +40,14 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
 jobs:
+  changes:
+    name: Change scope
+    uses: ./.github/workflows/change-scope.yml
+
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
+    needs: changes
+    if: needs.changes.result == 'success' && needs.changes.outputs.docs_only == 'false'
     runs-on: "ubuntu-22.04"
     timeout-minutes: 75
     permissions:
@@ -101,26 +107,9 @@ jobs:
             exit 1
           fi
 
-          gh api --method GET \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
-            -f branch=main \
-            -f event=push \
-            -f head_sha="$release_sha" \
-            -f status=success \
-            -f per_page=100 \
-            > "$RUNNER_TEMP/exact-sha-ci.json"
-          if ! RELEASE_SHA=$release_sha jq -e '
-            [.workflow_runs[] | select(
-              .head_sha == env.RELEASE_SHA and
-              .head_branch == "main" and
-              .event == "push" and
-              .status == "completed" and
-              .conclusion == "success"
-            )] | length > 0
-          ' "$RUNNER_TEMP/exact-sha-ci.json" > /dev/null; then
-            echo "::error::No successful main-push CI run exists for exact release SHA ${release_sha}" >&2
-            exit 1
-          fi
+          # A green docs-only run is insufficient. Require the exact SHA's
+          # latest CI run/attempt and its positive Full CI + required markers.
+          python3 scripts/verify-ci-evidence.py "$release_sha"
 
           crate_status=$(curl --silent --show-error \
             --connect-timeout 10 \

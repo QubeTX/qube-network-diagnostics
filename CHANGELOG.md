@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Development
 
+- Classify complete PR/main change sets with a conservative documentation allowlist; retain required lightweight checks while skipping expensive compilation, replay and native installer qualification for docs-only changes. Require positive exact-source full-CI evidence before crate publication or tag qualification, preserving explicit release/repair checks.
 - Reuse the exact tag/source verified Windows archive for release installer add-ons instead of recompiling its binary pair. Retain checksum, provenance, binary-version, immutable-asset and complete-inventory checks, with a read-only validation mode before publication.
-- Pin and cache cargo-audit's executable by version, host and Rust toolchain, validate its version on use, and continue refreshing current advisories and running the audit on every CI run.
+- Pin and cache cargo-audit's executable by version, host and Rust toolchain, validate its version on use, and continue refreshing current advisories and running the audit on every full-validation CI run.
 
 ### Fixed
 

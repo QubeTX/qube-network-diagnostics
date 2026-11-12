@@ -535,6 +535,11 @@ cargo build --release
 
 Binaries will be at `target/release/nd300` and `target/release/speedqx` (or `.exe` on Windows).
 
+Ordinary documentation changes use lightweight CI checks. Code, dependency,
+installer and release changes retain their full validation. The required CI
+check still runs for every PR; see [documentation-only CI](docs/docs-only-ci.md)
+for the exact file policy and release safeguards.
+
 ## Self-Update
 
 Both binaries support self-updating to the latest release. Either form works:
